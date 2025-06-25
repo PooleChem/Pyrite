@@ -1,0 +1,914 @@
+./input/p450/cyp3a4/cyp3a4_ligand.pdb
+ OpenBabel06042512553D
+
+ 36 39  0  0  1  0  0  0  0  0999 V2000
+   12.7980   -0.1290  -52.5900 C   0  0  0  0  0  0  0  0  0  0  0  0
+   14.0220   -0.5670  -53.0500 C   0  0  0  0  0  0  0  0  0  0  0  0
+   14.9950   -0.8720  -52.1400 C   0  0  0  0  0  0  0  0  0  0  0  0
+   16.5690   -1.4280  -52.7670 Cl  0  0  0  0  0  0  0  0  0  0  0  0
+   14.7410   -0.7350  -50.7800 C   0  0  0  0  0  0  0  0  0  0  0  0
+   13.5050   -0.2820  -50.3490 C   0  0  0  0  0  0  0  0  0  0  0  0
+   12.4720    0.0450  -51.2320 C   0  0  0  0  0  0  0  0  0  0  0  0
+   11.2720    0.4960  -50.7910 N   0  0  0  0  0  0  0  0  0  0  0  0
+   10.6510   -0.0040  -49.7160 C   0  0  0  0  0  0  0  0  0  0  0  0
+   11.0430   -1.1310  -48.7890 C   0  0  0  0  0  0  0  0  0  0  0  0
+    9.5110    0.7240  -49.6010 N   0  0  0  0  0  0  0  0  0  0  0  0
+    9.4420    1.6580  -50.5820 C   0  0  0  0  0  0  0  0  0  0  0  0
+   10.5910    1.5330  -51.3390 C   0  0  0  0  0  0  0  0  0  0  0  0
+   10.9090    2.3910  -52.5480 C   0  0  0  0  0  0  0  0  0  0  0  0
+   11.2650    1.3110  -53.5720 N   0  0  0  0  0  0  0  0  0  0  0  0
+   11.7650    0.1590  -53.6190 C   0  0  1  0  0  0  0  0  0  0  0  0
+   11.6100   -0.7130  -54.8210 C   0  0  0  0  0  0  0  0  0  0  0  0
+   11.6040   -0.1710  -56.1010 C   0  0  0  0  0  0  0  0  0  0  0  0
+   11.4510   -1.0130  -57.2040 C   0  0  0  0  0  0  0  0  0  0  0  0
+   11.3140   -2.3890  -57.0300 C   0  0  0  0  0  0  0  0  0  0  0  0
+   11.3260   -2.9360  -55.7420 C   0  0  0  0  0  0  0  0  0  0  0  0
+   11.4770   -2.0870  -54.6480 C   0  0  0  0  0  0  0  0  0  0  0  0
+   11.4930   -2.6090  -53.4200 F   0  0  0  0  0  0  0  0  0  0  0  0
+   14.2080   -0.6670  -54.1090 H   0  0  0  0  0  0  0  0  0  0  0  0
+   15.5070   -0.9820  -50.0600 H   0  0  0  0  0  0  0  0  0  0  0  0
+   13.3330   -0.1770  -49.2880 H   0  0  0  0  0  0  0  0  0  0  0  0
+    8.6410    2.3650  -50.7410 H   0  0  0  0  0  0  0  0  0  0  0  0
+   10.0450    2.9760  -52.8640 H   0  0  0  0  0  0  0  0  0  0  0  0
+   11.7650    3.0370  -52.3520 H   0  0  0  0  0  0  0  0  0  0  0  0
+   11.7170    0.8940  -56.2410 H   0  0  0  0  0  0  0  0  0  0  0  0
+   11.4390   -0.5950  -58.2000 H   0  0  0  0  0  0  0  0  0  0  0  0
+   11.1990   -3.0330  -57.8890 H   0  0  0  0  0  0  0  0  0  0  0  0
+   11.2200   -4.0010  -55.5980 H   0  0  0  0  0  0  0  0  0  0  0  0
+   10.1720   -1.4520  -48.2180 H   0  0  0  0  0  0  0  0  0  0  0  0
+   11.4210   -1.9680  -49.3750 H   0  0  0  0  0  0  0  0  0  0  0  0
+   11.8190   -0.7860  -48.1050 H   0  0  0  0  0  0  0  0  0  0  0  0
+  1  2  2  0  0  0  0
+  1  7  1  0  0  0  0
+  1 16  1  0  0  0  0
+  2  3  1  0  0  0  0
+  2 24  1  0  0  0  0
+  3  4  1  0  0  0  0
+  3  5  2  0  0  0  0
+  5  6  1  0  0  0  0
+  5 25  1  0  0  0  0
+  6  7  2  0  0  0  0
+  6 26  1  0  0  0  0
+  7  8  1  0  0  0  0
+  8  9  1  0  0  0  0
+  8 13  1  0  0  0  0
+  9 10  1  0  0  0  0
+  9 11  2  0  0  0  0
+ 10 34  1  0  0  0  0
+ 10 35  1  0  0  0  0
+ 10 36  1  0  0  0  0
+ 11 12  1  0  0  0  0
+ 12 13  2  0  0  0  0
+ 12 27  1  0  0  0  0
+ 13 14  1  0  0  0  0
+ 14 15  1  0  0  0  0
+ 14 28  1  0  0  0  0
+ 14 29  1  0  0  0  0
+ 15 16  1  0  0  0  0
+ 16 17  1  6  0  0  0
+ 17 18  2  0  0  0  0
+ 17 22  1  0  0  0  0
+ 18 19  1  0  0  0  0
+ 18 30  1  0  0  0  0
+ 19 20  2  0  0  0  0
+ 19 31  1  0  0  0  0
+ 20 21  1  0  0  0  0
+ 20 32  1  0  0  0  0
+ 21 22  2  0  0  0  0
+ 21 33  1  0  0  0  0
+ 22 23  1  0  0  0  0
+M  END
+>  <HEADER>
+    OXIDOREDUCTASE                          20-SEP-16   5TE8              
+
+>  <TITLE>
+    CRYSTAL STRUCTURE OF THE MIDAZOLAM-BOUND HUMAN CYP3A4                 
+
+>  <COMPND>
+    MOL_ID: 1;                                                            
+   2 MOLECULE: CYTOCHROME P450 3A4;                                       
+   3 CHAIN: A, B, C;                                                      
+   4 SYNONYM: 1,8-CINEOLE 2-EXO-MONOOXYGENASE,ALBENDAZOLE MONOOXYGENASE,  
+   5 ALBENDAZOLE SULFOXIDASE,CYPIIIA3,CYPIIIA4,CHOLESTEROL 25-HYDROXYLASE,
+   6 CYTOCHROME P450 3A3,CYTOCHROME P450 HLP,CYTOCHROME P450 NF-25,       
+   7 CYTOCHROME P450-PCN1,NIFEDIPINE OXIDASE,QUININE 3-MONOOXYGENASE,     
+   8 TAUROCHENODEOXYCHOLATE 6-ALPHA-HYDROXYLASE;                          
+   9 EC: 1.14.13.-;                                                       
+  10 ENGINEERED: YES;                                                     
+  11 OTHER_DETAILS: HUMAN CYP3A4 WITH RESIDUES 3-22 DELETED AND THE       
+  12 ADDITION C-TERMINAL 4-HISTIDINE TAG                                  
+
+>  <SOURCE>
+    MOL_ID: 1;                                                            
+   2 ORGANISM_SCIENTIFIC: HOMO SAPIENS;                                   
+   3 ORGANISM_COMMON: HUMAN;                                              
+   4 ORGANISM_TAXID: 9606;                                                
+   5 GENE: CYP3A4, CYP3A3;                                                
+   6 EXPRESSION_SYSTEM: ESCHERICHIA COLI;                                 
+   7 EXPRESSION_SYSTEM_TAXID: 469008;                                     
+   8 EXPRESSION_SYSTEM_STRAIN: BL21(DE3);                                 
+   9 EXPRESSION_SYSTEM_VECTOR_TYPE: PCWORI                                
+
+>  <KEYWDS>
+    CYTOCHROME P450, CYP3A4, MONOOXYGENASE, DRUG METABOLISM, MIDAZOLAM,   
+   2 OXIDOREDUCTASE                                                       
+
+>  <EXPDTA>
+    X-RAY DIFFRACTION                                                     
+
+>  <AUTHOR>
+    I.SEVRIOUKOVA,T.POULOS                                                
+
+>  <REVDAT>
+   6   04-OCT-23 5TE8    1       REMARK                                   
+   5   18-DEC-19 5TE8    1       REMARK                                   
+   4   20-SEP-17 5TE8    1       REMARK                                   
+   3   25-JAN-17 5TE8    1       JRNL                                     
+   2   11-JAN-17 5TE8    1       JRNL                                     
+   1   07-DEC-16 5TE8    0                                                
+
+>  <JRNL>
+      AUTH   I.F.SEVRIOUKOVA,T.L.POULOS                                   
+      TITL   STRUCTURAL BASIS FOR REGIOSPECIFIC MIDAZOLAM OXIDATION BY    
+      TITL 2 HUMAN CYTOCHROME P450 3A4.                                   
+      REF    PROC. NATL. ACAD. SCI.        V. 114   486 2017              
+      REF  2 U.S.A.                                                       
+      REFN                   ESSN 1091-6490                               
+      PMID   28031486                                                     
+      DOI    10.1073/PNAS.1616198114                                      
+
+>  <REMARK>
+   2                                                                      
+   2 RESOLUTION.    2.70 ANGSTROMS.                                       
+   3                                                                      
+   3 REFINEMENT.                                                          
+   3   PROGRAM     : REFMAC 5.8.0049                                      
+   3   AUTHORS     : MURSHUDOV,SKUBAK,LEBEDEV,PANNU,STEINER,              
+   3               : NICHOLLS,WINN,LONG,VAGIN                             
+   3                                                                      
+   3    REFINEMENT TARGET : MAXIMUM LIKELIHOOD                            
+   3                                                                      
+   3  DATA USED IN REFINEMENT.                                            
+   3   RESOLUTION RANGE HIGH (ANGSTROMS) : 2.70                           
+   3   RESOLUTION RANGE LOW  (ANGSTROMS) : 102.34                         
+   3   DATA CUTOFF            (SIGMA(F)) : NULL                           
+   3   COMPLETENESS FOR RANGE        (%) : 98.8                           
+   3   NUMBER OF REFLECTIONS             : 41161                          
+   3                                                                      
+   3  FIT TO DATA USED IN REFINEMENT.                                     
+   3   CROSS-VALIDATION METHOD          : THROUGHOUT                      
+   3   FREE R VALUE TEST SET SELECTION  : RANDOM                          
+   3   R VALUE     (WORKING + TEST SET) : 0.227                           
+   3   R VALUE            (WORKING SET) : 0.224                           
+   3   FREE R VALUE                     : 0.292                           
+   3   FREE R VALUE TEST SET SIZE   (%) : 5.000                           
+   3   FREE R VALUE TEST SET COUNT      : 2178                            
+   3                                                                      
+   3  FIT IN THE HIGHEST RESOLUTION BIN.                                  
+   3   TOTAL NUMBER OF BINS USED           : 20                           
+   3   BIN RESOLUTION RANGE HIGH       (A) : 2.70                         
+   3   BIN RESOLUTION RANGE LOW        (A) : 2.77                         
+   3   REFLECTION IN BIN     (WORKING SET) : 2999                         
+   3   BIN COMPLETENESS (WORKING+TEST) (%) : 99.09                        
+   3   BIN R VALUE           (WORKING SET) : 0.3040                       
+   3   BIN FREE R VALUE SET COUNT          : 159                          
+   3   BIN FREE R VALUE                    : 0.3740                       
+   3                                                                      
+   3  NUMBER OF NON-HYDROGEN ATOMS USED IN REFINEMENT.                    
+   3   PROTEIN ATOMS            : 11364                                   
+   3   NUCLEIC ACID ATOMS       : 0                                       
+   3   HETEROGEN ATOMS          : 198                                     
+   3   SOLVENT ATOMS            : 111                                     
+   3                                                                      
+   3  B VALUES.                                                           
+   3   FROM WILSON PLOT           (A**2) : NULL                           
+   3   MEAN B VALUE      (OVERALL, A**2) : 75.68                          
+   3   OVERALL ANISOTROPIC B VALUE.                                       
+   3    B11 (A**2) : -1.38000                                             
+   3    B22 (A**2) : 0.73000                                              
+   3    B33 (A**2) : 0.65000                                              
+   3    B12 (A**2) : 0.00000                                              
+   3    B13 (A**2) : 0.00000                                              
+   3    B23 (A**2) : 0.00000                                              
+   3                                                                      
+   3  ESTIMATED OVERALL COORDINATE ERROR.                                 
+   3   ESU BASED ON R VALUE                            (A): NULL          
+   3   ESU BASED ON FREE R VALUE                       (A): 0.429         
+   3   ESU BASED ON MAXIMUM LIKELIHOOD                 (A): 0.372         
+   3   ESU FOR B VALUES BASED ON MAXIMUM LIKELIHOOD (A**2): 39.005        
+   3                                                                      
+   3 CORRELATION COEFFICIENTS.                                            
+   3   CORRELATION COEFFICIENT FO-FC      : 0.928                         
+   3   CORRELATION COEFFICIENT FO-FC FREE : 0.883                         
+   3                                                                      
+   3  RMS DEVIATIONS FROM IDEAL VALUES        COUNT    RMS    WEIGHT      
+   3   BOND LENGTHS REFINED ATOMS        (A): 11895 ; 0.007 ; 0.019       
+   3   BOND LENGTHS OTHERS               (A):  NULL ;  NULL ;  NULL       
+   3   BOND ANGLES REFINED ATOMS   (DEGREES): 16147 ; 1.334 ; 2.008       
+   3   BOND ANGLES OTHERS          (DEGREES):  NULL ;  NULL ;  NULL       
+   3   TORSION ANGLES, PERIOD 1    (DEGREES):  1409 ; 6.293 ; 5.000       
+   3   TORSION ANGLES, PERIOD 2    (DEGREES):   499 ;36.007 ;23.828       
+   3   TORSION ANGLES, PERIOD 3    (DEGREES):  2125 ;18.164 ;15.000       
+   3   TORSION ANGLES, PERIOD 4    (DEGREES):    66 ;16.976 ;15.000       
+   3   CHIRAL-CENTER RESTRAINTS       (A**3):  1768 ; 0.091 ; 0.200       
+   3   GENERAL PLANES REFINED ATOMS      (A):  8910 ; 0.006 ; 0.021       
+   3   GENERAL PLANES OTHERS             (A):  NULL ;  NULL ;  NULL       
+   3   NON-BONDED CONTACTS REFINED ATOMS (A):  NULL ;  NULL ;  NULL       
+   3   NON-BONDED CONTACTS OTHERS        (A):  NULL ;  NULL ;  NULL       
+   3   NON-BONDED TORSION REFINED ATOMS  (A):  NULL ;  NULL ;  NULL       
+   3   NON-BONDED TORSION OTHERS         (A):  NULL ;  NULL ;  NULL       
+   3   H-BOND (X...Y) REFINED ATOMS      (A):  NULL ;  NULL ;  NULL       
+   3   H-BOND (X...Y) OTHERS             (A):  NULL ;  NULL ;  NULL       
+   3   POTENTIAL METAL-ION REFINED ATOMS (A):  NULL ;  NULL ;  NULL       
+   3   POTENTIAL METAL-ION OTHERS        (A):  NULL ;  NULL ;  NULL       
+   3   SYMMETRY VDW REFINED ATOMS        (A):  NULL ;  NULL ;  NULL       
+   3   SYMMETRY VDW OTHERS               (A):  NULL ;  NULL ;  NULL       
+   3   SYMMETRY H-BOND REFINED ATOMS     (A):  NULL ;  NULL ;  NULL       
+   3   SYMMETRY H-BOND OTHERS            (A):  NULL ;  NULL ;  NULL       
+   3   SYMMETRY METAL-ION REFINED ATOMS  (A):  NULL ;  NULL ;  NULL       
+   3   SYMMETRY METAL-ION OTHERS         (A):  NULL ;  NULL ;  NULL       
+   3                                                                      
+   3  ISOTROPIC THERMAL FACTOR RESTRAINTS.     COUNT   RMS    WEIGHT      
+   3   MAIN-CHAIN BOND REFINED ATOMS  (A**2):  5645 ; 1.675 ; 4.584       
+   3   MAIN-CHAIN BOND OTHER ATOMS    (A**2):  NULL ;  NULL ;  NULL       
+   3   MAIN-CHAIN ANGLE REFINED ATOMS (A**2):  7048 ; 2.897 ; 6.871       
+   3   MAIN-CHAIN ANGLE OTHER ATOMS   (A**2):  NULL ;  NULL ;  NULL       
+   3   SIDE-CHAIN BOND REFINED ATOMS  (A**2):  6250 ; 1.768 ; 4.669       
+   3   SIDE-CHAIN BOND OTHER ATOMS    (A**2):  NULL ;  NULL ;  NULL       
+   3   SIDE-CHAIN ANGLE REFINED ATOMS (A**2):  NULL ;  NULL ;  NULL       
+   3   SIDE-CHAIN ANGLE OTHER ATOMS   (A**2):  NULL ;  NULL ;  NULL       
+   3   LONG RANGE B REFINED ATOMS     (A**2): 19143 ; 6.712 ;38.454       
+   3   LONG RANGE B OTHER ATOMS       (A**2):  NULL ;  NULL ;  NULL       
+   3                                                                      
+   3 ANISOTROPIC THERMAL FACTOR RESTRAINTS.    COUNT   RMS   WEIGHT       
+   3   RIGID-BOND RESTRAINTS          (A**2):  NULL ;  NULL ;  NULL       
+   3   SPHERICITY; FREE ATOMS         (A**2):  NULL ;  NULL ;  NULL       
+   3   SPHERICITY; BONDED ATOMS       (A**2):  NULL ;  NULL ;  NULL       
+   3                                                                      
+   3  NCS RESTRAINTS STATISTICS                                           
+   3   NUMBER OF DIFFERENT NCS GROUPS : NULL                              
+   3                                                                      
+   3  TLS DETAILS                                                         
+   3   NUMBER OF TLS GROUPS  : 3                                          
+   3                                                                      
+   3   TLS GROUP : 1                                                      
+   3    NUMBER OF COMPONENTS GROUP : 2                                    
+   3    COMPONENTS        C SSSEQI   TO  C SSSEQI                         
+   3    RESIDUE RANGE :   A     2        A   497                          
+   3    RESIDUE RANGE :   A   601        A   602                          
+   3    ORIGIN FOR THE GROUP (A):  16.5921  -1.4558 -50.9792              
+   3    T TENSOR                                                          
+   3      T11:   0.1102 T22:   0.0744                                     
+   3      T33:   0.0531 T12:   0.0097                                     
+   3      T13:   0.0254 T23:  -0.0070                                     
+   3    L TENSOR                                                          
+   3      L11:   0.3936 L22:   0.3055                                     
+   3      L33:   0.2422 L12:  -0.0160                                     
+   3      L13:   0.0843 L23:   0.0174                                     
+   3    S TENSOR                                                          
+   3      S11:  -0.0276 S12:  -0.0663 S13:  -0.0088                       
+   3      S21:  -0.0040 S22:   0.0386 S23:  -0.0447                       
+   3      S31:  -0.0204 S32:   0.0012 S33:  -0.0110                       
+   3                                                                      
+   3   TLS GROUP : 2                                                      
+   3    NUMBER OF COMPONENTS GROUP : 2                                    
+   3    COMPONENTS        C SSSEQI   TO  C SSSEQI                         
+   3    RESIDUE RANGE :   B     2        B   497                          
+   3    RESIDUE RANGE :   B   601        B   602                          
+   3    ORIGIN FOR THE GROUP (A):   7.2065  26.0069 -22.0313              
+   3    T TENSOR                                                          
+   3      T11:   0.1939 T22:   0.0530                                     
+   3      T33:   0.0088 T12:   0.0242                                     
+   3      T13:   0.0346 T23:   0.0112                                     
+   3    L TENSOR                                                          
+   3      L11:   0.3868 L22:   0.8088                                     
+   3      L33:   0.5273 L12:  -0.1152                                     
+   3      L13:   0.0495 L23:  -0.1567                                     
+   3    S TENSOR                                                          
+   3      S11:  -0.0398 S12:   0.0151 S13:  -0.0220                       
+   3      S21:   0.1844 S22:   0.0296 S23:   0.0606                       
+   3      S31:   0.0705 S32:   0.0875 S33:   0.0102                       
+   3                                                                      
+   3   TLS GROUP : 3                                                      
+   3    NUMBER OF COMPONENTS GROUP : 2                                    
+   3    COMPONENTS        C SSSEQI   TO  C SSSEQI                         
+   3    RESIDUE RANGE :   C     2        C   496                          
+   3    RESIDUE RANGE :   C   601        C   602                          
+   3    ORIGIN FOR THE GROUP (A):  11.5380 -42.8746 -15.2081              
+   3    T TENSOR                                                          
+   3      T11:   0.3870 T22:   0.0108                                     
+   3      T33:   0.0325 T12:  -0.0368                                     
+   3      T13:  -0.0539 T23:   0.0044                                     
+   3    L TENSOR                                                          
+   3      L11:   0.7564 L22:   1.5536                                     
+   3      L33:   0.0240 L12:   0.1924                                     
+   3      L13:  -0.0128 L23:  -0.1887                                     
+   3    S TENSOR                                                          
+   3      S11:   0.0706 S12:  -0.0034 S13:   0.1112                       
+   3      S21:   0.6154 S22:  -0.0851 S23:  -0.1167                       
+   3      S31:  -0.0706 S32:   0.0126 S33:   0.0145                       
+   3                                                                      
+   3  BULK SOLVENT MODELLING.                                             
+   3   METHOD USED : MASK                                                 
+   3   PARAMETERS FOR MASK CALCULATION                                    
+   3   VDW PROBE RADIUS   : 1.20                                          
+   3   ION PROBE RADIUS   : 0.80                                          
+   3   SHRINKAGE RADIUS   : 0.80                                          
+   3                                                                      
+   3  OTHER REFINEMENT REMARKS: NULL                                      
+   4                                                                      
+   4 5TE8 COMPLIES WITH FORMAT V. 3.30, 13-JUL-11                         
+ 100                                                                      
+ 100 THIS ENTRY HAS BEEN PROCESSED BY RCSB ON 28-SEP-16.                  
+ 100 THE DEPOSITION ID IS D_1000224095.                                   
+ 200                                                                      
+ 200 EXPERIMENTAL DETAILS                                                 
+ 200  EXPERIMENT TYPE                : X-RAY DIFFRACTION                  
+ 200  DATE OF DATA COLLECTION        : 25-JAN-15                          
+ 200  TEMPERATURE           (KELVIN) : 103                                
+ 200  PH                             : 7.0-7.4                            
+ 200  NUMBER OF CRYSTALS USED        : 1                                  
+ 200                                                                      
+ 200  SYNCHROTRON              (Y/N) : Y                                  
+ 200  RADIATION SOURCE               : ALS                                
+ 200  BEAMLINE                       : 8.2.2                              
+ 200  X-RAY GENERATOR MODEL          : NULL                               
+ 200  MONOCHROMATIC OR LAUE    (M/L) : M                                  
+ 200  WAVELENGTH OR RANGE        (A) : 1.0                                
+ 200  MONOCHROMATOR                  : NULL                               
+ 200  OPTICS                         : NULL                               
+ 200                                                                      
+ 200  DETECTOR TYPE                  : CCD                                
+ 200  DETECTOR MANUFACTURER          : OXFORD TITAN CCD                   
+ 200  INTENSITY-INTEGRATION SOFTWARE : MOSFLM                             
+ 200  DATA SCALING SOFTWARE          : SCALA                              
+ 200                                                                      
+ 200  NUMBER OF UNIQUE REFLECTIONS   : 43549                              
+ 200  RESOLUTION RANGE HIGH      (A) : 2.700                              
+ 200  RESOLUTION RANGE LOW       (A) : 102.340                            
+ 200  REJECTION CRITERIA  (SIGMA(I)) : 2.000                              
+ 200                                                                      
+ 200 OVERALL.                                                             
+ 200  COMPLETENESS FOR RANGE     (%) : 99.4                               
+ 200  DATA REDUNDANCY                : 5.600                              
+ 200  R MERGE                    (I) : 0.16500                            
+ 200  R SYM                      (I) : NULL                               
+ 200  <I/SIGMA(I)> FOR THE DATA SET  : 5.8000                             
+ 200                                                                      
+ 200 IN THE HIGHEST RESOLUTION SHELL.                                     
+ 200  HIGHEST RESOLUTION SHELL, RANGE HIGH (A) : 2.70                     
+ 200  HIGHEST RESOLUTION SHELL, RANGE LOW  (A) : 2.80                     
+ 200  COMPLETENESS FOR SHELL     (%) : 99.3                               
+ 200  DATA REDUNDANCY IN SHELL       : 5.90                               
+ 200  R MERGE FOR SHELL          (I) : 0.82200                            
+ 200  R SYM FOR SHELL            (I) : NULL                               
+ 200  <I/SIGMA(I)> FOR SHELL         : 1.500                              
+ 200                                                                      
+ 200 DIFFRACTION PROTOCOL: SINGLE WAVELENGTH                              
+ 200 METHOD USED TO DETERMINE THE STRUCTURE: MOLECULAR REPLACEMENT        
+ 200 SOFTWARE USED: PHASER                                                
+ 200 STARTING MODEL: 1TQN                                                 
+ 200                                                                      
+ 200 REMARK: NULL                                                         
+ 280                                                                      
+ 280 CRYSTAL                                                              
+ 280 SOLVENT CONTENT, VS   (%): 47.24                                     
+ 280 MATTHEWS COEFFICIENT, VM (ANGSTROMS**3/DA): 2.33                     
+ 280                                                                      
+ 280 CRYSTALLIZATION CONDITIONS: 12% POLYETHILENE GLYCOL 3350, 0.1M       
+ 280  SODIUM MALONATE PH 7.0, VAPOR DIFFUSION, SITTING DROP,              
+ 280  TEMPERATURE 293K                                                    
+ 290                                                                      
+ 290 CRYSTALLOGRAPHIC SYMMETRY                                            
+ 290 SYMMETRY OPERATORS FOR SPACE GROUP: P 21 21 21                       
+ 290                                                                      
+ 290      SYMOP   SYMMETRY                                                
+ 290     NNNMMM   OPERATOR                                                
+ 290       1555   X,Y,Z                                                   
+ 290       2555   -X+1/2,-Y,Z+1/2                                         
+ 290       3555   -X,Y+1/2,-Z+1/2                                         
+ 290       4555   X+1/2,-Y+1/2,-Z                                         
+ 290                                                                      
+ 290     WHERE NNN -> OPERATOR NUMBER                                     
+ 290           MMM -> TRANSLATION VECTOR                                  
+ 290                                                                      
+ 290 CRYSTALLOGRAPHIC SYMMETRY TRANSFORMATIONS                            
+ 290 THE FOLLOWING TRANSFORMATIONS OPERATE ON THE ATOM/HETATM             
+ 290 RECORDS IN THIS ENTRY TO PRODUCE CRYSTALLOGRAPHICALLY                
+ 290 RELATED MOLECULES.                                                   
+ 290   SMTRY1   1  1.000000  0.000000  0.000000        0.00000            
+ 290   SMTRY2   1  0.000000  1.000000  0.000000        0.00000            
+ 290   SMTRY3   1  0.000000  0.000000  1.000000        0.00000            
+ 290   SMTRY1   2 -1.000000  0.000000  0.000000       32.14450            
+ 290   SMTRY2   2  0.000000 -1.000000  0.000000        0.00000            
+ 290   SMTRY3   2  0.000000  0.000000  1.000000      102.82450            
+ 290   SMTRY1   3 -1.000000  0.000000  0.000000        0.00000            
+ 290   SMTRY2   3  0.000000  1.000000  0.000000       58.99000            
+ 290   SMTRY3   3  0.000000  0.000000 -1.000000      102.82450            
+ 290   SMTRY1   4  1.000000  0.000000  0.000000       32.14450            
+ 290   SMTRY2   4  0.000000 -1.000000  0.000000       58.99000            
+ 290   SMTRY3   4  0.000000  0.000000 -1.000000        0.00000            
+ 290                                                                      
+ 290 REMARK: NULL                                                         
+ 300                                                                      
+ 300 BIOMOLECULE: 1                                                       
+ 300 SEE REMARK 350 FOR THE AUTHOR PROVIDED AND/OR PROGRAM                
+ 300 GENERATED ASSEMBLY INFORMATION FOR THE STRUCTURE IN                  
+ 300 THIS ENTRY. THE REMARK MAY ALSO PROVIDE INFORMATION ON               
+ 300 BURIED SURFACE AREA.                                                 
+ 350                                                                      
+ 350 COORDINATES FOR A COMPLETE MULTIMER REPRESENTING THE KNOWN           
+ 350 BIOLOGICALLY SIGNIFICANT OLIGOMERIZATION STATE OF THE                
+ 350 MOLECULE CAN BE GENERATED BY APPLYING BIOMT TRANSFORMATIONS          
+ 350 GIVEN BELOW.  BOTH NON-CRYSTALLOGRAPHIC AND                          
+ 350 CRYSTALLOGRAPHIC OPERATIONS ARE GIVEN.                               
+ 350                                                                      
+ 350 BIOMOLECULE: 1                                                       
+ 350 AUTHOR DETERMINED BIOLOGICAL UNIT: TRIMERIC                          
+ 350 SOFTWARE DETERMINED QUATERNARY STRUCTURE: TRIMERIC                   
+ 350 SOFTWARE USED: PISA                                                  
+ 350 TOTAL BURIED SURFACE AREA: 9970 ANGSTROM**2                          
+ 350 SURFACE AREA OF THE COMPLEX: 54570 ANGSTROM**2                       
+ 350 CHANGE IN SOLVENT FREE ENERGY: -124.0 KCAL/MOL                       
+ 350 APPLY THE FOLLOWING TO CHAINS: A                                     
+ 350   BIOMT1   1  1.000000  0.000000  0.000000        0.00000            
+ 350   BIOMT2   1  0.000000  1.000000  0.000000        0.00000            
+ 350   BIOMT3   1  0.000000  0.000000  1.000000        0.00000            
+ 350 APPLY THE FOLLOWING TO CHAINS: B                                     
+ 350   BIOMT1   2 -1.000000  0.000000  0.000000        0.00000            
+ 350   BIOMT2   2  0.000000  1.000000  0.000000      -58.99000            
+ 350   BIOMT3   2  0.000000  0.000000 -1.000000     -102.82450            
+ 350 APPLY THE FOLLOWING TO CHAINS: C                                     
+ 350   BIOMT1   3 -1.000000  0.000000  0.000000        0.00000            
+ 350   BIOMT2   3  0.000000  1.000000  0.000000       58.99000            
+ 350   BIOMT3   3  0.000000  0.000000 -1.000000     -102.82450            
+ 465                                                                      
+ 465 MISSING RESIDUES                                                     
+ 465 THE FOLLOWING RESIDUES WERE NOT LOCATED IN THE                       
+ 465 EXPERIMENT. (M=MODEL NUMBER; RES=RESIDUE NAME; C=CHAIN               
+ 465 IDENTIFIER; SSSEQ=SEQUENCE NUMBER; I=INSERTION CODE.)                
+ 465                                                                      
+ 465   M RES C SSSEQI                                                     
+ 465     MET A     1                                                      
+ 465     GLU A   262                                                      
+ 465     LYS A   282                                                      
+ 465     GLU A   283                                                      
+ 465     THR A   284                                                      
+ 465     GLU A   285                                                      
+ 465     SER A   286                                                      
+ 465     GLY A   498                                                      
+ 465     THR A   499                                                      
+ 465     VAL A   500                                                      
+ 465     SER A   501                                                      
+ 465     GLY A   502                                                      
+ 465     ALA A   503                                                      
+ 465     HIS A   504                                                      
+ 465     HIS A   505                                                      
+ 465     HIS A   506                                                      
+ 465     HIS A   507                                                      
+ 465     MET B     1                                                      
+ 465     LYS B   282                                                      
+ 465     GLU B   283                                                      
+ 465     THR B   284                                                      
+ 465     GLU B   285                                                      
+ 465     SER B   286                                                      
+ 465     GLY B   498                                                      
+ 465     THR B   499                                                      
+ 465     VAL B   500                                                      
+ 465     SER B   501                                                      
+ 465     GLY B   502                                                      
+ 465     ALA B   503                                                      
+ 465     HIS B   504                                                      
+ 465     HIS B   505                                                      
+ 465     HIS B   506                                                      
+ 465     HIS B   507                                                      
+ 465     MET C     1                                                      
+ 465     LYS C   282                                                      
+ 465     GLU C   283                                                      
+ 465     THR C   284                                                      
+ 465     GLU C   285                                                      
+ 465     SER C   286                                                      
+ 465     HIS C   287                                                      
+ 465     ASP C   497                                                      
+ 465     GLY C   498                                                      
+ 465     THR C   499                                                      
+ 465     VAL C   500                                                      
+ 465     SER C   501                                                      
+ 465     GLY C   502                                                      
+ 465     ALA C   503                                                      
+ 465     HIS C   504                                                      
+ 465     HIS C   505                                                      
+ 465     HIS C   506                                                      
+ 465     HIS C   507                                                      
+ 500                                                                      
+ 500 GEOMETRY AND STEREOCHEMISTRY                                         
+ 500 SUBTOPIC: CLOSE CONTACTS IN SAME ASYMMETRIC UNIT                     
+ 500                                                                      
+ 500 THE FOLLOWING ATOMS ARE IN CLOSE CONTACT.                            
+ 500                                                                      
+ 500  ATM1  RES C  SSEQI   ATM2  RES C  SSEQI           DISTANCE          
+ 500   O    ARG A   260     O    ASP A   263              1.92            
+ 500   CD1  ILE C   369    CLAC  08J C   602              2.03            
+ 500                                                                      
+ 500 REMARK: NULL                                                         
+ 500                                                                      
+ 500 GEOMETRY AND STEREOCHEMISTRY                                         
+ 500 SUBTOPIC: CLOSE CONTACTS                                             
+ 500                                                                      
+ 500 THE FOLLOWING ATOMS THAT ARE RELATED BY CRYSTALLOGRAPHIC             
+ 500 SYMMETRY ARE IN CLOSE CONTACT.  AN ATOM LOCATED WITHIN 0.15          
+ 500 ANGSTROMS OF A SYMMETRY RELATED ATOM IS ASSUMED TO BE ON A           
+ 500 SPECIAL POSITION AND IS, THEREFORE, LISTED IN REMARK 375             
+ 500 INSTEAD OF REMARK 500.  ATOMS WITH NON-BLANK ALTERNATE               
+ 500 LOCATION INDICATORS ARE NOT INCLUDED IN THE CALCULATIONS.            
+ 500                                                                      
+ 500 DISTANCE CUTOFF:                                                     
+ 500 2.2 ANGSTROMS FOR CONTACTS NOT INVOLVING HYDROGEN ATOMS              
+ 500 1.6 ANGSTROMS FOR CONTACTS INVOLVING HYDROGEN ATOMS                  
+ 500                                                                      
+ 500  ATM1  RES C  SSEQI   ATM2  RES C  SSEQI  SSYMOP   DISTANCE          
+ 500   OE2  GLU C   354     CE   LYS C   466     4545     2.18            
+ 500                                                                      
+ 500 REMARK: NULL                                                         
+ 500                                                                      
+ 500 GEOMETRY AND STEREOCHEMISTRY                                         
+ 500 SUBTOPIC: COVALENT BOND ANGLES                                       
+ 500                                                                      
+ 500 THE STEREOCHEMICAL PARAMETERS OF THE FOLLOWING RESIDUES              
+ 500 HAVE VALUES WHICH DEVIATE FROM EXPECTED VALUES BY MORE               
+ 500 THAN 6*RMSD (M=MODEL NUMBER; RES=RESIDUE NAME; C=CHAIN               
+ 500 IDENTIFIER; SSEQ=SEQUENCE NUMBER; I=INSERTION CODE).                 
+ 500                                                                      
+ 500 STANDARD TABLE:                                                      
+ 500 FORMAT: (10X,I3,1X,A3,1X,A1,I4,A1,3(1X,A4,2X),12X,F5.1)              
+ 500                                                                      
+ 500 EXPECTED VALUES PROTEIN: ENGH AND HUBER, 1999                        
+ 500 EXPECTED VALUES NUCLEIC ACID: CLOWNEY ET AL 1996                     
+ 500                                                                      
+ 500  M RES CSSEQI ATM1   ATM2   ATM3                                     
+ 500    ARG A 243   CB  -  CA  -  C   ANGL. DEV. = -15.3 DEGREES          
+ 500    SER B 259   N   -  CA  -  C   ANGL. DEV. =  17.6 DEGREES          
+ 500    GLU C 163   N   -  CA  -  CB  ANGL. DEV. =  12.5 DEGREES          
+ 500                                                                      
+ 500 REMARK: NULL                                                         
+ 500                                                                      
+ 500 GEOMETRY AND STEREOCHEMISTRY                                         
+ 500 SUBTOPIC: TORSION ANGLES                                             
+ 500                                                                      
+ 500 TORSION ANGLES OUTSIDE THE EXPECTED RAMACHANDRAN REGIONS:            
+ 500 (M=MODEL NUMBER; RES=RESIDUE NAME; C=CHAIN IDENTIFIER;               
+ 500 SSEQ=SEQUENCE NUMBER; I=INSERTION CODE).                             
+ 500                                                                      
+ 500 STANDARD TABLE:                                                      
+ 500 FORMAT:(10X,I3,1X,A3,1X,A1,I4,A1,4X,F7.2,3X,F7.2)                    
+ 500                                                                      
+ 500 EXPECTED VALUES: GJ KLEYWEGT AND TA JONES (1996). PHI/PSI-           
+ 500 CHOLOGY: RAMACHANDRAN REVISITED. STRUCTURE 4, 1395 - 1400            
+ 500                                                                      
+ 500  M RES CSSEQI        PSI       PHI                                   
+ 500    LEU A  24       53.49     36.36                                   
+ 500    PHE A  46      -62.67     66.37                                   
+ 500    VAL A 101      -44.94   -130.95                                   
+ 500    PHE A 102       59.08   -111.15                                   
+ 500    PRO A 110      107.73    -57.76                                   
+ 500    ASP A 123     -126.16     53.09                                   
+ 500    ASN A 198       68.43   -114.40                                   
+ 500    SER A 222       28.55    -79.88                                   
+ 500    ARG A 243       -5.02    120.72                                   
+ 500    LEU A 290      119.06    -39.96                                   
+ 500    HIS A 324       77.84   -116.60                                   
+ 500    LEU A 339       70.95   -118.36                                   
+ 500    MET A 371      -17.09     75.57                                   
+ 500    LYS A 379      129.16   -170.50                                   
+ 500    ASP A 380      114.00    -38.94                                   
+ 500    GLU A 410       72.06     42.72                                   
+ 500    LYS A 422      -35.51    -36.07                                   
+ 500    ASN A 423       63.18   -106.81                                   
+ 500    LYS A 424      -76.08    -79.89                                   
+ 500    ASN A 441     -176.06    -64.39                                   
+ 500    LEU B  24       50.03     38.77                                   
+ 500    HIS B  28      124.46    -32.42                                   
+ 500    PHE B  46      -56.83     67.08                                   
+ 500    SER B  52       -6.96    -54.94                                   
+ 500    VAL B  95      -76.50   -120.59                                   
+ 500    PHE B 102       60.55   -118.47                                   
+ 500    ASP B 123     -119.07     52.59                                   
+ 500    ASP B 194       76.72   -104.40                                   
+ 500    LEU B 221     -164.77   -107.65                                   
+ 500    SER B 222       57.19   -117.03                                   
+ 500    ASN B 237       50.40     34.31                                   
+ 500    THR B 264      -51.97     71.97                                   
+ 500    LYS B 266     -101.06     60.99                                   
+ 500    HIS B 267      -60.47     77.00                                   
+ 500    ASN B 280      173.34    179.19                                   
+ 500    ALA B 289      106.11     79.24                                   
+ 500    LEU B 339       70.49   -118.88                                   
+ 500    ASN B 341       47.77     75.71                                   
+ 500    LYS B 342       24.42     45.17                                   
+ 500    MET B 371       -8.91     70.34                                   
+ 500    GLU B 410       72.93     45.76                                   
+ 500    ASN B 441     -174.02    -66.21                                   
+ 500    CYS B 468     -168.65   -128.74                                   
+ 500    GLN B 472      103.00    -56.66                                   
+ 500    ARG B 496     -160.23   -123.65                                   
+ 500    HIS C  28      126.01    -37.32                                   
+ 500    LEU C  36       11.86   -141.53                                   
+ 500    PRO C  39     -168.23    -74.32                                   
+ 500    PHE C  46      -54.85     67.12                                   
+ 500    VAL C  95      -63.54   -108.35                                   
+ 500                                                                      
+ 500 THIS ENTRY HAS      83 RAMACHANDRAN OUTLIERS.                        
+ 500                                                                      
+ 500 REMARK: NULL                                                         
+ 500                                                                      
+ 500 GEOMETRY AND STEREOCHEMISTRY                                         
+ 500 SUBTOPIC: NON-CIS, NON-TRANS                                         
+ 500                                                                      
+ 500 THE FOLLOWING PEPTIDE BONDS DEVIATE SIGNIFICANTLY FROM BOTH          
+ 500 CIS AND TRANS CONFORMATION.  CIS BONDS, IF ANY, ARE LISTED           
+ 500 ON CISPEP RECORDS.  TRANS IS DEFINED AS 180 +/- 30 AND               
+ 500 CIS IS DEFINED AS 0 +/- 30 DEGREES.                                  
+ 500                                 MODEL     OMEGA                      
+ 500 GLU C  333     GLU C  334                  148.19                    
+ 500                                                                      
+ 500 REMARK: NULL                                                         
+ 500                                                                      
+ 500 GEOMETRY AND STEREOCHEMISTRY                                         
+ 500 SUBTOPIC: PLANAR GROUPS                                              
+ 500                                                                      
+ 500 PLANAR GROUPS IN THE FOLLOWING RESIDUES HAVE A TOTAL                 
+ 500 RMS DISTANCE OF ALL ATOMS FROM THE BEST-FIT PLANE                    
+ 500 BY MORE THAN AN EXPECTED VALUE OF 6*RMSD, WITH AN                    
+ 500 RMSD 0.02 ANGSTROMS, OR AT LEAST ONE ATOM HAS                        
+ 500 AN RMSD GREATER THAN THIS VALUE                                      
+ 500 (M=MODEL NUMBER; RES=RESIDUE NAME; C=CHAIN IDENTIFIER;               
+ 500 SSEQ=SEQUENCE NUMBER; I=INSERTION CODE).                             
+ 500                                                                      
+ 500  M RES CSSEQI        RMS     TYPE                                    
+ 500    ARG C 418         0.11    SIDE CHAIN                              
+ 500                                                                      
+ 500 REMARK: NULL                                                         
+ 620                                                                      
+ 620 METAL COORDINATION                                                   
+ 620 (M=MODEL NUMBER; RES=RESIDUE NAME; C=CHAIN IDENTIFIER;               
+ 620 SSEQ=SEQUENCE NUMBER; I=INSERTION CODE):                             
+ 620                                                                      
+ 620 COORDINATION ANGLES FOR:  M RES CSSEQI METAL                         
+ 620                             HEM A 601  FE                            
+ 620 N RES CSSEQI ATOM                                                    
+ 620 1 CYS A 442   SG                                                     
+ 620 2 HEM A 601   NA   92.7                                              
+ 620 3 HEM A 601   NB   90.4  88.7                                        
+ 620 4 HEM A 601   NC   88.6 174.0  85.4                                  
+ 620 5 HEM A 601   ND   92.6  95.2 175.0  90.6                            
+ 620 N                    1     2     3     4                             
+ 620                                                                      
+ 620 COORDINATION ANGLES FOR:  M RES CSSEQI METAL                         
+ 620                             HEM B 601  FE                            
+ 620 N RES CSSEQI ATOM                                                    
+ 620 1 CYS B 442   SG                                                     
+ 620 2 HEM B 601   NA   91.0                                              
+ 620 3 HEM B 601   NB   92.1  88.3                                        
+ 620 4 HEM B 601   NC   90.0 174.2  86.0                                  
+ 620 5 HEM B 601   ND   90.2  94.7 176.2  91.0                            
+ 620 N                    1     2     3     4                             
+ 620                                                                      
+ 620 COORDINATION ANGLES FOR:  M RES CSSEQI METAL                         
+ 620                             HEM C 601  FE                            
+ 620 N RES CSSEQI ATOM                                                    
+ 620 1 CYS C 442   SG                                                     
+ 620 2 HEM C 601   NA   93.2                                              
+ 620 3 HEM C 601   NB   89.9  88.7                                        
+ 620 4 HEM C 601   NC   87.8 174.0  85.4                                  
+ 620 5 HEM C 601   ND   92.6  93.7 176.4  92.1                            
+ 620 N                    1     2     3     4                             
+ 800                                                                      
+ 800 SITE                                                                 
+ 800 SITE_IDENTIFIER: AC1                                                 
+ 800 EVIDENCE_CODE: SOFTWARE                                              
+ 800 SITE_DESCRIPTION: binding site for residue HEM A 601                 
+ 800                                                                      
+ 800 SITE_IDENTIFIER: AC2                                                 
+ 800 EVIDENCE_CODE: SOFTWARE                                              
+ 800 SITE_DESCRIPTION: binding site for residue 08J A 602                 
+ 800                                                                      
+ 800 SITE_IDENTIFIER: AC3                                                 
+ 800 EVIDENCE_CODE: SOFTWARE                                              
+ 800 SITE_DESCRIPTION: binding site for residue HEM B 601                 
+ 800                                                                      
+ 800 SITE_IDENTIFIER: AC4                                                 
+ 800 EVIDENCE_CODE: SOFTWARE                                              
+ 800 SITE_DESCRIPTION: binding site for residue 08J B 602                 
+ 800                                                                      
+ 800 SITE_IDENTIFIER: AC5                                                 
+ 800 EVIDENCE_CODE: SOFTWARE                                              
+ 800 SITE_DESCRIPTION: binding site for residue HEM C 601                 
+ 800                                                                      
+ 800 SITE_IDENTIFIER: AC6                                                 
+ 800 EVIDENCE_CODE: SOFTWARE                                              
+ 800 SITE_DESCRIPTION: binding site for residue 08J C 602                 
+ 999                                                                      
+ 999 SEQUENCE                                                             
+ 999 HUMAN CYP3A4 WITH RESIDUES 3-22 DELETED                              
+
+>  <DBREF>
+ 5TE8 A    1   503  UNP    P08684   CP3A4_HUMAN     21    503             
+ 5TE8 B    1   503  UNP    P08684   CP3A4_HUMAN     21    503             
+ 5TE8 C    1   503  UNP    P08684   CP3A4_HUMAN     21    503             
+
+>  <SEQADV>
+ 5TE8 MET A    1  UNP  P08684              SEE REMARK 999                 
+ 5TE8 ALA A    2  UNP  P08684              SEE REMARK 999                 
+ 5TE8 HIS A  504  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 HIS A  505  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 HIS A  506  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 HIS A  507  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 MET B    1  UNP  P08684              SEE REMARK 999                 
+ 5TE8 ALA B    2  UNP  P08684              SEE REMARK 999                 
+ 5TE8 HIS B  504  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 HIS B  505  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 HIS B  506  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 HIS B  507  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 MET C    1  UNP  P08684              SEE REMARK 999                 
+ 5TE8 ALA C    2  UNP  P08684              SEE REMARK 999                 
+ 5TE8 HIS C  504  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 HIS C  505  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 HIS C  506  UNP  P08684              EXPRESSION TAG                 
+ 5TE8 HIS C  507  UNP  P08684              EXPRESSION TAG                 
+
+>  <SEQRES>
+   1 A  487  MET ALA TYR LEU TYR GLY THR HIS SER HIS GLY LEU PHE
+   2 A  487  LYS LYS LEU GLY ILE PRO GLY PRO THR PRO LEU PRO PHE
+   3 A  487  LEU GLY ASN ILE LEU SER TYR HIS LYS GLY PHE CYS MET
+   4 A  487  PHE ASP MET GLU CYS HIS LYS LYS TYR GLY LYS VAL TRP
+   5 A  487  GLY PHE TYR ASP GLY GLN GLN PRO VAL LEU ALA ILE THR
+   6 A  487  ASP PRO ASP MET ILE LYS THR VAL LEU VAL LYS GLU CYS
+   7 A  487  TYR SER VAL PHE THR ASN ARG ARG PRO PHE GLY PRO VAL
+   8 A  487  GLY PHE MET LYS SER ALA ILE SER ILE ALA GLU ASP GLU
+   9 A  487  GLU TRP LYS ARG LEU ARG SER LEU LEU SER PRO THR PHE
+  10 A  487  THR SER GLY LYS LEU LYS GLU MET VAL PRO ILE ILE ALA
+  11 A  487  GLN TYR GLY ASP VAL LEU VAL ARG ASN LEU ARG ARG GLU
+  12 A  487  ALA GLU THR GLY LYS PRO VAL THR LEU LYS ASP VAL PHE
+  13 A  487  GLY ALA TYR SER MET ASP VAL ILE THR SER THR SER PHE
+  14 A  487  GLY VAL ASN ILE ASP SER LEU ASN ASN PRO GLN ASP PRO
+  15 A  487  PHE VAL GLU ASN THR LYS LYS LEU LEU ARG PHE ASP PHE
+  16 A  487  LEU ASP PRO PHE PHE LEU SER ILE THR VAL PHE PRO PHE
+  17 A  487  LEU ILE PRO ILE LEU GLU VAL LEU ASN ILE CYS VAL PHE
+  18 A  487  PRO ARG GLU VAL THR ASN PHE LEU ARG LYS SER VAL LYS
+  19 A  487  ARG MET LYS GLU SER ARG LEU GLU ASP THR GLN LYS HIS
+  20 A  487  ARG VAL ASP PHE LEU GLN LEU MET ILE ASP SER GLN ASN
+  21 A  487  SER LYS GLU THR GLU SER HIS LYS ALA LEU SER ASP LEU
+  22 A  487  GLU LEU VAL ALA GLN SER ILE ILE PHE ILE PHE ALA GLY
+  23 A  487  TYR GLU THR THR SER SER VAL LEU SER PHE ILE MET TYR
+  24 A  487  GLU LEU ALA THR HIS PRO ASP VAL GLN GLN LYS LEU GLN
+  25 A  487  GLU GLU ILE ASP ALA VAL LEU PRO ASN LYS ALA PRO PRO
+  26 A  487  THR TYR ASP THR VAL LEU GLN MET GLU TYR LEU ASP MET
+  27 A  487  VAL VAL ASN GLU THR LEU ARG LEU PHE PRO ILE ALA MET
+  28 A  487  ARG LEU GLU ARG VAL CYS LYS LYS ASP VAL GLU ILE ASN
+  29 A  487  GLY MET PHE ILE PRO LYS GLY VAL VAL VAL MET ILE PRO
+  30 A  487  SER TYR ALA LEU HIS ARG ASP PRO LYS TYR TRP THR GLU
+  31 A  487  PRO GLU LYS PHE LEU PRO GLU ARG PHE SER LYS LYS ASN
+  32 A  487  LYS ASP ASN ILE ASP PRO TYR ILE TYR THR PRO PHE GLY
+  33 A  487  SER GLY PRO ARG ASN CYS ILE GLY MET ARG PHE ALA LEU
+  34 A  487  MET ASN MET LYS LEU ALA LEU ILE ARG VAL LEU GLN ASN
+  35 A  487  PHE SER PHE LYS PRO CYS LYS GLU THR GLN ILE PRO LEU
+  36 A  487  LYS LEU SER LEU GLY GLY LEU LEU GLN PRO GLU LYS PRO
+  37 A  487  VAL VAL LEU LYS VAL GLU SER ARG ASP GLY THR VAL SER
+  38 A  487  GLY ALA HIS HIS HIS HIS
+
+>  <HET>
+ HEM  A 601      43                                                       
+ 08J  A 602      23                                                       
+ HEM  B 601      43                                                       
+ 08J  B 602      23                                                       
+ HEM  C 601      43                                                       
+ 08J  C 602      23                                                       
+
+>  <HETNAM>
+     HEM PROTOPORPHYRIN IX CONTAINING FE                                  
+     08J 8-CHLORO-6-(2-FLUOROPHENYL)-1-METHYL-4H-IMIDAZO[1,5-             
+   2 08J  A][1,4]BENZODIAZEPINE                                           
+
+>  <HETSYN>
+     HEM HEME                                                             
+     08J MIDAZOLAM                                                        
+
+>  <FORMUL>
+   4  HEM    3(C34 H32 FE N4 O4)                                          
+   5  08J    3(C18 H13 CL F N3)                                           
+  10  HOH   *111(H2 O)                                                    
+
+>  <HELIX>
+   1   1 ALA A    2  THR A   27  1                                   6
+   2   2 GLY A   31  GLY A   37  1                                   7
+   3   3 ASN A   49  LYS A   55  1                                   7
+   4   4 GLY A   56  GLY A   69  1                                  14
+   5   5 ASP A   86  VAL A   95  1                                  10
+   6   6 VAL A  111  ALA A  117  1                                   7
+   7   7 GLU A  122  SER A  134  1                                  13
+   8   8 PRO A  135  PHE A  137  1                                   3
+   9   9 THR A  138  ILE A  149  1                                  12
+  10  10 ALA A  150  GLU A  165  1                                  16
+  11  11 LEU A  172  GLY A  190  1                                  19
+  12  12 ASP A  201  LEU A  211  1                                  11
+  13  13 PHE A  228  LEU A  236  1                                   9
+  14  14 THR A  246  LEU A  261  1                                  16
+  15  15 ASP A  270  ASN A  280  1                                  11
+  16  16 SER A  291  THR A  323  1                                  33
+  17  17 HIS A  324  LEU A  339  1                                  16
+  18  18 THR A  346  GLN A  352  1                                   7
+  19  19 MET A  353  PHE A  367  1                                  15
+  20  20 PRO A  397  ARG A  403  1                                   7
+  21  21 LEU A  415  SER A  420  1                                   6
+  22  22 GLY A  444  ASN A  462  1                                  19
+
+>  <SHEET>
+   1   1 1 VAL A  71  ASP A  76  0
+   2   2 1 GLN A  79  ILE A  84  0
+   3   3 1 VAL A 170  THR A 171  0
+   4   4 1 LEU A 373  VAL A 376  0
+   5   5 1 VAL A 381  ILE A 383  0
+   6   6 1 MET A 386  ILE A 388  0
+   7   7 1 VAL A 393  ILE A 396  0
+   8   8 1 PHE A 463  LYS A 466  0
+   9   9 1 VAL A 490  SER A 495  0
+
+>  <LINK>
+      SG   CYS A 442                FE   HEM A 601     1555   1555  2.42
+
+>  <CISPEP>
+   1 ILE A  473    PRO A  474          0        -5.11                     
+   2 HIS B  287    LYS B  288          0        -2.91                     
+   3 ILE B  473    PRO B  474          0       -11.24                     
+   4 PRO C  340    ASN C  341          0        -2.77                     
+   5 ILE C  473    PRO C  474          0        -5.56                     
+
+>  <SITE>
+   1 AC1 23 ARG A 105  ILE A 118  SER A 119  TRP A 126                    
+   2 AC1 23 ARG A 130  PHE A 302  ALA A 305  THR A 309                    
+   3 AC1 23 ALA A 370  LEU A 373  ARG A 375  PRO A 434                    
+   4 AC1 23 PHE A 435  GLY A 436  SER A 437  ARG A 440                    
+   5 AC1 23 ASN A 441  CYS A 442  ILE A 443  PHE A 447                    
+   6 AC1 23 ALA A 448  MET A 452  08J A 602                               
+   1 AC2  7 ARG A 105  SER A 119  LEU A 216  ALA A 305                    
+   2 AC2  7 THR A 309  GLY A 481  HEM A 601                               
+   1 AC3 21 ARG B 105  ILE B 118  TRP B 126  ARG B 130                    
+   2 AC3 21 PHE B 302  ALA B 305  THR B 309  THR B 310                    
+   3 AC3 21 ALA B 370  LEU B 373  ARG B 375  PRO B 434                    
+   4 AC3 21 PHE B 435  GLY B 436  ARG B 440  ASN B 441                    
+   5 AC3 21 CYS B 442  ILE B 443  ALA B 448  08J B 602                    
+   6 AC3 21 HOH B 706                                                     
+   1 AC4  8 ARG B 105  SER B 119  LEU B 216  ALA B 305                    
+   2 AC4  8 THR B 309  ALA B 370  LEU B 482  HEM B 601                    
+   1 AC5 19 ARG C 105  ILE C 118  SER C 119  TRP C 126                    
+   2 AC5 19 ARG C 130  PHE C 302  ALA C 305  THR C 309                    
+   3 AC5 19 VAL C 313  ILE C 369  ARG C 375  PRO C 434                    
+   4 AC5 19 PHE C 435  ARG C 440  ASN C 441  CYS C 442                    
+   5 AC5 19 ILE C 443  ALA C 448  08J C 602                               
+   1 AC6  6 ARG C 105  SER C 119  LEU C 216  THR C 309                    
+   2 AC6  6 ILE C 369  HEM C 601                                          
+
+>  <ORIGX1>
+      1.000000  0.000000  0.000000        0.00000                         
+
+>  <ORIGX2>
+      0.000000  1.000000  0.000000        0.00000                         
+
+>  <ORIGX3>
+      0.000000  0.000000  1.000000        0.00000                         
+
+>  <SCALE1>
+      0.015555  0.000000  0.000000        0.00000                         
+
+>  <SCALE2>
+      0.000000  0.008476  0.000000        0.00000                         
+
+>  <SCALE3>
+      0.000000  0.000000  0.004863        0.00000                         
+
+>  <ANISOU>
+    1  CAU 08J A 602     5349   3761   3645   -140    275     49       C
+    2  CAK 08J A 602     5218   3600   3539   -139    271     50       C
+    3  CAP 08J A 602     5283   3708   3610   -119    257     70       C
+    4 CLAC 08J A 602     5491   3903   3880   -109    255     68      Cl
+    5  CAH 08J A 602     5276   3770   3560   -101    247     90       C
+    6  CAI 08J A 602     5230   3756   3474   -101    259     84       C
+    7  CAV 08J A 602     5336   3824   3596   -119    275     64       C
+    8  NAW 08J A 602     5360   3897   3601   -112    288     57       N
+    9  CAR 08J A 602     5519   4138   3737   -100    310    101       C
+   10  CAA 08J A 602     5457   4116   3660    -95    320    179       C
+   11  NAN 08J A 602     5613   4283   3828    -88    325     72       N
+   12  CAJ 08J A 602     5390   3995   3624    -91    304     14       C
+   13  CAS 08J A 602     5418   3940   3662   -109    283      9       C
+   14  CAL 08J A 602     5456   3897   3715   -121    262    -30       C
+   15  NAM 08J A 602     5457   3846   3742   -148    271      0       N
+   16  CAO 08J A 602     5414   3789   3717   -157    280     30       C
+   17  CAT 08J A 602     5583   3899   3913   -176    284     32       C
+   18  CAG 08J A 602     5625   3900   3937   -184    277      0       C
+   19  CAE 08J A 602     5709   3939   4026   -195    276    -13       C
+   20  CAD 08J A 602     5849   4053   4210   -202    278      0       C
+   21  CAF 08J A 602     5872   4103   4267   -199    286     48       C
+   22  CAQ 08J A 602     5765   4061   4133   -184    291     65       C
+   23  FAB 08J A 602     5825   4163   4203   -176    298    115       F
+
+$$$$
