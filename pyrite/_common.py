@@ -1194,7 +1194,7 @@ class Receptor:
         # self._positions = np.array(self.openff.get_positions().m_as(unit.angstrom))
         self._positions = np.array(self._rdkit.GetConformer().GetPositions())
 
-        mol_layers = RegistrationHash.GetMolLayers(self.rdkit)
+        mol_layers = RegistrationHash.GetMolLayers(self._rdkit)
         self._prehash = hash(RegistrationHash.GetMolHash(mol_layers))
 
         self.draw_options = self.__default_draw_options.copy()

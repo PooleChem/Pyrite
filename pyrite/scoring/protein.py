@@ -79,7 +79,6 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         self.__init_radii()
 
         self.nn_dep = KNNDependency(
-            hash((receptor, ignore_non_polar_hydrogens)),
             self.receptor.positions[self.rec_mask],
             self.ligand.get_positions,
             self.k,
@@ -1466,7 +1465,7 @@ class AD4Solvation(_ChargeScoringFunction):
         self,
         ligand: Ligand,
         receptor: Receptor,
-        d_sigma: int = 3.6,
+        d_sigma: float = 3.6,
         s_q: float = 0.01097,
         cutoff: float = 8.0,
         k: int = 400,

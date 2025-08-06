@@ -58,9 +58,9 @@ class DistanceToPocket(ScoringFunction):
         self.cutoff = 40
 
         self._nn_dep = KNNDependency(
-            id(pocket),
             pocket.centers,
-            lambda i: self.ligand.get_positions(i)[self._mask],
+            # lambda i: self.ligand.get_positions(i)[self._mask],
+            self.ligand.get_positions,
             1,
             self.cutoff,
         )
@@ -76,8 +76,9 @@ class DistanceToPocket(ScoringFunction):
 
         s = np.maximum(r - self.pocket.radii[0], 0.0)
         s[~mask] = self.cutoff
+        s[~self._mask] = 0.0
 
-        return float(np.sum(np.maximum(r - self.pocket.radii[0], 0.0)))
+        return float(np.sum(s))
 
 
 class WeightedBoundsOverlap(ScoringFunction):
@@ -130,15 +131,15 @@ class WeightedBoundsOverlap(ScoringFunction):
             [include_hs or atom.GetAtomicNum() > 1 for atom in self.ligand.GetAtoms()]
         )
 
+        print(len(pocket.centers))
         self.nn_dep = KNNDependency(
-            id(pocket),
             pocket.centers,
             lambda i: self.ligand.get_positions(i)[self.mask],
             1,
             4,
         )
 
-        self.outside_penalty = outside_penalty if outside_penalty is not None else 1.0
+        self.outside_penalty = outside_penalty if outside_penalty is not None else 0.0
 
         self.max_charge = np.max(self.pocket.charges) * self.outside_penalty
 
@@ -146,17 +147,21 @@ class WeightedBoundsOverlap(ScoringFunction):
         return {self.nn_dep}
 
     def _score(self, conf_id, computed) -> float:
-        r, idx, _ = computed[self.nn_dep]
+        r, idx, safe_mask = computed[self.nn_dep]
 
         if r.ndim == 2:
             r = r[:, 0]
         if idx.ndim == 2:
             idx = idx[:, 0]
+        if safe_mask.ndim == 2:
+            safe_mask = safe_mask[:, 0]
+
+        safe_idx = np.where(safe_mask, idx, 0)
 
         mask = r > self.pocket.radii[0]
 
-        c = self.pocket.charges[idx]
-        c[mask] = self.max_charge
+        c = self.pocket.charges[safe_idx]
+        c[mask | ~safe_mask] = self.max_charge
 
         # return float(np.sqrt(np.mean(c**2)))
         return float(np.sum(c))

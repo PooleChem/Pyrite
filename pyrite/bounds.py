@@ -185,6 +185,7 @@ class Bounds(ABC):
             maximum bounds along a coordinate axis.
 
         """
+        self.__compute_rotated_boundingbox()
         return list(
             zip(
                 -self.__bounding_box_rotated + self._at,
@@ -294,7 +295,7 @@ class Bounds(ABC):
         v_2d[:, :] *= 2 * np.pi
         v_2d[:, :] -= np.pi
 
-        if v_2d.ndim < 2:
+        if v.ndim < 2:
             return v_2d[0, :]
 
         return v_2d
@@ -483,6 +484,14 @@ class RectangularBounds(Bounds):
         for i, atom in enumerate(ligand.GetAtoms()):
             ai = atom.GetIdx()
             points[i] = conf.GetAtomPosition(ai)
+
+        dimensions = np.max(points, axis=0) - np.min(points, axis=0) + 2 * padding
+        center = np.mean([np.min(points, axis=0), np.max(points, axis=0)], axis=0)
+        return cls(dimensions, center)
+
+    @classmethod
+    def from_receptor(cls, receptor: Receptor, padding: float = 0.0):
+        points = receptor.positions
 
         dimensions = np.max(points, axis=0) - np.min(points, axis=0) + 2 * padding
         center = np.mean([np.min(points, axis=0), np.max(points, axis=0)], axis=0)
@@ -691,10 +700,12 @@ class Pocket(Bounds):
         sphere_radius: float = 1.4,
         neighbors: int = 18,
         weight_residues: ArrayLike = None,
+        weigh_center: bool = True,
+        weigh_depth: bool = True,
         leq_distance_to_protein: int = 4,
         gt_distance_to_outside: int = 8,
         leq_distance_to_residue: int = 2,
-        weight_cap: int = 20,
+        weight_cap: int = 12,
         solvent_accessible: bool = True,
     ):
         """Creates a ``Pocket`` from a :class:`~pyrite.Receptor`.
@@ -707,7 +718,7 @@ class Pocket(Bounds):
         This allows for filtering of the alpha spheres, and selection of a specific pocket depth.
 
         The distances and weights are Manhattan distance. I.e., the distance in grid-point
-        hops ("city blocks"). What counts a a distance of one can be tweaked, as shown in the
+        hops ("city blocks"). What counts as a distance of one can be tweaked, as shown in the
         plot below. Here, every cube represents a grid point. If `neighbors` is set to 6, only
         yellow points are considered as neighbors, with distance ``1``. If `neighbors` is set to
         18, the green points are also considered as distance ``1``. With `neighbors` set to 26, the
@@ -794,6 +805,12 @@ class Pocket(Bounds):
         weight_residues : ArrayLike, optional
             An optional array of residues, used for the assignment of weights to the alpha spheres.
             The residues should be supplied by name and id, e.g. ``TYR228``.
+        weigh_center : bool, default True
+            If `weigh_center` is ``True``, spheres that are further away from the protein (read:
+            closer to the pocket center), will get a higher weight.
+        weigh_depth : bool, default True
+            If `weight_depth` is ``True``, spheres that are further away from the outside shell
+            (read: deeper inside the pocket), will get a higher weight. TODO: multiplier
         leq_distance_to_protein : int, default 4
             A filter for the distance to the protein. Spheres that are further away will be removed.
         gt_distance_to_outside : int, default 8
@@ -801,8 +818,10 @@ class Pocket(Bounds):
             Spheres that are closer to the outside will be removed.
         leq_distance_to_residue : int, default 2
             A filter for the distance to the residue. Spheres that are further away will be removed.
-        weight_cap : int, default 20
-            The maximum weight. Any value higher than this will be se to this.
+        weight_cap : int, default 12
+            The maximum weight. Any value higher than this will be set to this. Weights are
+            assigned based on distance in grid points. Therefore, multiple `weight_cap` by
+            `grid_size` to get the approximate 'sphere of influence' of the weight.
         solvent_accessible : bool, default True
             Whether to only include solvent-accessible spheres. If `solvent_accessible` is
             ``False``, internal cavities will be included.
@@ -967,7 +986,8 @@ class Pocket(Bounds):
         accessible = distance_to_outside >= 0
 
         mask = (distance_to_protein <= leq_distance_to_protein) & (
-            distance_to_outside > gt_distance_to_outside
+            (distance_to_outside > gt_distance_to_outside)
+            | ((distance_to_outside < 0) & (~occupied))
         )
         if weight_residues is not None:
             mask &= distance_to_residue <= leq_distance_to_residue
@@ -980,7 +1000,16 @@ class Pocket(Bounds):
         if weight_residues is not None:
             clamped_distance_to_residue = np.minimum(distance_to_residue, weight_cap)
             charges = clamped_distance_to_residue[mask].reshape(-1)
-            # charges = charges.max() - charges
+            charges = weight_cap - charges
+        if weigh_center:
+            clamped_distance_to_protein = np.minimum(distance_to_protein, weight_cap)
+            charges += clamped_distance_to_protein[mask].reshape(-1)
+        if weigh_depth:
+            # TODO: add multiplier here for tuning
+            clamped_distance_to_outside = np.clip(
+                distance_to_outside - gt_distance_to_outside, 0, weight_cap
+            )
+            charges += clamped_distance_to_outside[mask].reshape(-1)
 
         return cls(centers, radii, charges)
 
@@ -1082,8 +1111,6 @@ class Pocket(Bounds):
             [np.min(self.centers, axis=0), np.max(self.centers, axis=0)], axis=0
         )
 
-        # print(center, dimensions)
-
         return tuple((dimensions, center))
 
     def is_within(self, p: tuple[float, float, float]) -> bool:
@@ -1149,6 +1176,7 @@ class Pocket(Bounds):
         for i in reversed(i_to_remove):
             self.centers = np.delete(self.centers, i, axis=0)
             self.radii = np.delete(self.radii, i)
+            self.charges = np.delete(self.charges, i)
 
         bbv, at = self.__compute_bounding_box()
         self._bounding_box_at_origin = np.array(bbv)

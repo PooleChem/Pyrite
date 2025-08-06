@@ -155,7 +155,13 @@ class Viewer:
         self._v_draw_options.update(options)
 
         if slider:
-            mblock = Chem.MolToMolBlock(ligand)
+            # Update to first v
+            vn = self._vs[0]
+
+            conf_id = self._ligand.update(vn, new_conf=True)
+            mblock = Chem.MolToMolBlock(self._ligand, confId=conf_id)
+            self._ligand.RemoveConformer(conf_id)
+
             self.view.addModel(mblock, "mol")
             self._v_m_id = self.max_m_id + 1
             self.max_m_id = self._v_m_id

@@ -448,15 +448,56 @@ class ConstantTerm(ScoringFunction):
 
 
 class MyProblem:
-    def __init__(self, ligand2, binding_site2, scoring_function: ScoringFunction):
+    def __init__(
+        self,
+        ligand2,
+        binding_site2,
+        scoring_function: ScoringFunction,
+        dihedral_quantize_degree: int = 0,
+    ):
         self.ligand = ligand2
         self.binding_site = binding_site2
         self.scoring_function = scoring_function
+        self.dihedral_quantize_degree = dihedral_quantize_degree
 
         bounds2 = [(-2 * np.pi, 2 * np.pi)] * (6 + len(self.ligand.dihedral_angles))
         bounds2[3:6] = self.binding_site.get_translation_bounds()
 
+        if self.dihedral_quantize_degree > 0:
+            self._bins = int(360 // self.dihedral_quantize_degree)
+            if 360 % self._bins != 0:
+                raise ValueError(
+                    "dihedral_quantize_degree must be a divisor of 360 degrees"
+                )
+            bounds2[6:] = [(-self._bins, self._bins)] * len(self.ligand.dihedral_angles)
+
         self.bounds = ([x[0] for x in bounds2], [x[1] for x in bounds2])
+
+    def quantize_dihedrals(self, vs):
+        v_2d = np.atleast_2d(vs)
+
+        b_div = (2 * np.pi) / self._bins
+        v_2d[:, 6:] //= b_div
+
+        if vs.ndim < 2:
+            return v_2d[0, :]
+
+        return v_2d
+
+    def dequantize_dihedrals(self, vs):
+        v_2d = np.atleast_2d(vs)
+
+        b_div = (2 * np.pi) / self._bins
+        v_2d[:, 6:] *= b_div
+
+        if vs.ndim < 2:
+            return v_2d[0, :]
+        return v_2d
+
+    def get_nix(self):
+        if self.dihedral_quantize_degree > 0:
+            return len(self.ligand.dihedral_angles)
+        return 0
 
     def __deepcopy__(self, memo):
         # create blank instance
@@ -476,4 +517,9 @@ class MyProblem:
         return self.bounds
 
     def fitness(self, x):
-        return [self.scoring_function.step(x, self.ligand)]
+        if self.dihedral_quantize_degree > 0:
+            deq_x = self.dequantize_dihedrals(x)
+        else:
+            deq_x = x
+
+        return [self.scoring_function.step(deq_x, self.ligand)]

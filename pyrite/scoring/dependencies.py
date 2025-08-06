@@ -51,6 +51,7 @@ To subclass ``Dependency``, the following methods should be implemented:
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from typing import Any, Callable
+from hashlib import blake2b
 
 from numpy.typing import NDArray
 from scipy.spatial import KDTree
@@ -236,29 +237,26 @@ class KNNDependency(Dependency):
 
     def __init__(
         self,
-        tree_id: int | str,
         point_cloud: NDArray,
         query_f: Callable[[int], NDArray],
         k: int,
         distance_upper_bound: float,
-        # q_mask: NDArray = None,
     ):  # pylint: disable=too-many-arguments
         self.point_cloud = point_cloud
         self.querying = query_f
         self.k = k
         self.distance_upper_bound = distance_upper_bound
-        self.tree_id = tree_id
-        # if q_mask is None:
-        #     q_mask = np.ones(len(self.querying(-1)), dtype=bool)
-        # self.q_mask = q_mask
-        # # self.q_mask = (
-        # #     q_mask
-        # #     if q_mask is not None
-        # #     else np.ones(len(self.querying(-1)), dtype=bool)
-        # # )
+
+        # Get tree key unique to point_cloud
+        pc_meta = (self.point_cloud.shape, str(self.point_cloud.dtype))
+        pc_data = self.point_cloud.tobytes()
+        pc_h = blake2b(digest_size=8)
+        pc_h.update(repr(pc_meta).encode("utf-8"))
+        pc_h.update(pc_data)
+        self.tree_hash = int.from_bytes(pc_h.digest(), byteorder="big")
 
         # Initialize tree
-        self.tree = KDTreeCache.get_tree(self.tree_id, self.point_cloud)
+        self.tree = KDTreeCache.get_tree(self.tree_hash, self.point_cloud)
 
     def compute(
         self, conf_id
@@ -294,7 +292,7 @@ class KNNDependency(Dependency):
     def group_key(cls, dep):
         """Returns the group_key identifier of a dependency.
 
-        The ``group_key`` of ``KNNDependency`` is a tuple containing the `tree_id` and `querying`.
+        The ``group_key`` of ``KNNDependency`` is a tuple containing the `tree_hash` and `querying`.
 
         Parameters
         ----------
@@ -306,7 +304,7 @@ class KNNDependency(Dependency):
         -------
         tuple
         """
-        return dep.tree_id, dep.querying
+        return dep.tree_hash, dep.querying
 
     @classmethod
     def merge_group(cls, deps):
@@ -328,7 +326,6 @@ class KNNDependency(Dependency):
         best_k = max(deps, key=lambda d: d.k)
         best_ub = max(deps, key=lambda d: d.distance_upper_bound)
         return cls(
-            best_k.tree_id,
             best_k.point_cloud,
             best_k.querying,
             best_k.k,
@@ -340,7 +337,7 @@ class KNNDependency(Dependency):
         return hash(
             (
                 KNNDependency,
-                self.tree_id,
+                self.tree_hash,
                 self.querying,
                 # self.k,
                 # self.distance_upper_bound,
