@@ -53,7 +53,7 @@ from numpy.typing import NDArray, ArrayLike
 from rdkit.Geometry import Point3D
 from scipy.spatial import KDTree
 
-from pyrite._common import _rotation_matrix, Ligand, Receptor
+from pyrite._common import _rotation_matrix_from_euler, Mol
 
 
 class Bounds(ABC):
@@ -114,7 +114,9 @@ class Bounds(ABC):
         rotation = np.array(rotation)
         if rotation.shape == (3,):
             # Euler angles
-            self._rotation_matrix = np.array(_rotation_matrix(*rotation)[:3, :3])
+            self._rotation_matrix = np.array(
+                _rotation_matrix_from_euler(*rotation)[:3, :3]
+            )
         elif rotation.shape == (3, 3):
             # Rotation matrix
             self._rotation_matrix = np.array(rotation)
@@ -393,7 +395,7 @@ class Bounds(ABC):
 
     def get_bounds(
         self,
-        ligand: Ligand,
+        mol: Mol,  # TODO: remove
         angle_bounds: tuple[float, float] = (-2 * np.pi, 2 * np.pi),
         dihedral_bounds: tuple[float, float] = (-2 * np.pi, 2 * np.pi),
     ):
@@ -404,7 +406,7 @@ class Bounds(ABC):
 
         Parameters
         ----------
-        ligand : Ligand
+        mol : Mol
             The ligand to use to retrieve the dihedral bounds.
         angle_bounds : tuple[float, float], default (-2 * np.pi, 2 * np.pi)
             The bounds to use for the rotation angles.
@@ -418,7 +420,7 @@ class Bounds(ABC):
             maximum bounds along a coordinate axis.
 
         """
-        bounds = [angle_bounds] * 6 + [dihedral_bounds] * len(ligand.dihedral_angles)
+        bounds = [angle_bounds] * 6 + [dihedral_bounds] * len(mol.dihedral_angles)
         bounds[3:6] = self.get_translation_bounds()
 
         return bounds
@@ -457,20 +459,20 @@ class RectangularBounds(Bounds):
 
         super().__init__((s[0] / 2, s[1] / 2, s[2] / 2), at, rotation)
 
-    # TODO: consider rotation.
+    # TODO: consider rotation. Ja?
     @classmethod
-    def from_ligand(cls, ligand: Ligand, padding: float = 0.0):
-        """Creates an instance of the class based on the given ligand and optional padding.
+    def autobox(cls, mol: Mol, padding: float = 0.0):
+        """Creates an instance of the class based on the given molecule with optional padding.
 
         .. warning::
             The created bounding box is always aligned to the world axes.
 
         Parameters
         ----------
-        ligand : Ligand
-            The ``Ligand`` to autobox.
+        mol : Mol
+            The ``Mol`` to autobox.
         padding : float, optional
-            Optional padding around the ligand.
+            Optional padding around the molecule.
 
 
         Returns
@@ -479,19 +481,12 @@ class RectangularBounds(Bounds):
 
 
         """
-        conf = ligand.GetConformer()
-        points = np.empty((ligand.GetNumAtoms(), 3))
-        for i, atom in enumerate(ligand.GetAtoms()):
-            ai = atom.GetIdx()
-            points[i] = conf.GetAtomPosition(ai)
-
-        dimensions = np.max(points, axis=0) - np.min(points, axis=0) + 2 * padding
-        center = np.mean([np.min(points, axis=0), np.max(points, axis=0)], axis=0)
-        return cls(dimensions, center)
-
-    @classmethod
-    def from_receptor(cls, receptor: Receptor, padding: float = 0.0):
-        points = receptor.positions
+        # conf = mol.GetConformer()
+        # points = np.empty((mol.GetNumAtoms(), 3))
+        # for i, atom in enumerate(mol.GetAtoms()):
+        #     ai = atom.GetIdx()
+        #     points[i] = conf.GetAtomPosition(ai)
+        points = mol.positions
 
         dimensions = np.max(points, axis=0) - np.min(points, axis=0) + 2 * padding
         center = np.mean([np.min(points, axis=0), np.max(points, axis=0)], axis=0)
@@ -692,10 +687,12 @@ class Pocket(Bounds):
         super().__init__(bbv, at=at, rotation=[0, 0, 0])
         self.draw_options = self.__default_draw_options.copy()
 
+    # TODO: split pocket into seperate module.
+    #       Turn this into easier to use factory method.
     @classmethod
-    def from_receptor(
+    def from_mol(
         cls,
-        receptor: Receptor,
+        mol: Mol,
         grid_size: float = 0.8,
         sphere_radius: float = 1.4,
         neighbors: int = 18,
@@ -708,7 +705,7 @@ class Pocket(Bounds):
         weight_cap: int = 12,
         solvent_accessible: bool = True,
     ):
-        """Creates a ``Pocket`` from a :class:`~pyrite.Receptor`.
+        """Creates a ``Pocket`` from a :class:`~pyrite.Mol`.
 
         This method creates a grid, and fills the space with alpha spheres. These spheres are
         optionally assigned a weight based on their distance to certain residues. The closer to the
@@ -794,8 +791,8 @@ class Pocket(Bounds):
 
         Parameters
         ----------
-        receptor : Receptor
-            The receptor to use.
+        mol : Mol
+            The mol to use.
         grid_size : float, default 0.8
             The grid size to use.
         sphere_radius : float, default 1.4
@@ -831,15 +828,15 @@ class Pocket(Bounds):
         -------
         Pocket
         """
-        tree = KDTree(receptor.positions)
+        tree = KDTree(mol.positions)
 
         padding = 10 * grid_size
-        x_min = np.min(receptor.positions[:, 0]) - padding
-        x_max = np.max(receptor.positions[:, 0]) + padding
-        y_min = np.min(receptor.positions[:, 1]) - padding
-        y_max = np.max(receptor.positions[:, 1]) + padding
-        z_min = np.min(receptor.positions[:, 2]) - padding
-        z_max = np.max(receptor.positions[:, 2]) + padding
+        x_min = np.min(mol.positions[:, 0]) - padding
+        x_max = np.max(mol.positions[:, 0]) + padding
+        y_min = np.min(mol.positions[:, 1]) - padding
+        y_max = np.max(mol.positions[:, 1]) + padding
+        z_min = np.min(mol.positions[:, 2]) - padding
+        z_max = np.max(mol.positions[:, 2]) + padding
 
         x_grid = np.arange(x_min, x_max, grid_size)
         y_grid = np.arange(y_min, y_max, grid_size)
@@ -919,7 +916,7 @@ class Pocket(Bounds):
             for idx in np.ndindex(occupied.shape):
                 if occupied[idx]:
                     pt_idx = tree.query(grid[idx], k=1)[1]
-                    residue = receptor.residues[pt_idx]
+                    residue = mol.residues[pt_idx]  # TODO: add this to mol
                     if residue in weight_residues:
                         for nbr in grid_neighbors(*idx):
                             if not occupied[nbr]:

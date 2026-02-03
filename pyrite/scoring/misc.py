@@ -3,7 +3,7 @@ from rdkit import Chem
 from scipy.spatial import cKDTree
 
 from ._base import ScoringFunction
-from .._common import Ligand, Receptor, AtomType
+from .._common import Mol, AtomType
 
 
 class RMSD(ScoringFunction):
@@ -16,33 +16,33 @@ class RMSD(ScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
+    probe_mol : Mol
         The ligand to be used for the calculation. This is the probe molecule, i.e., the molecule
         whose pose changes.
-    crystal_ligand : Ligand, optional
+    ref_mol : Mol, optional
         The stationary ligand to be used for the calculation. The conformation of this ligand
         should not change. If not provided, a copy of `ligand` will be used.
 
     """
 
-    def __init__(self, ligand: Ligand, crystal_ligand: Ligand = None):
-        self.ligand = ligand
-        if crystal_ligand is None:
-            self.crystal_ligand = type(ligand)(Chem.Mol(ligand))
+    def __init__(self, probe_mol: Mol, ref_mol: Mol = None):
+        self.probe_mol = probe_mol
+        if ref_mol is None:
+            self.ref_mol = type(probe_mol)(Chem.Mol(probe_mol))
         else:
-            self.crystal_ligand = crystal_ligand
+            self.ref_mol = ref_mol
 
         matches = self.ligand.GetSubstructMatches(
-            self.crystal_ligand, uniquify=True, useChirality=True
+            self.ref_mool, uniquify=True, useChirality=True
         )
         self._atom_map = [
-            list(zip(range(self.ligand.GetNumAtoms()), match)) for match in matches
+            list(zip(range(self.probe_mol.GetNumAtoms()), match)) for match in matches
         ]
 
     def _score(self, conf_id, *args, **kwargs) -> float:
         score = Chem.rdMolAlign.CalcRMS(
-            self.ligand,
-            self.crystal_ligand,
+            self.probe_mol,
+            self.ref_mol,
             prbId=conf_id,
             map=self._atom_map,
         )
@@ -54,7 +54,7 @@ class Crowding(ScoringFunction):
     🚲 — Used to determine the similarity of a pose to a set of poses.
 
     New poses can be registered using :meth:`register_pose`. When :meth:`get_score` is called,
-    the RMSD of the :class:`~pyrite.Ligand` pose to each registered pose will be calculated using
+    the RMSD of the :class:`~pyrite.Mol` pose to each registered pose will be calculated using
     :func:`rdkit.Chem.rdMolAlign.CalcRMS`.
 
     The score is calculated using the following formula:
@@ -83,12 +83,12 @@ class Crowding(ScoringFunction):
        plt.xlabel("RMSD")
        plt.ylabel("Score")
 
-    **Speed**: 🐢–🚄, depending on the size of the ligand and the number of registered poses.
+    **Speed**: 🐢–🚄, depending on the size of the mol and the number of registered poses.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation. This is the probe molecule, i.e., the molecule
+    mol : Mol
+        The mol to be used for the calculation. This is the probe molecule, i.e., the molecule
         whose pose changes.
     offset : float, default 4.0
         The offset used in the exponential score calculation.
@@ -101,14 +101,16 @@ class Crowding(ScoringFunction):
 
     def __init__(
         self,
-        ligand: Ligand,
+        molecule: Mol,
         offset: float = 4.0,
         register_initial: bool = False,
         divide: bool = True,
     ):
-        self.ligand = ligand
+        self.mol = molecule
 
-        self._ref_ligand = type(ligand)(Chem.Mol(ligand))
+        self._ref_mol = type(molecule)(
+            Chem.Mol(molecule)
+        )  # TODO: create copy function for molecule.
 
         self._registered_conf = []
         if register_initial:
@@ -118,24 +120,24 @@ class Crowding(ScoringFunction):
         self._divide = divide
 
         matches = self.ligand.GetSubstructMatches(
-            self.ligand, uniquify=True, useChirality=True
+            self.mol, uniquify=True, useChirality=True
         )
         self._atom_map = [
-            list(zip(range(self.ligand.GetNumAtoms()), match)) for match in matches
+            list(zip(range(self.mol.GetNumAtoms()), match)) for match in matches
         ]
 
     def register_pose(self, v):
-        """Register a new :class:`~pyrite.Ligand` pose.
+        """Register a new :class:`~pyrite.Mol` pose.
 
         Parameters
         ----------
         v : array_like, int
             Either a list containing the variables used to create the new pose using
-            :meth:`~pyrite.Ligand.update`, or a `conf_id`.
+            :meth:`~pyrite.Mol.update`, or a `conf_id`.
 
         """
         if not isinstance(v, int):
-            conf_id = self._ref_ligand.update(v, new_conf=True)
+            conf_id = self._ref_mol.update(v, new_conf=True)
         else:
             conf_id = v
         self._registered_conf.append(conf_id)
@@ -145,8 +147,8 @@ class Crowding(ScoringFunction):
 
         for i in self._registered_conf:
             rms = Chem.rdMolAlign.CalcRMS(
-                self.ligand,
-                self._ref_ligand,
+                self.mol,
+                self._ref_mol,
                 prbId=conf_id,
                 refId=i,
                 map=self._atom_map,
@@ -171,9 +173,9 @@ class NumProteinAtomsWithinA(ScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
+    probe_mol : Mol
         The ligand to be used for the calculation.
-    receptor : Receptor
+    ref_mol : Mol
         The receptor to be used for the calculation.
     a : float, default 4.0
         The radius (in Angstroms) within which to search for protein atoms.
@@ -184,24 +186,24 @@ class NumProteinAtomsWithinA(ScoringFunction):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        ref_mol: Mol,
         a: float = 4.0,
         ignore_hs_ligand: bool = False,
     ):
-        self.ligand = ligand
+        self.probe_mol = probe_mol
         self._mask = np.array(
             [
                 not ignore_hs_ligand or atom.GetAtomicNum() > 1
-                for atom in self.ligand.GetAtoms()
+                for atom in self.probe_mol.GetAtoms()
             ]
         )
-        self.receptor = receptor
+        self.ref_mol = ref_mol
         self.a = a
-        self.tree = cKDTree(self.receptor.positions)
+        self.tree = cKDTree(self.ref_mol.positions)
 
     def _score(self, conf_id, computed) -> float:
-        conf_pos = self.ligand.GetConformer(conf_id).GetPositions()
+        conf_pos = self.probe_mol.GetConformer(conf_id).GetPositions()
 
         return sum(
             self.tree.query_ball_point(conf_pos[self._mask], self.a, return_length=True)
@@ -216,15 +218,15 @@ class NumTors(ScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
+    molecule : Mol
         The ligand to be used.
 
     """
 
-    def __init__(self, ligand: Ligand):
-        self.ligand = ligand
+    def __init__(self, molecule: Mol):
+        self.mol = molecule
 
-        self.result = len(self.ligand.rotatable_dihedrals)
+        self.result = len(self.mol.rotatable_dihedrals)
 
     def _score(self, *args, **kwargs):
         return self.result
@@ -238,20 +240,20 @@ class NumAtoms(ScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
+    molecule : Mol
         The ligand to be used.
     include_hs : bool, default False
         If `include_hs` is ``False``, only heavy atoms will be counted.
     """
 
-    def __init__(self, ligand: Ligand, include_hs: bool = False):
-        self.ligand = ligand
+    def __init__(self, molecule: Mol, include_hs: bool = False):
+        self.mol = molecule
         self.include_hs = include_hs
 
-        mask = np.ones(len(self.ligand.positions), dtype=bool)
+        mask = np.ones(len(self.mol.positions), dtype=bool)
         if not self.include_hs:
-            mask &= self.ligand.atom_types != AtomType.Hydrogen
-            mask &= self.ligand.atom_types != AtomType.PolarHydrogen
+            mask &= self.mol.atom_types != AtomType.Hydrogen
+            mask &= self.mol.atom_types != AtomType.PolarHydrogen
         self.result = np.sum(mask)
 
     def _score(self, *args, **kwargs):

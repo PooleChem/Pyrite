@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-from .._common import Ligand, Receptor
+from .._common import Mol
 from ..atom_consts import AtomType, vina_atom_consts
 from ._base import ScoringFunction
 from .dependencies import Dependency, KNNDependency
@@ -15,7 +15,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
     ⚙️ — K-Nearest neighbor distance scoring function.
 
     This abstract scoring function can be used to implement scoring functions that make use of the
-    distance of ligand atoms to the closest `k` protein atoms.
+    distance of `probe_mol` atoms to the closest `k` protein atoms.
 
     .. note::
         This is an abstract base class and should thus be subclassed. Please refer to TODO
@@ -26,10 +26,10 @@ class _KNNScoringFunction(ScoringFunction, ABC):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
@@ -48,28 +48,28 @@ class _KNNScoringFunction(ScoringFunction, ABC):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         cutoff: float = 8.0,
         k: int = 400,
         ignore_non_polar_hydrogens: bool = True,
     ):
-        self.ligand = ligand
-        self.receptor = receptor
+        self.probe_mol = probe_mol
+        self.fixed_mol = fixed_mol
 
-        self.lig_mask = ~(
+        self.probe_mask = ~(
             ignore_non_polar_hydrogens
             & (
-                (self.ligand.atom_types == AtomType.Hydrogen)
-                | (self.ligand.atom_types == AtomType.PolarHydrogen)
+                (self.probe_mol.atom_types == AtomType.Hydrogen)
+                | (self.probe_mol.atom_types == AtomType.PolarHydrogen)
             )
         )
 
-        self.rec_mask = ~(
+        self.fixed_mask = ~(
             ignore_non_polar_hydrogens
             & (
-                (self.receptor._atom_types == AtomType.Hydrogen)
-                | (self.receptor._atom_types == AtomType.PolarHydrogen)
+                (self.fixed_mol._atom_types == AtomType.Hydrogen)
+                | (self.fixed_mol._atom_types == AtomType.PolarHydrogen)
             )
         )
 
@@ -79,12 +79,12 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         self.__init_radii()
 
         self.nn_dep = KNNDependency(
-            self.receptor.positions[self.rec_mask],
-            self.ligand.get_positions,
+            self.fixed_mol.positions[self.fixed_mask],
+            self.probe_mol.get_positions,
             self.k,
             self.cutoff,
         )
-        self._tree_n = len(self.receptor.positions)
+        self._tree_n = len(self.fixed_mol.positions)
 
     def __init_radii(self):
         max_type = max(e.value for e in AtomType)
@@ -92,7 +92,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         for _, t in vina_atom_consts.items():
             self.xs_radii[t.type.value] = t.xs_radius
 
-        self.ligand_radii = self.xs_radii[self.ligand.atom_types[self.lig_mask]]
+        self.probe_radii = self.xs_radii[self.probe_mol.atom_types[self.probe_mask]]
 
     def get_dependencies(self) -> set[Dependency]:
         return {self.nn_dep}
@@ -103,18 +103,18 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         #     mask.shape,
         #     idx.shape,
         #     safe_idx.shape,
-        #     self.rec_mask.shape,
-        #     np.sum(self.rec_mask),
-        #     self.receptor.atom_types.shape,
-        #     self.receptor.atom_types[self.rec_mask].shape,
+        #     self.fixed_mask.shape,
+        #     np.sum(self.fixed_mask),
+        #     self.fixed_mol.atom_types.shape,
+        #     self.fixed_mol.atom_types[self.fixed_mask].shape,
         #     np.max(safe_idx),
         #     self.xs_radii.shape,
         # )
-        receptor_radii = self.xs_radii[
-            self.receptor.atom_types[self.rec_mask][safe_idx]
+        fixed_radii = self.xs_radii[
+            self.fixed_mol.atom_types[self.fixed_mask][safe_idx]
         ]
 
-        return self.ligand_radii[:, None] + receptor_radii[:, :]
+        return self.probe_radii[:, None] + fixed_radii[:, :]
 
 
 class Gaussian(_KNNScoringFunction):
@@ -149,17 +149,17 @@ class Gaussian(_KNNScoringFunction):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
     **Speed**: 🐢–🚗, depending on `cutoff` and `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     offset : float, default 0.0
         The offset from `optimal_distance` that is considered as ideal.
     width : float, default 0.5
@@ -178,8 +178,8 @@ class Gaussian(_KNNScoringFunction):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         offset: float = 0.0,
         width: float = 0.5,
         cutoff: float = None,
@@ -187,8 +187,8 @@ class Gaussian(_KNNScoringFunction):
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff or 4 + offset + np.e * width,
             k,
             ignore_non_polar_hydrogens,
@@ -202,9 +202,9 @@ class Gaussian(_KNNScoringFunction):
 
     def _score(self, conf_id, computed) -> float:
         r, idx, mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        mask = mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        mask = mask[self.probe_mask]
 
         optimal = self._get_optimal_distance(idx, mask) + self.offset
         s = self.__gaussian(r - optimal, self.width)
@@ -247,17 +247,17 @@ class Repulsion(_KNNScoringFunction):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
     **Speed**:🚲
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     offset : float, default 0.0
         The offset that is added to `optimal_distance`.
     cutoff : float, default 8.0
@@ -272,23 +272,23 @@ class Repulsion(_KNNScoringFunction):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         offset: float = 0.0,
         cutoff: float = None,
         k: int = 400,
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand, receptor, cutoff or 4 + offset, k, ignore_non_polar_hydrogens
+            probe_mol, fixed_mol, cutoff or 4 + offset, k, ignore_non_polar_hydrogens
         )
         self.offset = offset
 
     def _score(self, conf_id, computed) -> float:
         r, idx, mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        mask = mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        mask = mask[self.probe_mask]
 
         optimal = self._get_optimal_distance(idx, mask) + self.offset
         d = r - optimal
@@ -337,10 +337,10 @@ class _SlopeStep(_KNNScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     good : float, default 0.5
         The `good` distance. Distance values lower than this value are scored :math:`1`.
     bad : float, default 1.5
@@ -363,8 +363,8 @@ class _SlopeStep(_KNNScoringFunction):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         good: float = 0.5,
         bad: float = 1.5,
         cutoff: float = None,
@@ -372,7 +372,7 @@ class _SlopeStep(_KNNScoringFunction):
         ignore_non_polar_hydrogens: bool = True,
     ):
         assert good < bad, "Bad distance <= good distance not implemented."
-        super().__init__(ligand, receptor, cutoff or bad, k, ignore_non_polar_hydrogens)
+        super().__init__(probe_mol, fixed_mol, cutoff or bad, k, ignore_non_polar_hydrogens)
         self.good = good
         self.bad = bad
 
@@ -383,14 +383,14 @@ class _SlopeStep(_KNNScoringFunction):
         slope_step[dist <= good] = 1.0
         return slope_step
 
-    def _mask(self, receptor_val, neighbor_mask):
-        return np.full(receptor_val.shape, True) & neighbor_mask
+    def _mask(self, fixed_val, neighbor_mask):
+        return np.full(fixed_val.shape, True) & neighbor_mask
 
     def _score(self, conf_id, computed) -> float:
         r, idx, neighbor_mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        neighbor_mask = neighbor_mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        neighbor_mask = neighbor_mask[self.probe_mask]
 
         optimal_distance = self._get_optimal_distance(idx, neighbor_mask)
         dist = r - optimal_distance
@@ -450,7 +450,7 @@ class Hydrophobic(_SlopeStep):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every hydrophobic ligand atom to all its hydrophobic neighbors
+    This score is calculated for every hydrophobic `probe_mol` atom to all its hydrophobic neighbors
     (as defined by `cutoff` and `k`), and then summed. The hydrophobic neighbors are determined
     after the nearest neighbor search.
 
@@ -458,10 +458,10 @@ class Hydrophobic(_SlopeStep):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     good : float, default 0.5
         The start of the `slope-step`.
     bad : float, default 1.5
@@ -484,8 +484,8 @@ class Hydrophobic(_SlopeStep):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         good: float = 0.5,
         bad: float = 1.5,
         cutoff: float = None,
@@ -493,7 +493,7 @@ class Hydrophobic(_SlopeStep):
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand, receptor, good, bad, cutoff or bad, k, ignore_non_polar_hydrogens
+            probe_mol, fixed_mol, good, bad, cutoff or bad, k, ignore_non_polar_hydrogens
         )
 
         self.__init_hydrophobic()
@@ -504,18 +504,18 @@ class Hydrophobic(_SlopeStep):
         for _, t in vina_atom_consts.items():
             self.xs_hydrophobic[t.type.value] = t.xs_hydrophobe
 
-        self.ligand_hydrophobic = self.xs_hydrophobic[
-            self.ligand.atom_types[self.lig_mask]
+        self.probe_mol_hydrophobic = self.xs_hydrophobic[
+            self.probe_mol.atom_types[self.probe_mask]
         ]
 
     def _mask(self, idx, neighbor_mask):
         safe_idx = np.where(neighbor_mask, idx, 0)
-        receptor_hydrophobic = self.xs_hydrophobic[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
+        fixed_mol_hydrophobic = self.xs_hydrophobic[
+            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
         ]
         return (
-            self.ligand_hydrophobic[:, None]
-            & receptor_hydrophobic[:, :]
+            self.probe_mol_hydrophobic[:, None]
+            & fixed_mol_hydrophobic[:, :]
             & neighbor_mask
         )
 
@@ -567,7 +567,7 @@ class NonHydrophobic(Hydrophobic):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every nonhydrophobic ligand atom to all its
+    This score is calculated for every nonhydrophobic `probe_mol` atom to all its
     nonhydrophobic neighbors (as defined by `cutoff` and `k`), and then summed.
     The nonhydrophobic neighbors are determined after the nearest neighbor search.
 
@@ -575,10 +575,10 @@ class NonHydrophobic(Hydrophobic):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     good : float, default 0.5
         The start of the `slope-step`.
     bad : float, default 1.5
@@ -601,10 +601,10 @@ class NonHydrophobic(Hydrophobic):
 
     def _mask(self, idx, neighbor_mask):
         safe_idx = np.where(neighbor_mask, idx, 0)
-        receptor_hydrophobic = self.xs_hydrophobic[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
+        fixed_mol_hydrophobic = self.xs_hydrophobic[
+            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
         ]
-        return ~self.ligand_hydrophobic[:, None] & ~receptor_hydrophobic & neighbor_mask
+        return ~self.probe_mol_hydrophobic[:, None] & ~fixed_mol_hydrophobic & neighbor_mask
 
 
 class NonDirHBond(_SlopeStep):
@@ -654,8 +654,8 @@ class NonDirHBond(_SlopeStep):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every hbond-acceptor ligand atom to all its hbond-donor neighbors
-    and from every hbond-donor ligand atom to all its hbond-acceptor neighbors
+    This score is calculated for every hbond-acceptor `probe_mol` atom to all its hbond-donor neighbors
+    and from every hbond-donor `probe_mol` atom to all its hbond-acceptor neighbors
     (as defined by `cutoff` and `k`), and then summed. The hbond neighbors are determined
     after the nearest neighbor search.
 
@@ -663,10 +663,10 @@ class NonDirHBond(_SlopeStep):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     good : float, default -0.7
         The start of the `slope-step`.
     bad : float, default 0
@@ -688,8 +688,8 @@ class NonDirHBond(_SlopeStep):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         good: float = -0.7,
         bad: float = 0,
         cutoff: float = None,
@@ -697,7 +697,7 @@ class NonDirHBond(_SlopeStep):
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand, receptor, good, bad, cutoff, k, ignore_non_polar_hydrogens
+            probe_mol, fixed_mol, good, bad, cutoff, k, ignore_non_polar_hydrogens
         )
 
         self.__init_hbond_possible()
@@ -710,20 +710,20 @@ class NonDirHBond(_SlopeStep):
             self.xs_acceptor[t.type.value] = t.xs_acceptor
             self.xs_donor[t.type.value] = t.xs_donor
 
-        self.ligand_acceptor = self.xs_acceptor[self.ligand.atom_types[self.lig_mask]]
-        self.ligand_donor = self.xs_donor[self.ligand.atom_types[self.lig_mask]]
+        self.probe_mol_acceptor = self.xs_acceptor[self.probe_mol.atom_types[self.probe_mask]]
+        self.probe_mol_donor = self.xs_donor[self.probe_mol.atom_types[self.probe_mask]]
 
     def _mask(self, idx, neighbor_mask):
         safe_idx = np.where(neighbor_mask, idx, 0)
 
-        receptor_acceptor = self.xs_acceptor[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
+        fixed_mol_acceptor = self.xs_acceptor[
+            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
         ]
-        receptor_donor = self.xs_donor[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
+        fixed_mol_donor = self.xs_donor[
+            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
         ]
-        return (self.ligand_donor[:, None] & receptor_acceptor) | (
-            self.ligand_acceptor[:, None] & receptor_donor
+        return (self.probe_mol_donor[:, None] & fixed_mol_acceptor) | (
+            self.probe_mol_acceptor[:, None] & fixed_mol_donor
         ) & neighbor_mask
 
 
@@ -790,17 +790,17 @@ class LJ(_KNNScoringFunction):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
     **Speed**: 🐢–🚶, depending on `cutoff` and `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     i : int, default 10
         The first exponent of the Lennard-Jones potential.
     j : int, default 12
@@ -827,8 +827,8 @@ class LJ(_KNNScoringFunction):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         i: int = 10,
         j: int = 12,
         smoothing: float = 0,
@@ -840,8 +840,8 @@ class LJ(_KNNScoringFunction):
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff or 8 + offset,
             k,
             ignore_non_polar_hydrogens,
@@ -854,14 +854,14 @@ class LJ(_KNNScoringFunction):
         self._cap = cap
         self._depth = depth
 
-    def _mask(self, receptor_val, neighbor_mask):
-        return np.full(receptor_val.shape, True) & neighbor_mask
+    def _mask(self, fixed_mol_val, neighbor_mask):
+        return np.full(fixed_mol_val.shape, True) & neighbor_mask
 
     def _score(self, conf_id, computed) -> float:
         r, idx, neighbor_mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        neighbor_mask = neighbor_mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        neighbor_mask = neighbor_mask[self.probe_mask]
 
         optimal_distance = self._get_optimal_distance(idx, neighbor_mask) + self._offset
 
@@ -952,17 +952,17 @@ class VDW(LJ):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
     **Speed**: 🐢–🚶
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     i : int, default 4
         The first exponent of the Lennard-Jones potential.
     j : int, default 8
@@ -989,8 +989,8 @@ class VDW(LJ):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         i: int = 4,
         j: int = 8,
         smoothing: float = 0,
@@ -1000,8 +1000,8 @@ class VDW(LJ):
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             i=i,
             j=j,
             smoothing=smoothing,
@@ -1067,8 +1067,8 @@ class NonDirHBondLJ(LJ):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every hbond-acceptor ligand atom to all its hbond-donor neighbors
-    and from every hbond-donor ligand atom to all its hbond-acceptor neighbors
+    This score is calculated for every hbond-acceptor `probe_mol` atom to all its hbond-donor neighbors
+    and from every hbond-donor `probe_mol` atom to all its hbond-acceptor neighbors
     (as defined by `cutoff` and `k`), and then summed. The hbond neighbors are determined
     after the nearest neighbor search.
 
@@ -1076,10 +1076,10 @@ class NonDirHBondLJ(LJ):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     offset : float, default -0.7
         The offset from the optimal distance.
     cap : float, default 100.0
@@ -1101,8 +1101,8 @@ class NonDirHBondLJ(LJ):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         offset: float = -0.7,
         cap: float = 100.0,
         cutoff: float = None,
@@ -1110,8 +1110,8 @@ class NonDirHBondLJ(LJ):
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             i=10,
             j=12,
             smoothing=0,
@@ -1132,20 +1132,20 @@ class NonDirHBondLJ(LJ):
             self.xs_acceptor[t.type.value] = t.xs_acceptor
             self.xs_donor[t.type.value] = t.xs_donor
 
-        self.ligand_acceptor = self.xs_acceptor[self.ligand.atom_types[self.lig_mask]]
-        self.ligand_donor = self.xs_donor[self.ligand.atom_types[self.lig_mask]]
+        self.probe_mol_acceptor = self.xs_acceptor[self.probe_mol.atom_types[self.probe_mask]]
+        self.probe_mol_donor = self.xs_donor[self.probe_mol.atom_types[self.probe_mask]]
 
     def _mask(self, idx, neighbor_mask):
         safe_idx = np.where(neighbor_mask, idx, 0)
 
-        receptor_acceptor = self.xs_acceptor[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
+        fixed_mol_acceptor = self.xs_acceptor[
+            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
         ]
-        receptor_donor = self.xs_donor[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
+        fixed_mol_donor = self.xs_donor[
+            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
         ]
-        return (self.ligand_donor[:, None] & receptor_acceptor) | (
-            self.ligand_acceptor[:, None] & receptor_donor
+        return (self.probe_mol_donor[:, None] & fixed_mol_acceptor) | (
+            self.probe_mol_acceptor[:, None] & fixed_mol_donor
         ) & neighbor_mask
 
 
@@ -1154,7 +1154,7 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
     ⚙️ — Gasteiger-charge based scoring
 
     This abstract scoring function can be used to implement scoring functions that make use of the
-    distance of ligand atoms to the closest `k` protein atoms, and the charge of these atoms.
+    distance of `probe_mol` atoms to the closest `k` protein atoms, and the charge of these atoms.
 
     These charges are calculated using the Gasteiger [1]_ method, using
     :func:`~rdkit.Chem.rdPartialCharges.ComputeGasteigerCharges`.
@@ -1168,10 +1168,10 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
@@ -1199,15 +1199,15 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         cutoff: float = 8.0,
         k: int = 400,
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff,
             k,
             ignore_non_polar_hydrogens,
@@ -1215,20 +1215,20 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
         self.__init_charges()
 
     def __init_charges(self):
-        _ligand_charges = np.array(
-            [a.GetDoubleProp("_GasteigerCharge") for a in self.ligand.GetAtoms()]
+        _probe_mol_charges = np.array(
+            [a.GetDoubleProp("_GasteigerCharge") for a in self.probe_mol.GetAtoms()]
         )
-        _receptor_charges = np.array(
+        _fixed_mol_charges = np.array(
             [
                 a.GetDoubleProp("_GasteigerCharge")
-                for a in self.receptor._rdkit.GetAtoms()
+                for a in self.fixed_mol._rdkit.GetAtoms()
             ]
         )
-        _ligand_charges[np.isnan(_ligand_charges)] = 0.0
-        _receptor_charges[np.isnan(_receptor_charges)] = 0.0
+        _probe_mol_charges[np.isnan(_probe_mol_charges)] = 0.0
+        _fixed_mol_charges[np.isnan(_fixed_mol_charges)] = 0.0
 
-        self._ligand_charges = _ligand_charges[self.lig_mask]
-        self._receptor_charges = _receptor_charges[self.rec_mask]
+        self._probe_mol_charges = _probe_mol_charges[self.probe_mask]
+        self._fixed_mol_charges = _fixed_mol_charges[self.fixed_mask]
 
 
 class ElectroStatic(_ChargeScoringFunction):
@@ -1282,17 +1282,17 @@ class ElectroStatic(_ChargeScoringFunction):
        plt.legend(loc='upper right')
 
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
     **Speed**:🚶–🚲
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     power : int, default 1
         A power to be applied to the distance.
     cap : float, default 100.0
@@ -1317,8 +1317,8 @@ class ElectroStatic(_ChargeScoringFunction):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         power: int = 1,
         cap: float = 100.0,
         cutoff: float = 8.0,
@@ -1326,8 +1326,8 @@ class ElectroStatic(_ChargeScoringFunction):
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff,
             k,
             ignore_non_polar_hydrogens,
@@ -1338,16 +1338,16 @@ class ElectroStatic(_ChargeScoringFunction):
 
     def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
         r, idx, mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        mask = mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        mask = mask[self.probe_mask]
         safe_idx = np.where(mask, idx, 0)
 
         tmp = np.minimum(self._cap, 1 / (r**self._power))
 
         # Charge multiplier
-        # ab = (self._ligand_charges * self._receptor_charges[safe_idx].T).T
-        ab = self._ligand_charges[:, None] * self._receptor_charges[safe_idx]
+        # ab = (self._probe_mol_charges * self._fixed_mol_charges[safe_idx].T).T
+        ab = self._probe_mol_charges[:, None] * self._fixed_mol_charges[safe_idx]
 
         s = tmp * ab
 
@@ -1429,17 +1429,17 @@ class AD4Solvation(_ChargeScoringFunction):
        plt.ylabel("Score")
 
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
     **Speed**: 🐢–🚲
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     d_sigma : float, default 3.6
         The width of the gaussian used.
     s_q : float, default 0.01097
@@ -1463,8 +1463,8 @@ class AD4Solvation(_ChargeScoringFunction):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         d_sigma: float = 3.6,
         s_q: float = 0.01097,
         cutoff: float = 8.0,
@@ -1472,8 +1472,8 @@ class AD4Solvation(_ChargeScoringFunction):
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff,
             k,
             ignore_non_polar_hydrogens,
@@ -1491,7 +1491,7 @@ class AD4Solvation(_ChargeScoringFunction):
         for _, t in vina_atom_consts.items():
             self.ad_solvation[t.type.value] = t.ad_solvation
 
-        self.ligand_solvation = self.ad_solvation[self.ligand.atom_types[self.lig_mask]]
+        self.probe_mol_solvation = self.ad_solvation[self.probe_mol.atom_types[self.probe_mask]]
 
     def __init_volume(self):
         max_type = max(e.value for e in AtomType)  # noqa
@@ -1499,36 +1499,36 @@ class AD4Solvation(_ChargeScoringFunction):
         for _, t in vina_atom_consts.items():
             self.ad_volume[t.type.value] = t.ad_volume
 
-        self.ligand_volume = self.ad_volume[self.ligand.atom_types[self.lig_mask]]
+        self.probe_mol_volume = self.ad_volume[self.probe_mol.atom_types[self.probe_mask]]
 
     def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
         r, idx, mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        mask = mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        mask = mask[self.probe_mask]
         safe_idx = np.where(mask, idx, 0)
 
         dist_factor = np.exp(-np.square(r / (2 * self._d_sigma)))
 
-        receptor_solvation = self.ad_solvation[
-            self.receptor._atom_types[self.rec_mask][safe_idx]  # noqa
+        fixed_mol_solvation = self.ad_solvation[
+            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]  # noqa
         ]
-        receptor_volume = self.ad_volume[
-            self.receptor._atom_types[self.rec_mask][safe_idx]  # noqa
+        fixed_mol_volume = self.ad_volume[
+            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]  # noqa
         ]
 
         non_charge_dep = (
-            self.ligand_solvation[:, None] * receptor_volume * dist_factor
-            + self.ligand_volume[:, None] * receptor_solvation * dist_factor
+            self.probe_mol_solvation[:, None] * fixed_mol_volume * dist_factor
+            + self.probe_mol_volume[:, None] * fixed_mol_solvation * dist_factor
         )
 
-        abs_a_dep = self._s_q * receptor_volume * dist_factor
-        abs_b_dep = self._s_q * self.ligand_volume[:, None] * dist_factor
+        abs_a_dep = self._s_q * fixed_mol_volume * dist_factor
+        abs_b_dep = self._s_q * self.probe_mol_volume[:, None] * dist_factor
 
         s = (
             non_charge_dep
-            + (np.abs(self._ligand_charges)[:, None] * abs_a_dep)
-            + (np.abs(self._receptor_charges[safe_idx]) * abs_b_dep)
+            + (np.abs(self._probe_mol_charges)[:, None] * abs_a_dep)
+            + (np.abs(self._fixed_mol_charges[safe_idx]) * abs_b_dep)
         )
 
         mask &= r < self.cutoff
@@ -1593,10 +1593,10 @@ class _PLP(_KNNScoringFunction, ABC):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
@@ -1615,15 +1615,15 @@ class _PLP(_KNNScoringFunction, ABC):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         cutoff: float = 8.0,
         k: int = 400,
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff,
             k,
             ignore_non_polar_hydrogens,
@@ -1839,10 +1839,10 @@ class PlantsPLP(_PLP):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     weights : array_like, default (-4.0, -7.0, -0.05, -0.40, 0.50)
         A tuple or list containing the weights for each interaction type.
     cutoff : float, default 8.0
@@ -1865,16 +1865,16 @@ class PlantsPLP(_PLP):
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         weights: tuple[float, float, float, float, float] | None = None,
         cutoff: float = 8.0,
         k: int = 400,
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff,
             k,
             ignore_non_polar_hydrogens,
@@ -1900,7 +1900,7 @@ class PlantsPLP(_PLP):
         METAL = 5
 
     def __init_plants_interaction_types(self):
-        # construct lut for (ligand_atom, receptor_atom)
+        # construct lut for (probe_mol_atom, fixed_mol_atom)
 
         is_donor = lambda x: (  # noqa
             (x == AtomType.NitrogenDonor) | (x == AtomType.OxygenDonor)
@@ -1928,8 +1928,8 @@ class PlantsPLP(_PLP):
             & (~is_metal(x))
         )
 
-        lig_types = self.ligand.atom_types[self.lig_mask]
-        rec_types = self.receptor.atom_types[self.rec_mask]
+        lig_types = self.probe_mol.atom_types[self.probe_mask]
+        rec_types = self.fixed_mol.atom_types[self.fixed_mask]
 
         lut = np.zeros(
             (lig_types.shape[0], rec_types.shape[0]),
@@ -1990,9 +1990,9 @@ class PlantsPLP(_PLP):
 
     def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
         r, idx, mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        mask = mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        mask = mask[self.probe_mask]
         safe_idx = np.where(mask, idx, 0)
 
         interact_types = np.take_along_axis(

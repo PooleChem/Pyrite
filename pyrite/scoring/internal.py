@@ -3,7 +3,7 @@ from rdkit import Chem
 import numpy as np
 
 from ._base import ScoringFunction
-from .._common import Ligand
+from .._common import Mol
 
 
 class InternalOverlap(ScoringFunction):
@@ -22,8 +22,8 @@ class InternalOverlap(ScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
+    molecule : Mol
+        The molecule to be used for the calculation.
     ignore_hs : bool, default False
         If `ignore_hs` is ``True``, Hydrogen atoms will be masked out of the calculation.
     vdw_scale : float, default 1.0
@@ -36,15 +36,15 @@ class InternalOverlap(ScoringFunction):
 
     """
 
-    def __init__(self, ligand: Ligand, ignore_hs: bool = False, vdw_scale: float = 1.0):
-        self.ligand = ligand
+    def __init__(self, molecule: Mol, ignore_hs: bool = False, vdw_scale: float = 1.0):
+        self.mol = molecule
 
         # Set up
         pt = Chem.GetPeriodicTable()
-        a_nums = [atom.GetAtomicNum() for atom in self.ligand.GetAtoms()]
+        a_nums = [atom.GetAtomicNum() for atom in self.mol.GetAtoms()]
         rvdw = np.array([pt.GetRvdw(z) * vdw_scale for z in a_nums], dtype=float)
 
-        top_distance_matrix = Chem.GetDistanceMatrix(self.ligand)
+        top_distance_matrix = Chem.GetDistanceMatrix(self.mol)
 
         self._sum_of_radii = rvdw[:, None] + rvdw[None, :]
 
@@ -56,7 +56,7 @@ class InternalOverlap(ScoringFunction):
             self._mask &= (a_nums[:, None] > 1) & (a_nums[None, :] > 1)
 
     def _score(self, conf_id, *args, **kwargs) -> float:
-        distance_matrix = Chem.Get3DDistanceMatrix(self.ligand, conf_id)
+        distance_matrix = Chem.Get3DDistanceMatrix(self.mol, conf_id)
 
         dists = distance_matrix[self._mask]
         r_sums = self._sum_of_radii[self._mask]
@@ -67,7 +67,7 @@ class InternalOverlap(ScoringFunction):
 
 class InternalEnergy(ScoringFunction):
     """
-    🚗 — Calculates the MMFF internal energy of a ligand.
+    🚗 — Calculates the MMFF internal energy of a molecule.
 
     Uses :mod:`rdkit` and the MMFF forcefield,
     using :func:`~rdkit.Chem.rdForceFieldHelpers.MMFFGetMoleculeForceField`.
@@ -76,8 +76,8 @@ class InternalEnergy(ScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
+    molecule : Mol
+        The molecule to be used for the calculation.
 
     See Also
     --------
@@ -86,15 +86,15 @@ class InternalEnergy(ScoringFunction):
 
     """
 
-    def __init__(self, ligand: Ligand):
-        self.ligand = ligand
+    def __init__(self, molecule: Mol):
+        self.mol = molecule
 
-        mmff_props = Chem.AllChem.MMFFGetMoleculeProperties(self.ligand)
-        self._mmff_ff = Chem.AllChem.MMFFGetMoleculeForceField(self.ligand, mmff_props)
+        mmff_props = Chem.AllChem.MMFFGetMoleculeProperties(self.mol)
+        self._mmff_ff = Chem.AllChem.MMFFGetMoleculeForceField(self.mol, mmff_props)
         self._mmff_ff.Initialize()
 
     def _score(self, conf_id, *args, **kwargs) -> float:
-        pos = self.ligand.GetConformer(conf_id).GetPositions()
+        pos = self.mol.GetConformer(conf_id).GetPositions()
         self._mmff_ff.Initialize()
         flat_pos = pos.reshape(-1).tolist()
         return self._mmff_ff.CalcEnergy(flat_pos)  # kcal/mol

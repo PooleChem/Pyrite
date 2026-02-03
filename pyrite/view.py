@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 from rdkit import Chem
 
 if TYPE_CHECKING:
-    from pyrite import Ligand
+    from pyrite import Mol
 from pyrite.atom_consts import AtomType
 
 
@@ -19,7 +19,7 @@ class Viewer:
 
     Parameters
     ----------
-    *args : Ligand, Receptor, Bounds
+    *args : Mol, Bounds
         All arguments are considered as objects to show.
     width : int, default 400
         The width of the viewer.
@@ -65,13 +65,12 @@ class Viewer:
 
         Currently supports:
 
-        * :class:`~pyrite.Ligand`
-        * :class:`~pyrite.Receptor`
+        * :class:`~pyrite.Mol`
         * :class:`~pyrite.bounds.Bounds`
 
         Parameters
         ----------
-        *args : Ligand, Receptor, Bounds
+        *args : Mol, Bounds
             The objects to add.
         options : dictionary
             The draw options to apply.
@@ -121,16 +120,16 @@ class Viewer:
             self._set_hover(self._ligand, self.max_m_id, self._v_draw_options)
         self.view.update()
 
-    def add_v(self, ligand: Ligand, v: NDArray, slider: bool = True, options=None):
-        """Adds a ligand with poses, and an optional pose selection slider, to the viewer.
+    def add_v(self, mol: Mol, v: NDArray, slider: bool = True, options=None):
+        """Adds a molecule with poses, and an optional pose selection slider, to the viewer.
 
-        This method adds a ligand, with poses `v`, to the viewer,
+        This method adds a molecule, with poses `v`, to the viewer,
         optionally with draw options `options`. Optionally, a `slider` can be added, which allows
         for the selection of the displayed pose. If `slider` is ``False``, all poses are shown.
 
         Parameters
         ----------
-        ligand : Ligand
+        mol : Mol
             The objects to add.
         v : numpy.ndarray
             The poses to show.
@@ -149,9 +148,9 @@ class Viewer:
         if options is None:
             options = {}
 
-        self._ligand = ligand
+        self._ligand = mol
         self._vs = v
-        self._v_draw_options = ligand.draw_options.copy()
+        self._v_draw_options = mol.draw_options.copy()
         self._v_draw_options.update(options)
 
         if slider:
@@ -190,9 +189,9 @@ class Viewer:
 
         else:
             for var in self._vs:
-                conf_id = ligand.update(var, new_conf=True)
-                mblock = Chem.MolToMolBlock(ligand, confId=conf_id)
-                ligand.RemoveConformer(conf_id)
+                conf_id = mol.update(var, new_conf=True)
+                mblock = Chem.MolToMolBlock(mol, confId=conf_id)
+                mol.RemoveConformer(conf_id)
                 self.view.addModel(mblock, "mol")
                 self.max_m_id += 1
                 self.view.setStyle(

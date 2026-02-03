@@ -17,10 +17,10 @@ as utilities that can be used to manipulate, create, and implement new scoring f
 
 .. _ligand_scoring_functions:
 
-Ligand Scoring Functions
+Singular molecule Scoring Functions
 ------------------------
 
-This class of functions scores based on just the :class:`~pyrite.Ligand` pose.
+This class of functions scores based on just the :class:`~pyrite.Mol` pose.
 
 .. autosummary::
    :toctree: generated/
@@ -34,7 +34,7 @@ This class of functions scores based on just the :class:`~pyrite.Ligand` pose.
 Bounds Scoring Functions
 ------------------------
 
-These functions are based on the position of the atoms in the :class:`~pyrite.Ligand`
+These functions are based on the position of the atoms in the :class:`~pyrite.Mol`
 relative to indicated :class:`~pyrite.bounds.Bounds`.
 
 .. autosummary::
@@ -50,9 +50,10 @@ relative to indicated :class:`~pyrite.bounds.Bounds`.
 Protein based Scoring Functions
 -------------------------------
 
-These functions are based on the position of the atoms in the :class:`~pyrite.Receptor` relative
-to the :class:`~pyrite.Ligand`. This class of functions can lead to biochemically more accurate
-representations, but in turn require more computational power.
+These functions are based on the position of the atoms in one :class:`~pyrite.Mol`
+relative to a different :class:`~pyrite.Mol`. This class of functions can lead to biochemically more
+accurate representations, but in turn require more computational power. Currently, these scoring
+functions only operate on molecule pairs where one molecule is fixed.
 
 .. autosummary::
    :toctree: generated/
@@ -80,7 +81,8 @@ Vina based Scoring Functions
 ++++++++++++++++++++++++++++
 
 These functions are based on the vina scoring function, specifically, the
-`gnina <https://github.com/gnina/gnina>`_ implementation.
+`gnina <https://github.com/gnina/gnina>`_ implementation. Currently, these scoring
+functions only operate on molecule pairs where one molecule is fixed.
 
 
 .. autosummary::

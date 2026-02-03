@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import copy
-import warnings
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import py3Dmol
 from IPython.display import SVG, Image
 from numpy.typing import NDArray
 from rdkit import Chem, RDLogger
-from rdkit.Chem import Draw, SDWriter, RegistrationHash
+from rdkit.Chem import Draw, SDWriter
 
 from .view import Viewer
 from .atom_consts import AtomType, vina_atom_consts
@@ -23,25 +22,25 @@ def _rotation_matrix_to_euler(r: NDArray):
     Extract ZYX (yaw-pitch-roll) Euler angles from a 3×3 rotation matrix R.
     Returns (phi, theta, psi) = (roll, pitch, yaw) in radians.
     """
-    # clamp to handle numerical errors outside [-1,1]
+    # # clamp to handle numerical errors outside [-1,1]
     sy = -r[2, 0]
     theta = np.arcsin(np.clip(sy, -1.0, 1.0))
 
     # Check for gimbal lock
-    # if np.isclose(np.cos(theta), 0.0):
-    #     # Gimbal lock: pitch is ±90°
-    #     # Roll and yaw are coupled; set roll=0 and compute yaw:
-    #     phi = 0.0
-    #     psi = np.arctan2(-R[0, 1], R[1, 1])
-    # else:
-    phi = np.arctan2(r[2, 1], r[2, 2])  # roll
-    psi = np.arctan2(r[1, 0], r[0, 0])  # yaw
+    if np.isclose(np.cos(theta), 0.0):
+        # Gimbal lock: pitch is ±90°
+        # Roll and yaw are coupled; set roll=0 and compute yaw:
+        phi = 0.0
+        psi = np.arctan2(-r[0, 1], r[1, 1])
+    else:
+        phi = np.arctan2(r[2, 1], r[2, 2])  # roll
+        psi = np.arctan2(r[1, 0], r[0, 0])  # yaw
 
     return phi, theta, psi
 
 
 # TODO: Support Quaternions
-def _rotation_matrix(roll: float, pitch: float, yaw: float) -> NDArray:
+def _rotation_matrix_from_euler(roll: float, pitch: float, yaw: float) -> NDArray:
     r"""Create a rotation matrix from Euler angles.
 
     Create a 4x4 rotation matrix from Euler angles (roll, pitch, yaw) in radians.
@@ -95,10 +94,10 @@ def _rotation_matrix(roll: float, pitch: float, yaw: float) -> NDArray:
     return transformation_matrix
 
 
-def _translation_matrix(x: float, y: float, z: float) -> NDArray:
+def _translation_matrix_from_coordinates(x: float, y: float, z: float) -> NDArray:
     """Create a translation matrix from coordinates.
 
-    Create a 4x4 translation matrix from the provided x, y, and z coordinates.
+    Create a 4x4 translation matrix from the provided relative x, y, and z coordinates.
 
     Parameters
     ----------
@@ -114,41 +113,15 @@ def _translation_matrix(x: float, y: float, z: float) -> NDArray:
     return translation_matrix
 
 
-def _fix_valence(mol, sanitize=True):
-    Chem.SanitizeMol(
-        mol,
-        sanitizeOps=(
-            Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
-        ),
-    )
-
-    for atom in mol.GetAtoms():
-        # print(
-        #     atom.GetSymbol(),
-        #     atom.GetValence(Chem.ValenceType.EXPLICIT),
-        #     atom.GetFormalCharge(),
-        # )
-
-        if atom.GetSymbol() == "N" and atom.GetValence(Chem.ValenceType.EXPLICIT) == 4:
-            atom.SetFormalCharge(+1)
-        if atom.GetSymbol() == "O" and atom.GetValence(Chem.ValenceType.EXPLICIT) == 1:
-            atom.SetFormalCharge(-1)
-        # incorrect epoxide fix TODO: check with David
-        if atom.GetSymbol() == "O" and atom.GetValence(Chem.ValenceType.EXPLICIT) == 2:
-            atom.SetFormalCharge(0)
-
-    mol.UpdatePropertyCache(strict=sanitize)
-
-    if sanitize:
-        Chem.SanitizeMol(mol)
-    return mol
+PROTEINS_HEAVY_ATOMS_CUTOFF = 1000
 
 
-class Ligand(Chem.Mol):
+class Mol(Chem.Mol):
     """
-    Representation of a ligand.
+    TODO:
+    Representation of a molecule.
 
-    The Ligand class provides methods for initializing molecules from various sources,
+    The Mol class provides methods for initializing molecules from various sources,
     such as SMILES strings, PDB files, or objects. It also assigns atom
     types, rotatable dihedrals, and the center point of the molecule. Furthermore, it allows for
     easy manipulation of ligand position, rotation, and torsion angles.
@@ -165,12 +138,26 @@ class Ligand(Chem.Mol):
 
     """
 
-    __default_draw_options = {
+    __default_ligand_draw_options = {
+        "protein": False,
         "size": (400, 300),
         "colorPalette": "default",
         "note": "",
         "highlight": "",
         "colorscheme": "default",
+    }
+
+    __default_protein_draw_options = {
+        "protein": True,
+        "size": (400, 300),
+        "color": "blue",
+        "style": "rectangle",
+        "surfacetype": "MS",
+        "surfacecolor": "white",
+        "surfaceopacity": 0.75,
+        "stickresidues": [],
+        "hideprotein": False,
+        "note": "",
     }
 
     def __new__(cls, mol: Chem.Mol = None, **kwargs):
@@ -180,157 +167,203 @@ class Ligand(Chem.Mol):
             inst = Chem.Mol(mol)
             inst.__class__ = cls
 
-        if inst.GetNumConformers() == 0:
-            params = Chem.AllChem.ETKDGv3()
-            params.randomSeed = 0xC0FFEE
-            Chem.AllChem.EmbedMolecule(inst, params)
         return inst
 
     def __init__(
         self,
         mol: Chem.Mol = None,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
         center_atom: int = None,
         flex_hydrogens: bool = False,
-        rigid: bool = False,
+        flexible: bool = False,  # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of dihedrals, or manual, or by resid.
     ):
-        # NO SUPER.__INIT__, that breaks stuff
         self.__cur_transform = np.eye(4)
         self.__cur_rotation = [0, 0, 0]
         self.__rotatable_dihedrals = np.array([], dtype=object)
         self.__dihedral_angles = np.array([])
 
+        self._fix_mol_valence(sanitize=False)  # TODO: sanitize?
+
+        if hydrogens == "add":
+            mol = Chem.AllChem.AddHs(mol, addCoords=True)
+        elif hydrogens == "remove":
+            mol = Chem.AllChem.RemoveHs(mol)
+
+        self.__flexible = flexible
+        if flexible:
+            self.__compute_rotatable_dihedrals(flex_hydrogens)
+
+        if self.GetNumConformers() == 0:
+            Chem.SanitizeMol(self)
+            params = Chem.AllChem.ETKDGv3()
+            params.randomSeed = 0xC0FFEE
+            Chem.AllChem.EmbedMolecule(self, params)  # TODO: cant do if not sanitized.
+
+        self.__assign_atom_types()
+        Chem.rdPartialCharges.ComputeGasteigerCharges(self)
+
+        # TODO: keep for prot?
         self._center_atom = (
             center_atom if center_atom is not None else self.__get_center_atom()
         )
 
-        if not rigid:
-            self.__compute_rotatable_dihedrals(flex_hydrogens)
-        self.__assign_atom_types()
-        Chem.rdPartialCharges.ComputeGasteigerCharges(self)
-
+        # TODO: keep?
         self._init_state = (
             copy.deepcopy(self.__cur_rotation),
             copy.deepcopy(self.position),
             copy.deepcopy(self.__dihedral_angles),
         )
 
-        self.draw_options = self.__default_draw_options.copy()
+        # If more than 1000 heavy atoms: assume protein for drawing
+        if self.GetNumHeavyAtoms() >= PROTEINS_HEAVY_ATOMS_CUTOFF:
+            self.draw_options = self.__default_protein_draw_options.copy()
+        else:
+            self.draw_options = self.__default_ligand_draw_options.copy()
 
     @classmethod
-    def from_smiles(cls, smiles: str, **kwargs):
-        """Constructs an instance of :class:`Ligand` from a SMILES string representation of a molecule.
+    def from_smiles(
+        cls,
+        smiles: str,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        **kwargs,
+    ):
+        """Constructs an instance of :class:`Mol` from a SMILES string representation of a molecule.
 
         Parameters
         ----------
         smiles : str
             The SMILES string representation of the molecule.
+        hydrogens : {'keep', 'add', 'remove'}, default 'remove'
+            Whether to keep hydrogens as is, add additional hydrogens, or remove all hydrogens.
 
         Returns
         -------
-        Ligand
+        Mol
         """
         mol = Chem.MolFromSmiles(smiles, sanitize=False)
-        mol = _fix_valence(mol)
-        mol = Chem.AllChem.AddHs(mol, addCoords=True)
-        return cls(mol, **kwargs)
+        return cls(mol, hydrogens=hydrogens, **kwargs)
 
     @classmethod
-    def from_rdkit(cls, mol: Chem.Mol, **kwargs):
-        """Create an instance of :class:`Ligand` from an RDKit :class:`~rdkit.Chem.rdchem.Mol` object.
+    def from_rdkit(
+        cls,
+        mol: Chem.Mol,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        **kwargs,
+    ):
+        """Create an instance of :class:`Mol` from an RDKit :class:`~rdkit.Chem.rdchem.Mol` object.
 
         Parameters
         ----------
         mol : rdkit.Chem.rdchem.Mol
             The input molecule as an RDKit :class:`~rdkit.Chem.rdchem.Mol` object.
+        hydrogens : {'keep', 'add', 'remove'}, default 'remove'
+            Whether to keep hydrogens as is, add additional hydrogens, or remove all hydrogens.
 
         Returns
         -------
-        Ligand
+        Mol
         """
-        return cls(mol, **kwargs)
+        return cls(mol, hydrogens=hydrogens, **kwargs)
 
     @classmethod
     def from_pdb(
         cls,
         pdb_file: str,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
         template_smiles: str = None,
         template_sdf: str = None,
         **kwargs,
     ):
-        r"""Creates an instance of :class:`Ligand` from a PDB file.
+        r"""Creates an instance of :class:`Mol` from a PDB file.
 
-        Read a PDB file to generate a molecule object, add hydrogens
-        (including their coordinates), and assign stereochemical information based on the
-        3D structure of the molecule and the supplied template. The template can be either
-        a SMILES string or an SDF file, and is needed to ensure the correct bond order assignment.
+        TODO
+
+        Always sanitizes if template included.
+
+        .. warning::
+            When loading small molecules from PDB, always include a template.
+            Molecules without templates will not be sanitized, and can thus not be used
+            in certain scoring functions.
+
 
         Parameters
         ----------
         pdb_file : str
             Path to the PDB file containing the molecule.
+        hydrogens : {'keep', 'add', 'remove'}, default 'remove'
+            Whether to keep hydrogens as is, add additional hydrogens, or remove all hydrogens.
         template_smiles : str, optional
-            SMILES string representing a reference molecule. Either `template_smiles` or
+            SMILES string representing a reference molecule.
+            To sanitize the molecule, either `template_smiles` or
             `template_sdf` must be provided.
         template_sdf : str, optional
-            Path to an SDF file containing a reference molecule. Either `template_smiles` or
+            Path to an SDF file containing a reference molecule.
+            To sanitize the molecule, either `template_smiles` or
             `template_sdf` must be provided.
 
         Returns
         -------
-        Ligand
+        Mol
         """
-        if template_smiles is None and template_sdf is None:
-            raise ValueError("Template required for PDB input.")
-        if template_sdf is not None and template_smiles is not None:
-            raise ValueError("Only one template allowed.")
-        mol = Chem.MolFromPDBFile(pdb_file, sanitize=False, removeHs=False)
 
-        if template_smiles is not None:
-            template = Chem.MolFromSmiles(template_smiles)
-        else:
-            template = Chem.MolFromMolFile(template_sdf)
-        mol = Chem.AllChem.AssignBondOrdersFromTemplate(template, mol)
+        mol = Chem.MolFromPDBFile(
+            pdb_file, sanitize=False, removeHs=(hydrogens == "remove")
+        )
 
-        n_a_orig = mol.GetNumAtoms()
-        mol = Chem.AllChem.AddHs(mol, addCoords=True)
-        n_a_new = mol.GetNumAtoms()
+        if template_smiles or template_sdf:
+            if template_smiles:
+                template_mol = Chem.MolFromSmiles(template_smiles)
+            else:
+                template_mol = Chem.MolFromMolFile(template_sdf)
 
-        if n_a_orig != n_a_new:
-            warnings.warn(
-                f"Added {n_a_new - n_a_orig} hydrogens to molecule from PDB file.",
-            )
+            mol = Chem.AllChem.AssignBondOrdersFromTemplate(template_mol, mol)
 
-        Chem.AssignStereochemistryFrom3D(mol)
-        Chem.SanitizeMol(mol)
+            Chem.AssignStereochemistryFrom3D(mol)
+            Chem.SanitizeMol(mol)
 
-        return cls(mol, **kwargs)
+        return cls(mol, hydrogens=hydrogens, **kwargs)
 
     # TODO: be able to load and return multiple ligands from the same SDF file. (for v_from_sdf too)
     @classmethod
-    def from_sdf(cls, mol_file: str, **kwargs):
-        """Creates an instance of :class:`Ligand` from an SDF file.
+    def from_sdf(
+        cls,
+        mol_file: str,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        **kwargs,
+    ):
+        """Creates an instance of :class:`Mol` from an SDF file.
 
         Parameters
         ----------
         mol_file : str
             Path to the SDF file containing the molecule.
+        hydrogens : {'keep', 'add', 'remove'}, default 'remove'
+            Whether to keep hydrogens as is, add additional hydrogens, or remove all hydrogens.
 
         Returns
         -------
-        Ligand
+        Mol
         """
         RDLogger.DisableLog("rdApp.*")
+
         mol = Chem.MolFromMolFile(
-            mol_file, removeHs=False, strictParsing=False, sanitize=False
+            mol_file,
+            removeHs=(hydrogens == "remove"),
+            strictParsing=False,
+            sanitize=False,
         )
         RDLogger.EnableLog("rdApp.*")
-        mol = _fix_valence(mol)
-        mol = Chem.AllChem.AddHs(mol, addCoords=True)
-        return cls(mol, **kwargs)
+        return cls(mol, hydrogens=hydrogens, **kwargs)
 
     @classmethod
-    def v_from_sdf(cls, mol_file: str, rmsd_delta: float = 0.5, **kwargs):
-        """Creates a :class:`Ligand` from an SDF file, and also returns a list of variables
+    def v_from_sdf(
+        cls,
+        mol_file: str,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        rmsd_delta: float = 0.5,
+        **kwargs,
+    ):
+        """Creates a :class:`Mol` from an SDF file, and also returns a list of variables
         representing the conformations in the SDF file.
 
         Parameters
@@ -338,6 +371,8 @@ class Ligand(Chem.Mol):
         mol_file : str
             Path to the SDF file containing the molecule, with multiple conformations.
             All molecules in the SDF file should be equal.
+        hydrogens : {'keep', 'add', 'remove'}, default 'remove'
+            Whether to keep hydrogens as is, add additional hydrogens, or remove all hydrogens.
         rmsd_delta : float, default 0.5
             The maximum RMSD between the conformations in the SDF file after alignment. This is
             needed when, for example, the SDF file is generated with a program that modifies bond
@@ -354,19 +389,23 @@ class Ligand(Chem.Mol):
 
         Returns
         -------
-        Ligand
+        Mol
         variables : numpy.ndarray
             The conformations in the SDF file, represented by a tuple of size ``(6 + n_dihedrals)``,
             as expected by e.g. :meth:`update`.
         """
         # RDLogger.DisableLog("rdApp.*")
         mol = Chem.MolFromMolFile(
-            mol_file, removeHs=False, strictParsing=False, sanitize=False
+            mol_file,
+            removeHs=(hydrogens == "remove"),
+            strictParsing=False,
+            sanitize=False,
         )
-        mol = _fix_valence(mol)
-        mol = Chem.AllChem.AddHs(mol, addCoords=True)
-        canon_smiles = Chem.CanonSmiles(Chem.MolToSmiles(mol))
+        # mol = _fix_mol_valence(mol)
+        # mol = Chem.AllChem.AddHs(mol, addCoords=True)
         lig = cls(mol, **kwargs)
+
+        canon_smiles = Chem.CanonSmiles(Chem.MolToSmiles(mol))
 
         # Alignment atom map
         matches = lig.GetSubstructMatches(lig, uniquify=True, useChirality=True)
@@ -375,10 +414,10 @@ class Ligand(Chem.Mol):
         atom_map = [t for sub in atom_map for t in sub]  # Flatten
 
         v = []
-        with Chem.SDMolSupplier(mol_file, removeHs=False, sanitize=False) as supl:
+        with Chem.SDMolSupplier(
+            mol_file, removeHs=(hydrogens == "remove"), sanitize=False
+        ) as supl:
             for pose in supl:
-                pose = _fix_valence(pose)
-                pose = Chem.AllChem.AddHs(pose, addCoords=True)
                 if Chem.CanonSmiles(Chem.MolToSmiles(pose)) != canon_smiles:
                     raise ValueError("Molecules in SDF file are not equal.")
                 # TODO: dont create whole ligand every time.
@@ -404,6 +443,44 @@ class Ligand(Chem.Mol):
 
         return lig, v
 
+    def _fix_mol_valence(self, sanitize=True):
+        Chem.SanitizeMol(
+            self,
+            sanitizeOps=(
+                Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
+            ),
+        )
+
+        for atom in self.GetAtoms():
+            # print(
+            #     atom.GetSymbol(),
+            #     atom.GetValence(Chem.ValenceType.EXPLICIT),
+            #     atom.GetFormalCharge(),
+            # )
+
+            if (
+                atom.GetSymbol() == "N"
+                and atom.GetValence(Chem.ValenceType.EXPLICIT) == 4
+            ):
+                atom.SetFormalCharge(+1)
+            if (
+                atom.GetSymbol() == "O"
+                and atom.GetValence(Chem.ValenceType.EXPLICIT) == 1
+            ):
+                atom.SetFormalCharge(-1)
+            # incorrect epoxide fix TODO: check with David
+            if (
+                atom.GetSymbol() == "O"
+                and atom.GetValence(Chem.ValenceType.EXPLICIT) == 2
+            ):
+                atom.SetFormalCharge(0)
+
+        self.UpdatePropertyCache(strict=sanitize)
+
+        if sanitize:
+            Chem.SanitizeMol(self)
+        return self
+
     def set_draw_options(self, options):
         """Set draw options.
 
@@ -426,39 +503,73 @@ class Ligand(Chem.Mol):
         l_options = self.draw_options.copy()
         l_options.update(options)
 
-        mblock = Chem.MolToMolBlock(self)
-        viewer.view.addModel(mblock, "mol")
-        m_id = c_m_id + 1
-        viewer.view.setStyle(
-            {"model": m_id}, {"stick": {"colorscheme": l_options["colorscheme"]}}
+        is_protein = (
+            l_options["protein"]
+            if l_options["protein"] != "auto"
+            else self.GetNumHeavyAtoms() >= PROTEINS_HEAVY_ATOMS_CUTOFF
         )
 
-        # if "note" not in self.draw_options:
-        #     self.draw_options["note"] = ""
-        # match self.draw_options["note"].lower():
-        #     case "idx":
-        #         hover_js_callback = Viewer._HOVER_LABEL_IDX_JS_CALLBACK
-        #     case "type":
-        #         hover_js_callback = (
-        #             """function(atom,viewer,event,container) {
-        #             let atom_types = """
-        #             + str([AtomType(t).name for t in self.atom_types])
-        #             + """
-        #             if(!atom.label) {
-        #                 atom.label = viewer.addLabel(atom_types[atom.index],{position: atom, backgroundColor: 'mintcream', fontColor:'black'});
-        #             }}"""
-        #         )
-        #     case _:
-        #         hover_js_callback = None
-        #
-        # if hover_js_callback is not None:
-        #     view.setHoverable(
-        #         {"model": m_id},
-        #         True,
-        #         hover_js_callback,
-        #         Viewer._UNHOVER_LABEL_JS_CALLBACK,
-        #     )
-        viewer._set_hover(self, m_id, self.draw_options)  # noqa
+        if is_protein:
+            m_id = self._viewer_add_prot(viewer, c_m_id, l_options)
+        else:
+            mblock = Chem.MolToMolBlock(self)
+            viewer.view.addModel(mblock, "mol")
+            m_id = c_m_id + 1
+            viewer.view.setStyle(
+                {"model": m_id}, {"stick": {"colorscheme": l_options["colorscheme"]}}
+            )
+
+            viewer._set_hover(self, m_id, self.draw_options)  # noqa
+        return m_id
+
+    def _viewer_add_prot(self, viewer, c_m_id, options: dict = None):
+        pdbblock = Chem.MolToPDBBlock(self._rdkit)
+
+        viewer.view.addModel(pdbblock, "pdb")
+        m_id = c_m_id + 1
+        viewer.view.setStyle(
+            {"model": m_id},
+            {
+                "cartoon": {
+                    "color": options["color"],
+                    "style": options["style"],
+                    "hidden": options["hideprotein"],
+                },
+            },
+        )
+
+        for res in options["stickresidues"]:
+            viewer.view.setStyle(
+                {"resn": res, "byres": "true"},
+                {"stick": {"colorscheme": "whiteCarbon"}},
+            )
+
+        surf = True
+        surface_type = py3Dmol.MS
+        match options["surfacetype"]:
+            case "MS":
+                surface_type = py3Dmol.MS
+            case "VDW":
+                surface_type = py3Dmol.VDW
+            case "SAS":
+                surface_type = py3Dmol.SAS
+            case "SES":
+                surface_type = py3Dmol.SES
+            case _:
+                surf = False
+
+        if surf:
+            viewer.view.addSurface(
+                surface_type,
+                {
+                    "opacity": options["surfaceopacity"],
+                    "color": options["surfacecolor"],
+                },
+                {"model": m_id},
+            )
+
+        if "note" in options:
+            viewer._set_hover(self, m_id, options)
 
         return m_id
 
@@ -707,6 +818,27 @@ class Ligand(Chem.Mol):
         """
         return self._atom_types
 
+    def atom_type(self, atom_index: int, mask: NDArray = None):
+        """Get the atom type of the specified atom, optionally taking `mask` into account.
+        # TODO: what does that mean? Revise receptor masking?
+
+        Parameters
+        ----------
+        atom_index : int
+            The atom id for which to get the atom type.
+        mask : numpy.ndarray, optional
+            An array by which to mask the receptor atoms before indexing. Useful in combination
+            with e.g. :class:`~pyrite.scoring.dependencies.KNNDependency` on a masked receptor.
+
+        Returns
+        -------
+        AtomType
+        """
+        if mask is None:
+            mask = np.full_like(self._atom_types, True)
+        return (self._atom_types[mask])[atom_index]
+
+    # TODO: cache positions
     @property
     def positions(self):
         """The positions of all atoms in the global conformer.
@@ -798,6 +930,7 @@ class Ligand(Chem.Mol):
         for i, angle in enumerate(angles_rad):
             self.set_dihedral_angle(i, angle, conf_id)
 
+    # TODO: optimizations here would be great (even with loss of default conformer updating?)
     def transform(
         self,
         roll: float,
@@ -831,8 +964,8 @@ class Ligand(Chem.Mol):
         """
         conf = self.GetConformer(conf_id)
 
-        rotate = _rotation_matrix(roll, pitch, yaw)
-        translate = _translation_matrix(x, y, z)
+        rotate = _rotation_matrix_from_euler(roll, pitch, yaw)
+        translate = _translation_matrix_from_coordinates(x, y, z)
 
         new_transform = translate @ rotate
 
@@ -1000,9 +1133,12 @@ class Ligand(Chem.Mol):
 
         if placement not in {"random", "grid"}:
             raise ValueError("placement must be either 'random' or 'grid'")
-        if conformations not in {"conformer", "random"}:
+        if conformations not in {
+            "conformer",
+            "random",
+        }:  # TODO: add none (just default dihedrals)
             raise ValueError("conformations must be either 'conformer' or 'random'")
-        if combine not in {"random", "grid"}:
+        if combine not in {"random", "grid"}:  # TODO: rename to product
             raise ValueError("combine must be either 'random' or 'grid'")
 
         positions = []
@@ -1123,7 +1259,7 @@ class Ligand(Chem.Mol):
             writer.close()
 
     def v_to_sdf(self, file: str, v: NDArray):
-        """Write the current molecule with positions `v` to a file.
+        """Write the current molecule with positions `v` to an SDF file.
 
         Parameters
         ----------
@@ -1135,400 +1271,14 @@ class Ligand(Chem.Mol):
         """
 
         writer = Chem.SDWriter(file)
-        # print(v)
+
         for var in v:
             conf_id = self.update(var, new_conf=True)
             self.to_sdf(writer, conf_id=conf_id)
             self.RemoveConformer(conf_id)
         writer.close()
 
-
-class Receptor:
-    """
-    Representation of a receptor.
-
-    The Receptor class provides methods for initializing receptors from various sources *(not yet)*
-    and includes functionality for assigning atom types.
-
-    This class currently holds an :class:`rdkit.Chem.rdchem.Mol` object, which is used
-    to obtain positions and atom types from the pdb file.
-
-    .. note::
-        When loading a PDB file, make sure to have prepared the file beforehand, by removing water,
-        ensuring that there are no missing heavy atoms or residues, and adding hydrogen.
-
-
-    Parameters
-    ----------
-    pdb_path : str
-        The path of the pdb file containing the receptor structure.
-
-    """
-
-    __default_draw_options = {
-        "size": (400, 300),
-        "color": "blue",
-        "style": "rectangle",
-        "surfacetype": "MS",
-        "surfacecolor": "white",
-        "surfaceopacity": 0.75,
-        "stickresidues": [],
-        "hideprotein": False,
-        "note": "",
-    }
-    # __default_surface_options = {
-    #     "type": "MS",
-    #     "color": "lightgray",
-    #     "opacity": 0.9,
-    # }
-
-    def __init__(self, mol, path: str):
-        self._path = path
-        self._rdkit = mol
-
-        # self._openff = Topology.from_pdb(pdb_path)
-        self.__assign_atom_types_rdkit()
-        Chem.rdPartialCharges.ComputeGasteigerCharges(self._rdkit)
-
-        #
-        # self._positions = np.array(self.openff.get_positions().m_as(unit.angstrom))
-        self._positions = np.array(self._rdkit.GetConformer().GetPositions())
-
-        mol_layers = RegistrationHash.GetMolLayers(self._rdkit)
-        self._prehash = hash(RegistrationHash.GetMolHash(mol_layers))
-
-        self.draw_options = self.__default_draw_options.copy()
-        # self.surface_options = self.__default_surface_options.copy()
-
-    @classmethod
-    def from_pdb(cls, pdb_path: str):
-        """Constructs a :class:`Receptor` from a pdb file.
-
-        .. note::
-            When loading a PDB file, make sure to have prepared the file beforehand, by removing water,
-            ensuring that there are no missing heavy atoms or residues, and adding hydrogen.
-
-
-        Parameters
-        ----------
-        pdb_path : str
-            The path of the pdb file containing the receptor structure.
-
-
-        Returns
-        -------
-        Receptor
-
-        """
-        mol = Chem.MolFromPDBFile(pdb_path, removeHs=False, sanitize=False)
-        rdkit = Chem.AllChem.AddHs(_fix_valence(mol, sanitize=False))
-        return cls(rdkit, pdb_path)
-
-    @classmethod
-    def from_sdf(cls, sdf_path: str):
-        """Load a receptor from an SDF file.
-
-        Parameters
-        ----------
-        sdf_path : str
-            The path of the SDF file containing the receptor structure.
-
-        Returns
-        -------
-        Receptor
-
-        """
-        RDLogger.DisableLog("rdApp.*")
-        mol = Chem.MolFromMolFile(
-            sdf_path, removeHs=False, strictParsing=False, sanitize=False
-        )
-        RDLogger.EnableLog("rdApp.*")
-        mol = _fix_valence(mol, sanitize=False)
-        mol = Chem.AllChem.AddHs(mol, addCoords=True)
-        return cls(mol, sdf_path)
-
-    def __assign_atom_types_rdkit(self):
-        self._atom_types = np.array([AtomType.Unknown] * len(self._rdkit.GetAtoms()))
-
-        hba_struct = Chem.MolFromSmarts(
-            "[$([O,S;H1;v2]-[!$(*=[O,N,P,S])]),$([O,S;H0;v2]),$([O,S;-]),$([N;v3;!$(N-*=!@[O,N,P,S])]),$([nH0,o,s;+0])]"
-        )
-        hba = [m[0] for m in self._rdkit.GetSubstructMatches(hba_struct)]
-
-        non_polar_h_struct = Chem.MolFromSmarts("[#1;$([#1]-[#6,#14])]")
-        non_polar_h = [
-            m[0] for m in self._rdkit.GetSubstructMatches(non_polar_h_struct)
-        ]
-
-        for i, atom in enumerate(self._rdkit.GetAtoms()):
-            atomic_number = atom.GetAtomicNum()
-
-            a_str = atom.GetSymbol()
-            if atomic_number == 1 and atom.GetIdx() not in non_polar_h:
-                a_str = "HD"
-            elif atomic_number == 6 and atom.GetIsAromatic():
-                a_str = "A"
-            elif atomic_number == 8:
-                a_str = "OA"
-            elif atomic_number == 7 and atom.GetIdx() in hba:
-                a_str = "NA"
-            elif atomic_number == 16 and atom.GetIdx() in hba:
-                a_str = "SA"
-
-            a_type = AtomType.GenericMetal
-            # Assign atom type
-            for _, t in vina_atom_consts.items():
-                if a_str == t.ad_name:
-                    a_type = t.type
-                    break
-
-            hbonded = False
-            heterobonded = False
-
-            # Get hbonded and heterobonded
-            for neigh in atom.GetNeighbors():
-                if neigh.GetSymbol() == "H":
-                    hbonded = True
-                elif neigh.GetSymbol() != "C":
-                    heterobonded = True
-
-            a_type = a_type.adjust(hbonded, heterobonded)
-
-            self._atom_types[i] = a_type
-
-    def __assign_atom_types(self):
-        self._atom_types = np.array([AtomType.Unknown] * self.openff.n_atoms)
-
-        # THIS IS SOMETIMES TIMING OUT:
-        hba = self.openff.chemical_environment_matches(
-            "[$([O,S;H1;v2]-[!$(*=[O,N,P,S])]),$([O,S;H0;v2]),$([O,S;-]),$([N;v3;!$(N-*=!@[O,N,P,S])]),$([nH0,o,s;+0:1]):1]",
-            unique=True,
-        )
-        hba = [m.topology_atom_indices[0] for m in hba]
-
-        non_polar_h = self.openff.chemical_environment_matches(
-            "[#1;$([#1]-[#6,#14]):1]",
-            unique=True,
-        )
-        non_polar_h = [m.topology_atom_indices[0] for m in non_polar_h]
-
-        for i, atom in enumerate(self.openff.atoms):
-            atomic_number = atom.atomic_number
-
-            a_str = atom.symbol
-            if atomic_number == 1 and self.openff.atom_index(atom) not in non_polar_h:
-                a_str = "HD"
-            elif atomic_number == 6 and atom.is_aromatic:
-                a_str = "A"
-            elif atomic_number == 8:
-                a_str = "OA"
-            elif atomic_number == 7 and self.openff.atom_index(atom) in hba:
-                a_str = "NA"
-            elif atomic_number == 16 and self.openff.atom_index(atom) in hba:
-                a_str = "SA"
-
-            a_type = AtomType.GenericMetal
-            # Assign atom type
-            for _, t in vina_atom_consts.items():
-                if a_str == t.ad_name:
-                    a_type = t.type
-                    break
-
-            hbonded = False
-            heterobonded = False
-
-            # Get hbonded and heterobonded
-            for neigh in atom.bonded_atoms:
-                if neigh.symbol == "H":
-                    hbonded = True
-                elif neigh.symbol != "C":
-                    heterobonded = True
-
-            a_type = a_type.adjust(hbonded, heterobonded)
-
-            self._atom_types[i] = a_type
-
-    def __assign_residue_ids(self):
-        self.residues = [""] * len(self._rdkit.GetAtoms())
-        for i, atom in enumerate(self._rdkit.GetAtoms()):
-            res_info = str(atom.GetPDBResidueInfo().GetResidueName()) + str(
-                atom.GetPDBResidueInfo().GetResidueId()
-            )
-            self.residues[i] = res_info
-
-    # @property
-    # def openff(self):
-    #     """The openff :class:`~openff.toolkit.topology.Topology` object.
-    #
-    #     Returns
-    #     -------
-    #     openff.toolkit.topology.Topology
-    #     """
-    #     return self._openff
-
-    @property
-    def rdkit(self):
-        """The rdkit :class:`~rdkit.Chem.rdchem.Mol` object.
-
-        Returns
-        -------
-        rdkit.Chem.rdchem.Mol
-        """
-        return self._rdkit
-
-    @property
-    def positions(self):
-        """The positions of all atoms in the receptor.
-
-        Returns
-        -------
-        numpy.ndarray
-        """
-        return self._positions
-
-    def get_positions(self):
-        """Get the positions of all atoms in the receptor.
-
-        Returns
-        -------
-        numpy.ndarray
-        """
-        return self._positions
-
-    @property
-    def atom_types(self):
-        """The atom types of all atoms in the receptor.
-
-        Returns
-        -------
-        numpy.ndarray
-        """
-        return self._atom_types
-
-    def atom_type(self, atom_index: int, mask: NDArray = None):
-        """Get the atom type of the specified atom, optionally taking `mask` into account.
-
-        Parameters
-        ----------
-        atom_index : int
-            The atom id for which to get the atom type.
-        mask : numpy.ndarray, optional
-            An array by which to mask the receptor atoms before indexing. Useful in combination
-            with e.g. :class:`~pyrite.scoring.dependencies.KNNDependency` on a masked receptor.
-
-        Returns
-        -------
-        AtomType
-        """
-        if mask is None:
-            mask = np.full_like(self._atom_types, True)
-        return (self._atom_types[mask])[atom_index]
-
     def __hash__(self):
-        # return hash(self._path)
-        return self._prehash
+        # TODO!
+        pass
 
-    def set_draw_options(
-        self,
-        options,
-    ):
-        """Set draw options.
-
-        Parameters
-        ----------
-        options : dictionary
-            The options to apply.
-
-        """
-
-        # unknown = set(options) - set(self.draw_options)
-        # unknown.update(set(surface) - set(self.surface_options))
-        # if unknown:
-        #     raise ValueError(f"Unknown options: {unknown}")
-
-        self.draw_options.update(options)
-        # self.surface_options.update(surface)
-
-    def _viewer_add_(self, viewer, c_m_id, options=None):
-        if options is None:
-            options = {}
-        l_options = self.draw_options.copy()
-        l_options.update(options)
-
-        pdbblock = Chem.MolToPDBBlock(self._rdkit)
-
-        viewer.view.addModel(pdbblock, "pdb")
-        m_id = c_m_id + 1
-        viewer.view.setStyle(
-            {"model": m_id},
-            {
-                "cartoon": {
-                    "color": l_options["color"],
-                    "style": l_options["style"],
-                    "hidden": l_options["hideprotein"],
-                },
-            },
-        )
-
-        for res in l_options["stickresidues"]:
-            viewer.view.setStyle(
-                {"resn": res, "byres": "true"},
-                {"stick": {"colorscheme": "whiteCarbon"}},
-            )
-
-        surf = True
-        surface_type = py3Dmol.MS
-        match l_options["surfacetype"]:
-            case "MS":
-                surface_type = py3Dmol.MS
-            case "VDW":
-                surface_type = py3Dmol.VDW
-            case "SAS":
-                surface_type = py3Dmol.SAS
-            case "SES":
-                surface_type = py3Dmol.SES
-            case _:
-                surf = False
-
-        if surf:
-            viewer.view.addSurface(
-                surface_type,
-                {
-                    "opacity": l_options["surfaceopacity"],
-                    "color": l_options["surfacecolor"],
-                },
-                {"model": m_id},
-            )
-
-        if "note" in l_options:
-            viewer._set_hover(self, m_id, l_options)
-        return m_id
-
-    def _repr_html_(self):
-        # view = py3Dmol.view(
-        #     width=self.draw_options["size"][0],
-        #     height=self.draw_options["size"][1],
-        #     options={"doAssembly": True},
-        # )
-        # self._viewer_add_(view)
-        # view.zoomTo()
-        # return view.write_html()
-        return Viewer(  # noqa
-            self,
-            width=self.draw_options["size"][0],
-            height=self.draw_options["size"][1],
-        )._repr_html_()
-
-    @property
-    def viewer(self):
-        """A viewer containing this receptor.
-
-        Returns
-        -------
-        Viewer
-        """
-        return Viewer(
-            self,
-            width=self.draw_options["size"][0],
-            height=self.draw_options["size"][1],
-        )

@@ -2,7 +2,7 @@ import numpy as np
 
 from ._base import ScoringFunction
 from .dependencies import Dependency, KNNDependency
-from .._common import Ligand
+from .._common import Mol
 from ..bounds import Pocket, Bounds
 
 
@@ -31,8 +31,8 @@ class DistanceToPocket(ScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
+    molecule : Mol
+        The molecule to be used for the calculation.
     pocket : Pocket
         The pocket to be used for the calculation.
     include_hs : bool, default False
@@ -43,16 +43,16 @@ class DistanceToPocket(ScoringFunction):
 
     def __init__(
         self,
-        ligand: Ligand,
+        molecule: Mol,
         pocket: Pocket,
         include_hs: bool = False,
     ):
-        self.ligand = ligand
+        self.mol = molecule
 
         self.pocket = pocket
         self._include_hs = include_hs
         self._mask = np.array(
-            [include_hs or atom.GetAtomicNum() > 1 for atom in self.ligand.GetAtoms()]
+            [include_hs or atom.GetAtomicNum() > 1 for atom in self.mol.GetAtoms()]
         )
 
         self.cutoff = 40
@@ -60,7 +60,7 @@ class DistanceToPocket(ScoringFunction):
         self._nn_dep = KNNDependency(
             pocket.centers,
             # lambda i: self.ligand.get_positions(i)[self._mask],
-            self.ligand.get_positions,
+            self.mol.get_positions,
             1,
             self.cutoff,
         )
@@ -104,8 +104,8 @@ class WeightedBoundsOverlap(ScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
+    molecule : Mol
+        The molecule to be used for the calculation.
     pocket : Pocket
         The pocket to be used for the calculation.
     include_hs : bool, default False
@@ -118,23 +118,23 @@ class WeightedBoundsOverlap(ScoringFunction):
 
     def __init__(
         self,
-        ligand: Ligand,
+        molecule: Mol,
         pocket: Pocket,
         include_hs: bool = False,
         outside_penalty: float | None = None,
     ):
-        self.ligand = ligand
+        self.mol = molecule
 
         self.pocket = pocket
         self.include_hs = include_hs
         self.mask = np.array(
-            [include_hs or atom.GetAtomicNum() > 1 for atom in self.ligand.GetAtoms()]
+            [include_hs or atom.GetAtomicNum() > 1 for atom in self.mol.GetAtoms()]
         )
 
         print(len(pocket.centers))
         self.nn_dep = KNNDependency(
             pocket.centers,
-            lambda i: self.ligand.get_positions(i)[self.mask],
+            lambda i: self.mol.get_positions(i)[self.mask],
             1,
             4,
         )
@@ -181,8 +181,8 @@ class OutOfBoundsPenalty(ScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
+    molecule : Mol
+        The molecule to be used for the calculation.
     bounds : Bounds
         The bounds to be used for the calculation. Using :class:`~pyrite.bounds.Pocket` is not supported,
         use :class:`~pyrite.scoring.DistanceToPocket` instead.
@@ -200,8 +200,8 @@ class OutOfBoundsPenalty(ScoringFunction):
 
     """
 
-    def __init__(self, ligand: Ligand, bounds: Bounds):
-        self.ligand = ligand
+    def __init__(self, molecule: Mol, bounds: Bounds):
+        self.mol = molecule
         self.bounds = bounds
 
     def _score(self, conf_id, *args, **kwargs) -> float:

@@ -5,7 +5,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from .dependencies import Dependency
-from .. import Ligand, Receptor
+from .. import Mol
 import copy
 
 # speed grade:
@@ -19,6 +19,7 @@ import copy
 <= 100000 : ✈️
 >= 100000 : 🚀
 """
+# TODO: make more processor independent (relative to ligand transform?)
 
 
 class ScoringFunction(ABC):
@@ -31,75 +32,46 @@ class ScoringFunction(ABC):
         This is an abstract base class and should thus be subclassed. Please refer to the Notes
         section for more information on how to do this.
 
-
-    Parameters
-    ----------
-    ligand : Ligand
-        The ligand to be used in the ``ScoringFunction``.
-    receptor : Receptor
-        The receptor to be used in the ``ScoringFunction``.
-
-
-
     """
 
-    def __init__(self, ligand: Ligand, receptor: Receptor):
-        self.ligand = ligand
-        self.receptor = receptor
+    def __init__(
+        self,
+    ):
+        pass
 
-        # self.computed = None
 
-    def get_step(self, ligand: Ligand) -> Callable[[NDArray], float]:
-        """Get a :meth:`step` function that does not need a :class:`~pyrite.Ligand` as input.
-
-        This is useful if the optimizer used does not allow for additional step function arguments.
-
-        Parameters
-        ----------
-        ligand : Ligand
-            The ``Ligand`` instance to be used in the step function.
-
-        Returns
-        -------
-        step_function : callable
-        """
-
-        def step(x):
-            conf_id = ligand.update(x, new_conf=True)
-            score = self.get_score(conf_id)
-            ligand.RemoveConformer(conf_id)
-
-            return score
-
-        return step
-
-    def step(self, x: NDArray, ligand: Ligand) -> float:
+    # TODO: should this take one mol? Multiple?
+    def step(self, x: NDArray, mol: Mol) -> float:
         """The step function.
 
-        This function updates the `ligand` pose based on the supplied parameters `x` and returns
-        the score associated with the update pose. The :class:`~pyrite.Ligand` is modified using
-        :meth:`~pyrite.Ligand.update`, using a new conformer.
-        The `ligand` global conformer thus remains unchanged.
+        This function updates the `mol` pose based on the supplied parameters `x` and returns
+        the score associated with the update pose. The :class:`~pyrite.Mol` is modified using
+        :meth:`~pyrite.Mol.update`, using a new conformer.
+        The `mol` global conformer thus remains unchanged.
 
         Parameters
         ----------
         x : ndarray
-            The variables describing the ligand pose. The shape should be
+            The variables describing the molecule pose. The shape should be
             ``(6 + n_dihedrals,)``, like ``[roll, pitch, yaw, x, y, z, *dihedrals]``.
 
-        ligand : Ligand
-            The ligand for which the pose will be evaluated.
+        mol : Mol
+            The molecule for which the pose will be evaluated.
 
         Returns
         -------
         score : float
             The score associated with the input pose.
         """
-        conf_id = ligand.update(x, new_conf=True)
+        conf_id = mol.update(x, new_conf=True)
         score = self.get_score(conf_id)
-        ligand.RemoveConformer(conf_id)
+        mol.RemoveConformer(conf_id)
         return score
 
+    # TODO: add mechanism that allows for retrieval of subscores.
+    #       idea: in _combined, store dict of {k: ScoringFunction, v: score}, keep adding to this dict (flattened, not nested)
+    #             dont return that with get_score, but store and allow retrieval (either method or property)
+    #             user can then use CSF.subscores[SF] to get subscores (for plotting etc)
     def get_score(self, conf_id: int = -1) -> float:
         """Retrieves the score.
 
@@ -277,6 +249,8 @@ class _CombinedScoringFunction(ScoringFunction):  # pylint: disable=too-few-publ
     """
 
     def __init__(self, *functions: ScoringFunction):
+        super().__init__()
+
         self.funcs = []
         for func in functions:
             if isinstance(func, _CombinedScoringFunction):
@@ -446,80 +420,80 @@ class ConstantTerm(ScoringFunction):
     def _score(self, *args, **kwargs) -> float:
         return self.constant
 
-
-class MyProblem:
-    def __init__(
-        self,
-        ligand2,
-        binding_site2,
-        scoring_function: ScoringFunction,
-        dihedral_quantize_degree: int = 0,
-    ):
-        self.ligand = ligand2
-        self.binding_site = binding_site2
-        self.scoring_function = scoring_function
-        self.dihedral_quantize_degree = dihedral_quantize_degree
-
-        bounds2 = [(-2 * np.pi, 2 * np.pi)] * (6 + len(self.ligand.dihedral_angles))
-        bounds2[3:6] = self.binding_site.get_translation_bounds()
-
-        if self.dihedral_quantize_degree > 0:
-            self._bins = int(360 // self.dihedral_quantize_degree)
-            if 360 % self._bins != 0:
-                raise ValueError(
-                    "dihedral_quantize_degree must be a divisor of 360 degrees"
-                )
-            bounds2[6:] = [(-self._bins, self._bins)] * len(self.ligand.dihedral_angles)
-
-        self.bounds = ([x[0] for x in bounds2], [x[1] for x in bounds2])
-
-    def quantize_dihedrals(self, vs):
-        v_2d = np.atleast_2d(vs)
-
-        b_div = (2 * np.pi) / self._bins
-        v_2d[:, 6:] //= b_div
-
-        if vs.ndim < 2:
-            return v_2d[0, :]
-
-        return v_2d
-
-    def dequantize_dihedrals(self, vs):
-        v_2d = np.atleast_2d(vs)
-
-        b_div = (2 * np.pi) / self._bins
-        v_2d[:, 6:] *= b_div
-
-        if vs.ndim < 2:
-            return v_2d[0, :]
-        return v_2d
-
-    def get_nix(self):
-        if self.dihedral_quantize_degree > 0:
-            return len(self.ligand.dihedral_angles)
-        return 0
-
-    def __deepcopy__(self, memo):
-        # create blank instance
-        new = self.__class__.__new__(self.__class__)
-        memo[id(self)] = new
-        # shallow‐copy ligand to preserve its subclass
-        new.ligand = self.ligand
-        new.scoring_function = self.scoring_function
-        new.binding_site = self.binding_site
-        # deep‐copy everything else
-        for k, v in self.__dict__.items():
-            if k != "ligand" and k != "scoring_function" and k != "binding_site":
-                setattr(new, k, copy.deepcopy(v, memo))
-        return new
-
-    def get_bounds(self):
-        return self.bounds
-
-    def fitness(self, x):
-        if self.dihedral_quantize_degree > 0:
-            deq_x = self.dequantize_dihedrals(x)
-        else:
-            deq_x = x
-
-        return [self.scoring_function.step(deq_x, self.ligand)]
+#
+# class MyProblem:
+#     def __init__(
+#         self,
+#         ligand2,
+#         binding_site2,
+#         scoring_function: ScoringFunction,
+#         dihedral_quantize_degree: int = 0,
+#     ):
+#         self.ligand = ligand2
+#         self.binding_site = binding_site2
+#         self.scoring_function = scoring_function
+#         self.dihedral_quantize_degree = dihedral_quantize_degree
+#
+#         bounds2 = [(-2 * np.pi, 2 * np.pi)] * (6 + len(self.ligand.dihedral_angles))
+#         bounds2[3:6] = self.binding_site.get_translation_bounds()
+#
+#         if self.dihedral_quantize_degree > 0:
+#             self._bins = int(360 // self.dihedral_quantize_degree)
+#             if 360 % self._bins != 0:
+#                 raise ValueError(
+#                     "dihedral_quantize_degree must be a divisor of 360 degrees"
+#                 )
+#             bounds2[6:] = [(-self._bins, self._bins)] * len(self.ligand.dihedral_angles)
+#
+#         self.bounds = ([x[0] for x in bounds2], [x[1] for x in bounds2])
+#
+#     def quantize_dihedrals(self, vs):
+#         v_2d = np.atleast_2d(vs)
+#
+#         b_div = (2 * np.pi) / self._bins
+#         v_2d[:, 6:] //= b_div
+#
+#         if vs.ndim < 2:
+#             return v_2d[0, :]
+#
+#         return v_2d
+#
+#     def dequantize_dihedrals(self, vs):
+#         v_2d = np.atleast_2d(vs)
+#
+#         b_div = (2 * np.pi) / self._bins
+#         v_2d[:, 6:] *= b_div
+#
+#         if vs.ndim < 2:
+#             return v_2d[0, :]
+#         return v_2d
+#
+#     def get_nix(self):
+#         if self.dihedral_quantize_degree > 0:
+#             return len(self.ligand.dihedral_angles)
+#         return 0
+#
+#     def __deepcopy__(self, memo):
+#         # create blank instance
+#         new = self.__class__.__new__(self.__class__)
+#         memo[id(self)] = new
+#         # shallow‐copy ligand to preserve its subclass
+#         new.ligand = self.ligand
+#         new.scoring_function = self.scoring_function
+#         new.binding_site = self.binding_site
+#         # deep‐copy everything else
+#         for k, v in self.__dict__.items():
+#             if k != "ligand" and k != "scoring_function" and k != "binding_site":
+#                 setattr(new, k, copy.deepcopy(v, memo))
+#         return new
+#
+#     def get_bounds(self):
+#         return self.bounds
+#
+#     def fitness(self, x):
+#         if self.dihedral_quantize_degree > 0:
+#             deq_x = self.dequantize_dihedrals(x)
+#         else:
+#             deq_x = x
+#
+#         return [self.scoring_function.step(deq_x, self.ligand)]
