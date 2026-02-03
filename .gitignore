@@ -172,3 +172,5 @@ pyrightconfig.json
 
 # mac
 .DS_Store
+
+.idea/
