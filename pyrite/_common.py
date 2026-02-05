@@ -185,9 +185,14 @@ class Mol(Chem.Mol):
         self._fix_mol_valence(sanitize=False)  # TODO: sanitize?
 
         if hydrogens == "add":
-            mol = Chem.AllChem.AddHs(mol, addCoords=True)
+            mol = Chem.AllChem.AddHs(mol, addCoords=True, sanitize=False)
         elif hydrogens == "remove":
-            mol = Chem.AllChem.RemoveHs(mol)
+            mol = Chem.AllChem.RemoveHs(mol, sanitize=False)
+
+        # TODO: keep for prot?
+        self._center_atom = (
+            center_atom if center_atom is not None else self.__get_center_atom()
+        )
 
         self.__flexible = flexible
         if flexible:
@@ -202,10 +207,6 @@ class Mol(Chem.Mol):
         self.__assign_atom_types()
         Chem.rdPartialCharges.ComputeGasteigerCharges(self)
 
-        # TODO: keep for prot?
-        self._center_atom = (
-            center_atom if center_atom is not None else self.__get_center_atom()
-        )
 
         # TODO: keep?
         self._init_state = (
@@ -523,7 +524,7 @@ class Mol(Chem.Mol):
         return m_id
 
     def _viewer_add_prot(self, viewer, c_m_id, options: dict = None):
-        pdbblock = Chem.MolToPDBBlock(self._rdkit)
+        pdbblock = Chem.MolToPDBBlock(self)
 
         viewer.view.addModel(pdbblock, "pdb")
         m_id = c_m_id + 1
@@ -1018,7 +1019,7 @@ class Mol(Chem.Mol):
             which is the id of the global conformer.
 
         """
-        assert len(new_vars) == 6 + len(self.__rotatable_dihedrals)
+        assert len(new_vars) == 6 + len(self.__rotatable_dihedrals), f'Unexpected number of variables: {len(new_vars)}. Expected: {6 + len(self.__rotatable_dihedrals)}.'
 
         conf_id = -1
         if new_conf:
@@ -1280,5 +1281,5 @@ class Mol(Chem.Mol):
 
     def __hash__(self):
         # TODO!
-        pass
+        return id(self)
 

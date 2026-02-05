@@ -237,6 +237,7 @@ class Viewer:
                 Viewer._UNHOVER_LABEL_JS_CALLBACK,
             )
 
+    # TODO: update show method using py3dmol _make_html, insert instead of show. Combine with slider in better way.
     def show(self):
         self.view.zoomTo()
         self.view.show()

@@ -1,3 +1,5 @@
+import copy
+
 import numpy as np
 from rdkit import Chem
 from scipy.spatial import cKDTree
@@ -32,8 +34,8 @@ class RMSD(ScoringFunction):
         else:
             self.ref_mol = ref_mol
 
-        matches = self.ligand.GetSubstructMatches(
-            self.ref_mool, uniquify=True, useChirality=True
+        matches = self.probe_mol.GetSubstructMatches(
+            self.ref_mol, uniquify=True, useChirality=True
         )
         self._atom_map = [
             list(zip(range(self.probe_mol.GetNumAtoms()), match)) for match in matches
@@ -108,9 +110,7 @@ class Crowding(ScoringFunction):
     ):
         self.mol = molecule
 
-        self._ref_mol = type(molecule)(
-            Chem.Mol(molecule)
-        )  # TODO: create copy function for molecule.
+        self._ref_mol = Mol(Chem.Mol(molecule), flexible=True)  # TODO: create copy function for molecule.
 
         self._registered_conf = []
         if register_initial:
@@ -119,7 +119,7 @@ class Crowding(ScoringFunction):
         self._offset = offset
         self._divide = divide
 
-        matches = self.ligand.GetSubstructMatches(
+        matches = self.mol.GetSubstructMatches(
             self.mol, uniquify=True, useChirality=True
         )
         self._atom_map = [

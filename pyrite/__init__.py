@@ -6,3 +6,4 @@ from rdkit.Chem import AllChem
 from pyrite._common import Mol, Viewer
 from pyrite.atom_consts import AtomType, vina_atom_consts
 from pyrite import bounds
+from pyrite import scoring
