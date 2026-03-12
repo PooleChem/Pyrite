@@ -1,8 +1,12 @@
 from __future__ import annotations
 from typing import TYPE_CHECKING
-from IPython.display import display
-from ipywidgets import IntSlider, interactive
+from wsgiref.validate import bad_header_value_re
 
+from IPython.display import display, HTML
+from ipywidgets import IntSlider, interactive, widgets, VBox,  Layout
+
+
+import html as _html
 import py3Dmol
 from numpy.typing import NDArray
 from rdkit import Chem
@@ -45,6 +49,11 @@ class Viewer:
                                     }"""
 
     def __init__(self, *args, width: int = 400, height: int = 400, options=None):
+        self._width = width
+        self._height = height
+        self._iframe = None
+        self._widget = None
+        self._slider = None
         self.view = py3Dmol.view(
             width=width, height=height, options={"doAssembly": True}
         )
@@ -57,6 +66,10 @@ class Viewer:
         self._interactive = None
         self.__interactive_first = None
         self._ligand = None
+        self._out = None
+        self._view_state_key = f"pyrite_view_state_{id(self)}"
+
+
 
     def add(self, *args, options=None):
         """Adds all positional arguments to the viewer.
@@ -94,12 +107,6 @@ class Viewer:
         return self
 
     def _set_ligand(self, v_id):
-        # Bugfix: this function is called upon display of the interactive. This is too early,
-        # and the viewer is not initialized yet. This adds a new, blank viewer. Using observe doesnt
-        # work for some reason.
-        if self.__interactive_first is True:
-            self.__interactive_first = False
-            return
         self.view.removeModel(self._v_m_id)
         vn = self._vs[v_id]
 
@@ -118,7 +125,9 @@ class Viewer:
         )
         if "note" in self._v_draw_options:
             self._set_hover(self._ligand, self.max_m_id, self._v_draw_options)
-        self.view.update()
+        # Re-render the iframe so the new pose is visible across frontends
+        self._render_iframe()
+        # self.view.update()
 
     def add_v(self, mol: Mol, v: NDArray, slider: bool = True, options=None):
         """Adds a molecule with poses, and an optional pose selection slider, to the viewer.
@@ -175,17 +184,25 @@ class Viewer:
                 },
             )
 
-            self.__interactive_first = True
-            self._interactive = interactive(
-                self._set_ligand,
-                v_id=IntSlider(
-                    min=0,
-                    max=len(v) - 1,
-                    step=1,
-                    continuous_update=True,
-                    description="Pose:",
-                ),
+            # self.__interactive_first = True
+            # self._interactive = interactive(
+            #     self._set_ligand,
+            #     v_id=IntSlider(
+            #         min=0,
+            #         max=len(v) - 1,
+            #         step=1,
+            #         continuous_update=True,
+            #         description="Pose:",
+            #     ),
+            # )
+            self._slider = IntSlider(
+                min=0,
+                max=len(v) - 1,
+                step=1,
+                continuous_update=True,
+                description="Pose:",
             )
+            self._slider.observe(lambda ch: self._set_ligand(ch["new"]), names="value")
 
         else:
             for var in self._vs:
@@ -237,15 +254,96 @@ class Viewer:
                 Viewer._UNHOVER_LABEL_JS_CALLBACK,
             )
 
-    # TODO: update show method using py3dmol _make_html, insert instead of show. Combine with slider in better way.
     def show(self):
-        self.view.zoomTo()
-        self.view.show()
-        if self._interactive is not None:
-            display(self._interactive)
+        """Return a displayable widget (works in Jupyter, VSCode, and PyCharm)."""
+        return self.as_widget()
 
-        # display(self._repr_html_())
+    def as_widget(self):
+        # Build once, then reuse so slider callbacks update the same viewer instance
+        if self._widget is None:
+            self._render_iframe()
+            if self._slider is None:
+                self._widget = self._iframe
+            else:
+                self._widget = VBox([self._iframe, self._slider])
+        return self._widget
 
-    def _repr_html_(self):
-        self.view.zoomTo()
-        return self.view.write_html()
+    def _ipython_display_(self):
+        display(self.as_widget())
+
+
+    def _render_iframe(self):
+        """Render the current py3Dmol view into an iframe and persist camera state across reloads."""
+        if self._iframe is None:
+            self._iframe = widgets.HTML()
+
+        # Generate base HTML
+        page = self.view.write_html(fullpage=True)
+
+        # Inject JS to persist/restore camera
+        key = self._view_state_key
+        persist_js = f"""
+    <script>
+    (function() {{
+      const KEY = {key!r};
+
+      function findViewer() {{
+        // py3Dmol often uses 'viewer', but we search just in case
+        if (window.viewer && typeof window.viewer.getView === "function") return window.viewer;
+        for (const k of Object.keys(window)) {{
+          const v = window[k];
+          if (v && typeof v.getView === "function" && typeof v.setView === "function" && typeof v.zoomTo === "function") {{
+            return v;
+          }}
+        }}
+        return null;
+      }}
+
+      function restoreOrZoom(viewer) {{
+        try {{
+          const saved = localStorage.getItem(KEY);
+          if (saved) {{
+            viewer.setView(JSON.parse(saved));
+            viewer.render();
+            return;
+          }}
+        }} catch (e) {{}}
+        // No saved view -> zoom to content once
+        viewer.zoomTo();
+        viewer.render();
+      }}
+
+      function startSaving(viewer) {{
+        // Save periodically
+        setInterval(() => {{
+          try {{
+            localStorage.setItem(KEY, JSON.stringify(viewer.getView()));
+          }} catch (e) {{}}
+        }}, 250);
+      }}
+
+      // Wait until py3Dmol has created the viewer
+      const t = setInterval(() => {{
+        const viewer = findViewer();
+        if (!viewer) return;
+        clearInterval(t);
+        restoreOrZoom(viewer);
+        startSaving(viewer);
+      }}, 50);
+    }})();
+    </script>
+    """
+
+   
+        # Put our script right before </body> if possible
+        if "</body>" in page:
+            page = page.replace("</body>", persist_js + "\n</body>")
+        else:
+            page = page + persist_js
+
+        srcdoc = _html.escape(page, quote=True)
+        self._iframe.value = (
+            f'<iframe srcdoc="{srcdoc}" '
+            f'width="{self._width}" height="{self._height}" '
+            f'style="border:0;"></iframe>'
+        )

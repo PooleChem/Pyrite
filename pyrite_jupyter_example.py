@@ -5,16 +5,15 @@ from scipy.optimize import differential_evolution, minimize
 from tqdm.notebook import tqdm, trange
 import numpy as np
 import pandas as pd
-from viztracer import VizTracer
 # %%
 #load data 
-ligand = pyrite.Ligand.from_sdf('examples/input_files/factor_x_ligand.sdf')
+ligand = pyrite.Mol.from_sdf('examples/input_files/factor_x_ligand.sdf')
 
 print('Dihedral angles:', len(ligand.dihedral_angles))
 ligand.set_draw_options({'highlight': 'center'})
 ligand.svg
 # %%
-receptor = pyrite.Receptor.from_pdb('examples/input_files/factor_x.pdb')
+receptor = pyrite.Mol.from_pdb('examples/input_files/factor_x.pdb')
 receptor.viewer
 # %%
 #Pocket of protein
