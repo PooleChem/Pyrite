@@ -118,7 +118,6 @@ PROTEINS_HEAVY_ATOMS_CUTOFF = 1000
 
 class Mol(Chem.Mol):
     """
-    TODO:
     Representation of a molecule.
 
     The Mol class provides methods for initializing molecules from various sources,
@@ -276,8 +275,6 @@ class Mol(Chem.Mol):
         **kwargs,
     ):
         r"""Creates an instance of :class:`Mol` from a PDB file.
-
-        TODO
 
         Always sanitizes if template included.
 
