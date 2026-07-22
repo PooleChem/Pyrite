@@ -194,15 +194,15 @@ class Mol(Chem.Mol):
             center_atom if center_atom is not None else self.__get_center_atom()
         )
 
-        self.__flexible = flexible
-        if flexible:
-            self.__compute_rotatable_dihedrals(flex_hydrogens)
-
         if self.GetNumConformers() == 0:
             Chem.SanitizeMol(self)
             params = Chem.AllChem.ETKDGv3()
             params.randomSeed = 0xC0FFEE
             Chem.AllChem.EmbedMolecule(self, params)  # TODO: cant do if not sanitized.
+
+        self.__flexible = flexible
+        if flexible:
+            self.__compute_rotatable_dihedrals(flex_hydrogens)
 
         self.__assign_atom_types()
         Chem.rdPartialCharges.ComputeGasteigerCharges(self)
