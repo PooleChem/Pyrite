@@ -1221,7 +1221,7 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
         _fixed_mol_charges = np.array(
             [
                 a.GetDoubleProp("_GasteigerCharge")
-                for a in self.fixed_mol._rdkit.GetAtoms()
+                for a in self.fixed_mol.GetAtoms()
             ]
         )
         _probe_mol_charges[np.isnan(_probe_mol_charges)] = 0.0

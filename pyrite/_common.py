@@ -184,9 +184,9 @@ class Mol(Chem.Mol):
         self._fix_mol_valence(sanitize=False)  # TODO: sanitize?
 
         if hydrogens == "add":
-            mol = Chem.AllChem.AddHs(mol, addCoords=True, sanitize=False)
+            mol = Chem.AllChem.AddHs(mol, addCoords=True)
         elif hydrogens == "remove":
-            mol = Chem.AllChem.RemoveHs(mol, sanitize=False)
+            mol = Chem.AllChem.RemoveHs(mol)
 
         # TODO: keep for prot?
         self._center_atom = (
@@ -308,6 +308,9 @@ class Mol(Chem.Mol):
             pdb_file, sanitize=False, removeHs=(hydrogens == "remove")
         )
 
+        if hydrogens == "add":
+            mol = Chem.AllChem.AddHs(mol)
+
         if template_smiles or template_sdf:
             if template_smiles:
                 template_mol = Chem.MolFromSmiles(template_smiles)
@@ -319,7 +322,8 @@ class Mol(Chem.Mol):
             Chem.AssignStereochemistryFrom3D(mol)
             Chem.SanitizeMol(mol)
 
-        return cls(mol, hydrogens=hydrogens, **kwargs)
+        h_for_init = "keep" if hydrogens == "add" else hydrogens
+        return cls(mol, hydrogens=h_for_init, **kwargs)
 
     # TODO: be able to load and return multiple ligands from the same SDF file. (for v_from_sdf too)
     @classmethod
