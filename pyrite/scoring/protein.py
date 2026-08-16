@@ -1487,7 +1487,7 @@ class AD4Solvation(_ChargeScoringFunction):
 
     def __init_solvation(self):
         max_type = max(e.value for e in AtomType)  # noqa
-        self.ad_solvation = np.empty(max_type + 1, dtype=bool)
+        self.ad_solvation = np.empty(max_type + 1, dtype=float)
         for _, t in vina_atom_consts.items():
             self.ad_solvation[t.type.value] = t.ad_solvation
 
@@ -1495,7 +1495,7 @@ class AD4Solvation(_ChargeScoringFunction):
 
     def __init_volume(self):
         max_type = max(e.value for e in AtomType)  # noqa
-        self.ad_volume = np.empty(max_type + 1, dtype=bool)
+        self.ad_volume = np.empty(max_type + 1, dtype=float)
         for _, t in vina_atom_consts.items():
             self.ad_volume[t.type.value] = t.ad_volume
 
@@ -1880,15 +1880,17 @@ class PlantsPLP(_PLP):
             ignore_non_polar_hydrogens,
         )
         if weights is None:
-            self.weights = (-4.0, -7.0, -0.05, -0.40, 0.50)
+            weights = (-4.0, -7.0, -0.05, -0.40, 0.50)
+        self.weights = weights
+        w0, w1, w2, w3, w4 = weights
 
         self.__init_plants_interaction_types()
         self.parameters = {
-            PlantsPLP._InteractionType.HBOND: (2.3, 2.6, 3.1, 3.4, -4.0, 20.0),
-            PlantsPLP._InteractionType.METAL: (1.4, 2.2, 2.6, 2.8, -7.0, 20.0),
-            PlantsPLP._InteractionType.BURIED: (3.4, 3.6, 4.5, 5.5, -0.05, 20.0),
-            PlantsPLP._InteractionType.NONPOLAR: (3.4, 3.6, 4.5, 5.5, -0.40, 20.0),
-            PlantsPLP._InteractionType.REPULSIVE: (3.2, 5.0, 0.05, 10.0),
+            PlantsPLP._InteractionType.HBOND: (2.3, 2.6, 3.1, 3.4, w0, 20.0),
+            PlantsPLP._InteractionType.METAL: (1.4, 2.2, 2.6, 2.8, w1, 20.0),
+            PlantsPLP._InteractionType.BURIED: (3.4, 3.6, 4.5, 5.5, w2, 20.0),
+            PlantsPLP._InteractionType.NONPOLAR: (3.4, 3.6, 4.5, 5.5, w3, 20.0),
+            PlantsPLP._InteractionType.REPULSIVE: (3.2, 5.0, w4 * 0.1, w4 * 20.0),
         }
 
     class _InteractionType(IntEnum):
@@ -1939,7 +1941,7 @@ class PlantsPLP(_PLP):
         self.mask_rep = (
             (is_donor(lig_types)[:, None] & is_donor(rec_types)[None, :])
             | (is_acceptor(lig_types)[:, None] & is_acceptor(rec_types)[None, :])
-            | (is_donacc(lig_types)[:, None] & is_metal(rec_types)[None, :])
+            | (is_donor(lig_types)[:, None] & is_metal(rec_types)[None, :])
         )
 
         self.mask_hb = (
@@ -1967,7 +1969,7 @@ class PlantsPLP(_PLP):
         ) | (
             is_nonpolar(lig_types)[:, None]
             & (
-                is_donacc(rec_types)
+                is_donor(rec_types)
                 | is_acceptor(rec_types)
                 | is_donacc(rec_types)
                 | is_metal(rec_types)
