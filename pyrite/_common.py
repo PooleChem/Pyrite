@@ -4,6 +4,7 @@ import copy
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
+from numba import njit
 import py3Dmol
 from IPython.display import SVG, Image
 from numpy.typing import NDArray
@@ -40,7 +41,8 @@ def _rotation_matrix_to_euler(r: NDArray):
 
 
 # TODO: Support Quaternions
-def _rotation_matrix_from_euler(roll: float, pitch: float, yaw: float) -> NDArray:
+@njit
+def _rotation_matrix_from_euler(roll: float, pitch: float, yaw: float):
     r"""Create a rotation matrix from Euler angles.
 
     Create a 4x4 rotation matrix from Euler angles (roll, pitch, yaw) in radians.
@@ -62,7 +64,6 @@ def _rotation_matrix_from_euler(roll: float, pitch: float, yaw: float) -> NDArra
     rotation_matrix : NDArray
         A rotation matrix of shape (4, 4) representing the rotation transformation for the specified Euler angles.
     """
-
     sin_roll = np.sin(roll)
     cos_roll = np.cos(roll)
     sin_pitch = np.sin(pitch)
@@ -70,31 +71,21 @@ def _rotation_matrix_from_euler(roll: float, pitch: float, yaw: float) -> NDArra
     sin_yaw = np.sin(yaw)
     cos_yaw = np.cos(yaw)
 
-    rotation_matrix = np.array(
-        [
-            [
-                cos_yaw * cos_pitch,
-                cos_yaw * sin_pitch * sin_roll - sin_yaw * cos_roll,
-                cos_yaw * sin_pitch * cos_roll + sin_yaw * sin_roll,
-            ],
-            [
-                sin_yaw * cos_pitch,
-                sin_yaw * sin_pitch * sin_roll + cos_yaw * cos_roll,
-                sin_yaw * sin_pitch * cos_roll - cos_yaw * sin_roll,
-            ],
-            [
-                -sin_pitch,
-                cos_pitch * sin_roll,
-                cos_pitch * cos_roll,
-            ],
-        ]
-    )
-    transformation_matrix = np.eye(4)
-    transformation_matrix[:3, :3] = rotation_matrix
-    return transformation_matrix
+    m = np.eye(4)
+    m[0, 0] = cos_yaw * cos_pitch
+    m[0, 1] = cos_yaw * sin_pitch * sin_roll - sin_yaw * cos_roll
+    m[0, 2] = cos_yaw * sin_pitch * cos_roll + sin_yaw * sin_roll
+    m[1, 0] = sin_yaw * cos_pitch
+    m[1, 1] = sin_yaw * sin_pitch * sin_roll + cos_yaw * cos_roll
+    m[1, 2] = sin_yaw * sin_pitch * cos_roll - cos_yaw * sin_roll
+    m[2, 0] = -sin_pitch
+    m[2, 1] = cos_pitch * sin_roll
+    m[2, 2] = cos_pitch * cos_roll
+    return m
 
 
-def _translation_matrix_from_coordinates(x: float, y: float, z: float) -> NDArray:
+@njit
+def _translation_matrix_from_coordinates(x: float, y: float, z: float):
     """Create a translation matrix from coordinates.
 
     Create a 4x4 translation matrix from the provided relative x, y, and z coordinates.
@@ -108,9 +99,11 @@ def _translation_matrix_from_coordinates(x: float, y: float, z: float) -> NDArra
     -------
     translation_matrix : NDArray
     """
-    translation_matrix = np.eye(4)
-    translation_matrix[:3, 3] = np.array([x, y, z])
-    return translation_matrix
+    m = np.eye(4)
+    m[0, 3] = x
+    m[1, 3] = y
+    m[2, 3] = z
+    return m
 
 
 PROTEINS_HEAVY_ATOMS_CUTOFF = 1000

@@ -3,11 +3,87 @@ from enum import IntEnum
 from typing import Any
 
 import numpy as np
+from numba import njit
 
 from .._common import Mol
 from ..atom_consts import AtomType, vina_atom_consts
 from ._base import ScoringFunction
 from .dependencies import Dependency, KNNDependency
+
+
+@njit
+def _gaussian_kernel(x, w):
+    return np.exp(-((x / w) ** 2))
+
+
+@njit
+def _slope_step_kernel(dist, good, bad):
+    # Numba does not support 2D boolean fancy indexing, so we flatten and loop.
+    flat = dist.ravel()
+    n = flat.shape[0]
+    out = np.empty(n)
+    slope = good - bad
+    for k in range(n):
+        d = flat[k]
+        if d >= bad:
+            out[k] = 0.0
+        elif d <= good:
+            out[k] = 1.0
+        else:
+            out[k] = (d - bad) / slope
+    return out.reshape(dist.shape)
+
+
+@njit
+def _lj_kernel(r, optimal_distance, i_exp, j_exp, smoothing, cap, depth, mask):
+    # c_i / c_j are 2D element-wise ops — supported by Numba.
+    c_i = (optimal_distance ** i_exp) * depth * j_exp / (i_exp - j_exp)
+    c_j = (optimal_distance ** j_exp) * depth * i_exp / (j_exp - i_exp)
+
+    # Accumulate in a loop to avoid 2D boolean fancy indexing.
+    total = 0.0
+    for row in range(r.shape[0]):
+        for col in range(r.shape[1]):
+            if not mask[row, col]:
+                continue
+            opt = optimal_distance[row, col]
+            rval = r[row, col]
+            if rval > opt + smoothing:
+                r2 = rval - smoothing
+            elif rval < opt - smoothing:
+                r2 = rval + smoothing
+            else:
+                r2 = opt
+            total += min(cap, c_i[row, col] / r2 ** i_exp + c_j[row, col] / r2 ** j_exp)
+    return total
+
+
+@njit
+def _four_piece_kernel(r, a, b, c, d, e, f):
+    res = np.zeros(len(r))
+    for k in range(len(r)):
+        ri = r[k]
+        if ri < a:
+            res[k] = f * (a - ri) / a
+        elif ri < b:
+            res[k] = e * (ri - a) / (b - a)
+        elif ri < c:
+            res[k] = e
+        elif ri < d:
+            res[k] = e * (d - ri) / (d - c)
+    return res
+
+
+@njit
+def _two_piece_kernel(r, a, b, c, d):
+    res = np.zeros(len(r))
+    for k in range(len(r)):
+        ri = r[k]
+        if ri < a:
+            res[k] = ri * (c - d) / a + d
+        elif ri <= b:
+            res[k] = -c * (ri - a) / (b - a) + c
+    return res
 
 
 class _KNNScoringFunction(ScoringFunction, ABC):
@@ -198,7 +274,7 @@ class Gaussian(_KNNScoringFunction):
 
     @staticmethod
     def __gaussian(x, w):
-        return np.exp(-((x / w) ** 2))
+        return _gaussian_kernel(x, w)
 
     def _score(self, conf_id, computed) -> float:
         r, idx, mask = computed[self.nn_dep]
@@ -378,10 +454,7 @@ class _SlopeStep(_KNNScoringFunction):
 
     @staticmethod
     def _slope_step(dist, good, bad):
-        slope_step = (dist - bad) / (good - bad)
-        slope_step[dist >= bad] = 0.0
-        slope_step[dist <= good] = 1.0
-        return slope_step
+        return _slope_step_kernel(dist, good, bad)
 
     def _mask(self, fixed_val, neighbor_mask):
         return np.full(fixed_val.shape, True) & neighbor_mask
@@ -864,25 +937,13 @@ class LJ(_KNNScoringFunction):
         neighbor_mask = neighbor_mask[self.probe_mask]
 
         optimal_distance = self._get_optimal_distance(idx, neighbor_mask) + self._offset
-
-        c_i = (optimal_distance**self._i) * self._depth * self._j / (self._i - self._j)
-        c_j = (optimal_distance**self._j) * self._depth * self._i / (self._j - self._i)
-
-        r2 = np.full(r.shape, optimal_distance)
-        mask_upper = r > (optimal_distance + self._smoothing)
-        mask_lower = r < (optimal_distance - self._smoothing)
-        r2[mask_upper] = r[mask_upper] - self._smoothing
-        r2[mask_lower] = r[mask_lower] + self._smoothing
-
-        r_i = r2**self._i
-        r_j = r2**self._j
-
-        res = np.minimum(self._cap, c_i / r_i + c_j / r_j)
-
         mask = self._mask(idx, neighbor_mask)
-        res[~mask] = 0.0
 
-        return np.sum(res)
+        return _lj_kernel(
+            r, optimal_distance,
+            self._i, self._j, self._smoothing, self._cap, self._depth,
+            mask,
+        )
 
 
 class VDW(LJ):
@@ -1692,15 +1753,7 @@ class _PLP(_KNNScoringFunction, ABC):
         """
 
         a, b, c, d, e, f = values
-
-        res = np.zeros_like(r)
-
-        res[r < a] = (f * (a - r[r < a])) / a
-        res[(a <= r) & (r < b)] = (e * (r[(a <= r) & (r < b)] - a)) / (b - a)
-        res[(b <= r) & (r < c)] = e
-        res[(c <= r) & (r < d)] = (e * (d - r[(c <= r) & (r < d)])) / (d - c)
-
-        return res
+        return _four_piece_kernel(r, a, b, c, d, e, f)
 
     @staticmethod
     def potential_two_piece(r, values):
@@ -1758,12 +1811,7 @@ class _PLP(_KNNScoringFunction, ABC):
 
         """
         a, b, c, d = values
-
-        res = np.zeros_like(r)
-        res[r < a] = r[r < a] * (c - d) / a + d
-        res[(a <= r) & (r <= b)] = -c * (r[(a <= r) & (r <= b)] - a) / (b - a) + c
-
-        return res
+        return _two_piece_kernel(r, a, b, c, d)
 
 
 class PlantsPLP(_PLP):
