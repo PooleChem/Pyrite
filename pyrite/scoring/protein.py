@@ -11,27 +11,17 @@ from ._base import ScoringFunction
 from .dependencies import Dependency, KNNDependency
 
 
-@njit
+@njit(fastmath=True)
 def _gaussian_kernel(x, w):
     return np.exp(-((x / w) ** 2))
 
 
 @njit
 def _slope_step_kernel(dist, good, bad):
-    # Numba does not support 2D boolean fancy indexing, so we flatten and loop.
-    flat = dist.ravel()
-    n = flat.shape[0]
-    out = np.empty(n)
     slope = good - bad
-    for k in range(n):
-        d = flat[k]
-        if d >= bad:
-            out[k] = 0.0
-        elif d <= good:
-            out[k] = 1.0
-        else:
-            out[k] = (d - bad) / slope
-    return out.reshape(dist.shape)
+    return np.where(dist >= bad, 0.0,
+               np.where(dist <= good, 1.0,
+                   (dist - bad) / slope))
 
 
 @njit
