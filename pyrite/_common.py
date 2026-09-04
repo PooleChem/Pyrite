@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import warnings
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -300,6 +301,43 @@ class Mol(Chem.Mol):
         mol = Chem.MolFromPDBFile(
             pdb_file, sanitize=False, removeHs=(hydrogens == "remove")
         )
+
+        if mol is None:
+            raise ValueError(f"RDKit could not parse PDB file: {pdb_file}")
+
+        # Strip residues whose atoms have impossible valence (e.g. metal-coordinated O,3
+        # or modified residues that survive non-standard replacement).
+        mol.UpdatePropertyCache(strict=False)
+        problems = Chem.DetectChemistryProblems(mol)
+        bad_residues = {
+            (info.GetChainId(), info.GetResidueNumber(), info.GetInsertionCode())
+            for p in problems
+            if hasattr(p, "GetAtomIdx")
+            for info in [mol.GetAtomWithIdx(p.GetAtomIdx()).GetPDBResidueInfo()]
+            if info is not None
+        }
+        if bad_residues:
+            labels = ", ".join(
+                f"chain {c} res {r}{i.strip()}" for c, r, i in sorted(bad_residues)
+            )
+            warnings.warn(
+                f"from_pdb: removed {len(bad_residues)} residue(s) with impossible valence "
+                f"({labels}). Check the source PDB for non-standard or metal-coordinated residues.",
+                UserWarning,
+                stacklevel=2,
+            )
+            edit = Chem.RWMol(mol)
+            for idx in sorted(
+                [a.GetIdx() for a in mol.GetAtoms()
+                 if a.GetPDBResidueInfo() and (
+                     a.GetPDBResidueInfo().GetChainId(),
+                     a.GetPDBResidueInfo().GetResidueNumber(),
+                     a.GetPDBResidueInfo().GetInsertionCode(),
+                 ) in bad_residues],
+                reverse=True,
+            ):
+                edit.RemoveAtom(idx)
+            mol = edit.GetMol()
 
         if hydrogens == "add":
             mol = Chem.AllChem.AddHs(mol)
