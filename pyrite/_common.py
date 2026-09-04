@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from numba import njit
 import py3Dmol
-from IPython.display import SVG, Image
+from IPython.display import SVG, Image, display
 from numpy.typing import NDArray
 from rdkit import Chem, RDLogger
 from rdkit.Chem import Draw, SDWriter
@@ -574,12 +574,14 @@ class Mol(Chem.Mol):
     def _repr_svg_(self):
         return self.__repr_picture(Draw.MolDraw2DSVG(*self.draw_options["size"]))
 
-    def _repr_html_(self):
-        return Viewer(  # noqa
-            self,
-            width=self.draw_options["size"][0],
-            height=self.draw_options["size"][1],
-        )._repr_html_()
+    def _ipython_display_(self):
+        display(
+            Viewer(  # noqa
+                self,
+                width=self.draw_options["size"][0],
+                height=self.draw_options["size"][1],
+            ).as_widget()
+        )
 
     @property
     def png(self):

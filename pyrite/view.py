@@ -347,6 +347,3 @@ class Viewer:
             f'width="{self._width}" height="{self._height}" '
             f'style="border:0;"></iframe>'
         )
-
-    def __repr_html__(self):
-        return self.as_widget().__repr_html__()
