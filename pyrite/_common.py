@@ -962,6 +962,13 @@ class Mol(Chem.Mol):
         conf_id : int, default -1
             The conformer id to set the dihedrals to. By default selects the global conformer.
         """
+        if len(angles_rad) > 0 and len(self.__rotatable_dihedrals) == 0:
+            warnings.warn(
+                "set_dihedral_angles called with angles but this Mol has no rotatable dihedrals. "
+                "Did you forget flexible=True when constructing the Mol?",
+                UserWarning,
+                stacklevel=2,
+            )
         for i, angle in enumerate(angles_rad):
             self.set_dihedral_angle(i, angle, conf_id)
 
