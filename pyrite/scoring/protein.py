@@ -169,26 +169,17 @@ class _KNNScoringFunction(ScoringFunction, ABC):
             self.xs_radii[t.type.value] = t.xs_radius
 
         self.probe_radii = self.xs_radii[self.probe_mol.atom_types[self.probe_mask]]
+        # Precomputed once: fixed_mask/fixed_mol.atom_types never change after construction,
+        # so re-filtering them on every _get_optimal_distance call (once per KNN term, per
+        # pose) was pure waste.
+        self._fixed_radii_masked = self.xs_radii[self.fixed_mol.atom_types[self.fixed_mask]]
 
     def get_dependencies(self) -> set[Dependency]:
         return {self.nn_dep}
 
     def _get_optimal_distance(self, idx, mask):
         safe_idx = np.where(mask, idx, 0)
-        # print(
-        #     mask.shape,
-        #     idx.shape,
-        #     safe_idx.shape,
-        #     self.fixed_mask.shape,
-        #     np.sum(self.fixed_mask),
-        #     self.fixed_mol.atom_types.shape,
-        #     self.fixed_mol.atom_types[self.fixed_mask].shape,
-        #     np.max(safe_idx),
-        #     self.xs_radii.shape,
-        # )
-        fixed_radii = self.xs_radii[
-            self.fixed_mol.atom_types[self.fixed_mask][safe_idx]
-        ]
+        fixed_radii = self._fixed_radii_masked[safe_idx]
 
         return self.probe_radii[:, None] + fixed_radii[:, :]
 
@@ -580,12 +571,14 @@ class Hydrophobic(_SlopeStep):
         self.probe_mol_hydrophobic = self.xs_hydrophobic[
             self.probe_mol.atom_types[self.probe_mask]
         ]
+        # Precomputed once — see _KNNScoringFunction.__init_radii for why.
+        self._fixed_hydrophobic_masked = self.xs_hydrophobic[
+            self.fixed_mol._atom_types[self.fixed_mask]
+        ]
 
     def _mask(self, idx, neighbor_mask):
         safe_idx = np.where(neighbor_mask, idx, 0)
-        fixed_mol_hydrophobic = self.xs_hydrophobic[
-            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
-        ]
+        fixed_mol_hydrophobic = self._fixed_hydrophobic_masked[safe_idx]
         return (
             self.probe_mol_hydrophobic[:, None]
             & fixed_mol_hydrophobic[:, :]
@@ -674,9 +667,7 @@ class NonHydrophobic(Hydrophobic):
 
     def _mask(self, idx, neighbor_mask):
         safe_idx = np.where(neighbor_mask, idx, 0)
-        fixed_mol_hydrophobic = self.xs_hydrophobic[
-            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
-        ]
+        fixed_mol_hydrophobic = self._fixed_hydrophobic_masked[safe_idx]
         return ~self.probe_mol_hydrophobic[:, None] & ~fixed_mol_hydrophobic & neighbor_mask
 
 
@@ -785,16 +776,15 @@ class NonDirHBond(_SlopeStep):
 
         self.probe_mol_acceptor = self.xs_acceptor[self.probe_mol.atom_types[self.probe_mask]]
         self.probe_mol_donor = self.xs_donor[self.probe_mol.atom_types[self.probe_mask]]
+        # Precomputed once — see _KNNScoringFunction.__init_radii for why.
+        self._fixed_acceptor_masked = self.xs_acceptor[self.fixed_mol._atom_types[self.fixed_mask]]
+        self._fixed_donor_masked = self.xs_donor[self.fixed_mol._atom_types[self.fixed_mask]]
 
     def _mask(self, idx, neighbor_mask):
         safe_idx = np.where(neighbor_mask, idx, 0)
 
-        fixed_mol_acceptor = self.xs_acceptor[
-            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
-        ]
-        fixed_mol_donor = self.xs_donor[
-            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
-        ]
+        fixed_mol_acceptor = self._fixed_acceptor_masked[safe_idx]
+        fixed_mol_donor = self._fixed_donor_masked[safe_idx]
         return (self.probe_mol_donor[:, None] & fixed_mol_acceptor) | (
             self.probe_mol_acceptor[:, None] & fixed_mol_donor
         ) & neighbor_mask
@@ -1195,16 +1185,15 @@ class NonDirHBondLJ(LJ):
 
         self.probe_mol_acceptor = self.xs_acceptor[self.probe_mol.atom_types[self.probe_mask]]
         self.probe_mol_donor = self.xs_donor[self.probe_mol.atom_types[self.probe_mask]]
+        # Precomputed once — see _KNNScoringFunction.__init_radii for why.
+        self._fixed_acceptor_masked = self.xs_acceptor[self.fixed_mol._atom_types[self.fixed_mask]]
+        self._fixed_donor_masked = self.xs_donor[self.fixed_mol._atom_types[self.fixed_mask]]
 
     def _mask(self, idx, neighbor_mask):
         safe_idx = np.where(neighbor_mask, idx, 0)
 
-        fixed_mol_acceptor = self.xs_acceptor[
-            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
-        ]
-        fixed_mol_donor = self.xs_donor[
-            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]
-        ]
+        fixed_mol_acceptor = self._fixed_acceptor_masked[safe_idx]
+        fixed_mol_donor = self._fixed_donor_masked[safe_idx]
         return (self.probe_mol_donor[:, None] & fixed_mol_acceptor) | (
             self.probe_mol_acceptor[:, None] & fixed_mol_donor
         ) & neighbor_mask

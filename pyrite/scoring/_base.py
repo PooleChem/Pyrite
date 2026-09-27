@@ -79,6 +79,11 @@ class ScoringFunction(ABC):
         them, and then resolves them. It then calls the ``_score`` function, which calculates
         the score using the computed dependencies.
 
+        .. note::
+            The dependency set and its merge are cached on the instance after the first call,
+            since they only depend on the (fixed) composition of the scoring function, not on
+            `conf_id`. Only ``Dependency.compute`` re-runs on every call.
+
         Parameters
         ----------
         conf_id : int, default -1
@@ -91,8 +96,11 @@ class ScoringFunction(ABC):
             The score associated with the conformer.
         """
 
-        raw_deps = self.get_dependencies()
-        opt_deps = Dependency.merge_all(raw_deps)
+        opt_deps = getattr(self, "_opt_deps_cache", None)
+        if opt_deps is None:
+            raw_deps = self.get_dependencies()
+            opt_deps = Dependency.merge_all(raw_deps)
+            self._opt_deps_cache = opt_deps
         computed = {dep: dep.compute(conf_id) for dep in opt_deps}
 
         return self._score(conf_id, computed=computed)

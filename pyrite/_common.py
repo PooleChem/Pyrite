@@ -2,112 +2,34 @@ from __future__ import annotations
 
 import copy
 import warnings
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-from numba import njit
 import py3Dmol
 from IPython.display import SVG, Image, display
+from numba import njit
 from numpy.typing import NDArray
 from rdkit import Chem, RDLogger
 from rdkit.Chem import Draw, SDWriter
 
-from .view import Viewer
+from ._util import _rotation_matrix_from_euler, _rotation_matrix_to_euler, _translation_matrix_from_coordinates, _rotation_matrix_from_quat
 from .atom_consts import AtomType, vina_atom_consts
+from .view import Viewer
 
 if TYPE_CHECKING:
     from pyrite.bounds import Bounds
 
 
-def _rotation_matrix_to_euler(r: NDArray):
-    """
-    Extract ZYX (yaw-pitch-roll) Euler angles from a 3×3 rotation matrix R.
-    Returns (phi, theta, psi) = (roll, pitch, yaw) in radians.
-    """
-    # # clamp to handle numerical errors outside [-1,1]
-    sy = -r[2, 0]
-    theta = np.arcsin(np.clip(sy, -1.0, 1.0))
+ROTATABLE_BOND_STRUCT = Chem.MolFromSmarts(
+            "[!$(*#*)&!D1&!$(C(F)(F)F)&!$(C(Cl)(Cl)Cl)&!$(C(Br)(Br)Br)&!$(C([CH3])"
+            "([CH3])[CH3])&!$([CD3](=[N,O,S])-!@[#7,O,S!D1])&!$([#7,O,S!D1]-!@[CD3]"
+            "=[N,O,S])&!$([CD3](=[N+])-!@[#7!D1])&!$([#7!D1]-!@[CD3]=[N+])]-,:;!@"
+            "[!$(*#*)&!D1&!$(C(F)(F)F)&!$(C(Cl)(Cl)Cl)&!$(C(Br)(Br)Br)&!$(C([CH3])"
+            "([CH3])[CH3])]"
+        )
 
-    # Check for gimbal lock
-    if np.isclose(np.cos(theta), 0.0):
-        # Gimbal lock: pitch is ±90°
-        # Roll and yaw are coupled; set roll=0 and compute yaw:
-        phi = 0.0
-        psi = np.arctan2(-r[0, 1], r[1, 1])
-    else:
-        phi = np.arctan2(r[2, 1], r[2, 2])  # roll
-        psi = np.arctan2(r[1, 0], r[0, 0])  # yaw
-
-    return phi, theta, psi
-
-
-# TODO: Support Quaternions
-@njit
-def _rotation_matrix_from_euler(roll: float, pitch: float, yaw: float):
-    r"""Create a rotation matrix from Euler angles.
-
-    Create a 4x4 rotation matrix from Euler angles (roll, pitch, yaw) in radians.
-
-
-    Parameters
-    ----------
-    roll : float
-        Roll angle in radians.
-
-    pitch : float
-        Pitch angle in radians.
-
-    yaw : float
-        Yaw angle in radians.
-
-    Returns
-    -------
-    rotation_matrix : NDArray
-        A rotation matrix of shape (4, 4) representing the rotation transformation for the specified Euler angles.
-    """
-    sin_roll = np.sin(roll)
-    cos_roll = np.cos(roll)
-    sin_pitch = np.sin(pitch)
-    cos_pitch = np.cos(pitch)
-    sin_yaw = np.sin(yaw)
-    cos_yaw = np.cos(yaw)
-
-    m = np.eye(4)
-    m[0, 0] = cos_yaw * cos_pitch
-    m[0, 1] = cos_yaw * sin_pitch * sin_roll - sin_yaw * cos_roll
-    m[0, 2] = cos_yaw * sin_pitch * cos_roll + sin_yaw * sin_roll
-    m[1, 0] = sin_yaw * cos_pitch
-    m[1, 1] = sin_yaw * sin_pitch * sin_roll + cos_yaw * cos_roll
-    m[1, 2] = sin_yaw * sin_pitch * cos_roll - cos_yaw * sin_roll
-    m[2, 0] = -sin_pitch
-    m[2, 1] = cos_pitch * sin_roll
-    m[2, 2] = cos_pitch * cos_roll
-    return m
-
-
-@njit
-def _translation_matrix_from_coordinates(x: float, y: float, z: float):
-    """Create a translation matrix from coordinates.
-
-    Create a 4x4 translation matrix from the provided relative x, y, and z coordinates.
-
-    Parameters
-    ----------
-    x, y, z : float
-        Coordinates for the translation.
-
-    Returns
-    -------
-    translation_matrix : NDArray
-    """
-    m = np.eye(4)
-    m[0, 3] = x
-    m[1, 3] = y
-    m[2, 3] = z
-    return m
-
-
-PROTEINS_HEAVY_ATOMS_CUTOFF = 1000
+VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF = 1000
 
 
 class Mol(Chem.Mol):
@@ -163,26 +85,26 @@ class Mol(Chem.Mol):
         return inst
 
     def __init__(
-        self,
-        mol: Chem.Mol = None,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
-        center_atom: int = None,
-        flex_hydrogens: bool = False,
-        flexible: bool = False,  # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of dihedrals, or manual, or by resid.
+            self,
+            mol: Chem.Mol = None,
+            hydrogens: Literal["keep", "add", "remove"] = "remove",
+            flex_hydrogens: bool = False,
+            flexible: bool = False,            # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of dihedrals, or manual, or by resid.
+            center_atom: int = None,
+            rotation_type: Literal["euler", "quat"] = "euler",
     ):
-        self.__cur_transform = np.eye(4)
-        self.__cur_rotation = [0, 0, 0]
         self.__rotatable_dihedrals = np.array([], dtype=object)
         self.__dihedral_angles = np.array([])
 
         self._fix_mol_valence(sanitize=False)  # TODO: sanitize?
 
+        # TODO: does this even do anything?
         if hydrogens == "add":
             mol = Chem.AllChem.AddHs(mol, addCoords=True)
         elif hydrogens == "remove":
             mol = Chem.AllChem.RemoveHs(mol)
 
-        # TODO: keep for prot?
+        # TODO: this doesnt make sense for proteins. In a protein, all dihedrals should be oriented wrt the backbone, not the center atom.
         self._center_atom = (
             center_atom if center_atom is not None else self.__get_center_atom()
         )
@@ -193,33 +115,32 @@ class Mol(Chem.Mol):
             params.randomSeed = 0xC0FFEE
             Chem.AllChem.EmbedMolecule(self, params)  # TODO: cant do if not sanitized.
 
-        self.__flexible = flexible
-        if flexible:
+        # TODO: make property. Setting it will then compute the dihedrals if needed. Perhaps bool | list ?
+        self.is_flexible = flexible
+        if self.is_flexible:
             self.__compute_rotatable_dihedrals(flex_hydrogens)
 
         self.__assign_atom_types()
         Chem.rdPartialCharges.ComputeGasteigerCharges(self)
 
+        # Set the layout
+        self.layout: PoseLayout = PoseLayout(rotation_type, len(self.__rotatable_dihedrals))
 
-        # TODO: keep?
-        self._init_state = (
-            copy.deepcopy(self.__cur_rotation),
-            copy.deepcopy(self.position),
-            copy.deepcopy(self.__dihedral_angles),
-        )
+        self.__cur_transform = np.eye(4)
+        self.__cur_rotation = np.zeros(self.layout.rot_dim)
 
-        # If more than 1000 heavy atoms: assume protein for drawing
-        if self.GetNumHeavyAtoms() >= PROTEINS_HEAVY_ATOMS_CUTOFF:
+        # If more than 1000 heavy atoms: assume protein for viewing
+        if self.GetNumHeavyAtoms() >= VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF:
             self.draw_options = self.__default_protein_draw_options.copy()
         else:
             self.draw_options = self.__default_ligand_draw_options.copy()
 
     @classmethod
     def from_smiles(
-        cls,
-        smiles: str,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
-        **kwargs,
+            cls,
+            smiles: str,
+            hydrogens: Literal["keep", "add", "remove"] = "remove",
+            **kwargs,
     ):
         """Constructs an instance of :class:`Mol` from a SMILES string representation of a molecule.
 
@@ -239,10 +160,10 @@ class Mol(Chem.Mol):
 
     @classmethod
     def from_rdkit(
-        cls,
-        mol: Chem.Mol,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
-        **kwargs,
+            cls,
+            mol: Chem.Mol,
+            hydrogens: Literal["keep", "add", "remove"] = "remove",
+            **kwargs,
     ):
         """Create an instance of :class:`Mol` from an RDKit :class:`~rdkit.Chem.rdchem.Mol` object.
 
@@ -259,14 +180,15 @@ class Mol(Chem.Mol):
         """
         return cls(mol, hydrogens=hydrogens, **kwargs)
 
+    # TODO: implement the PDBFixer stuff.
     @classmethod
     def from_pdb(
-        cls,
-        pdb_file: str,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
-        template_smiles: str = None,
-        template_sdf: str = None,
-        **kwargs,
+            cls,
+            pdb_file: str,
+            hydrogens: Literal["keep", "add", "remove"] = "remove",
+            template_smiles: str = None,
+            template_sdf: str = None,
+            **kwargs,
     ):
         r"""Creates an instance of :class:`Mol` from a PDB file.
 
@@ -328,13 +250,13 @@ class Mol(Chem.Mol):
             )
             edit = Chem.RWMol(mol)
             for idx in sorted(
-                [a.GetIdx() for a in mol.GetAtoms()
-                 if a.GetPDBResidueInfo() and (
-                     a.GetPDBResidueInfo().GetChainId(),
-                     a.GetPDBResidueInfo().GetResidueNumber(),
-                     a.GetPDBResidueInfo().GetInsertionCode(),
-                 ) in bad_residues],
-                reverse=True,
+                    [a.GetIdx() for a in mol.GetAtoms()
+                     if a.GetPDBResidueInfo() and (
+                            a.GetPDBResidueInfo().GetChainId(),
+                            a.GetPDBResidueInfo().GetResidueNumber(),
+                            a.GetPDBResidueInfo().GetInsertionCode(),
+                    ) in bad_residues],
+                    reverse=True,
             ):
                 edit.RemoveAtom(idx)
             mol = edit.GetMol()
@@ -359,10 +281,10 @@ class Mol(Chem.Mol):
     # TODO: be able to load and return multiple ligands from the same SDF file. (for v_from_sdf too)
     @classmethod
     def from_sdf(
-        cls,
-        mol_file: str,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
-        **kwargs,
+            cls,
+            mol_file: str,
+            hydrogens: Literal["keep", "add", "remove"] = "remove",
+            **kwargs,
     ):
         """Creates an instance of :class:`Mol` from an SDF file.
 
@@ -388,13 +310,14 @@ class Mol(Chem.Mol):
         RDLogger.EnableLog("rdApp.*")
         return cls(mol, hydrogens=hydrogens, **kwargs)
 
+# TODO: refactor to poses
     @classmethod
     def v_from_sdf(
-        cls,
-        mol_file: str,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
-        rmsd_delta: float = 0.5,
-        **kwargs,
+            cls,
+            mol_file: str,
+            hydrogens: Literal["keep", "add", "remove"] = "remove",
+            rmsd_delta: float = 0.5,
+            **kwargs,
     ):
         """Creates a :class:`Mol` from an SDF file, and also returns a list of variables
         representing the conformations in the SDF file.
@@ -448,7 +371,7 @@ class Mol(Chem.Mol):
 
         v = []
         with Chem.SDMolSupplier(
-            mol_file, removeHs=(hydrogens == "remove"), sanitize=False
+                mol_file, removeHs=(hydrogens == "remove"), sanitize=False
         ) as supl:
             for pose in supl:
                 if Chem.CanonSmiles(Chem.MolToSmiles(pose)) != canon_smiles:
@@ -480,7 +403,7 @@ class Mol(Chem.Mol):
         Chem.SanitizeMol(
             self,
             sanitizeOps=(
-                Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
+                    Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
             ),
         )
 
@@ -492,19 +415,19 @@ class Mol(Chem.Mol):
             # )
 
             if (
-                atom.GetSymbol() == "N"
-                and atom.GetValence(Chem.ValenceType.EXPLICIT) == 4
+                    atom.GetSymbol() == "N"
+                    and atom.GetValence(Chem.ValenceType.EXPLICIT) == 4
             ):
                 atom.SetFormalCharge(+1)
             if (
-                atom.GetSymbol() == "O"
-                and atom.GetValence(Chem.ValenceType.EXPLICIT) == 1
+                    atom.GetSymbol() == "O"
+                    and atom.GetValence(Chem.ValenceType.EXPLICIT) == 1
             ):
                 atom.SetFormalCharge(-1)
             # incorrect epoxide fix TODO: check with David
             if (
-                atom.GetSymbol() == "O"
-                and atom.GetValence(Chem.ValenceType.EXPLICIT) == 2
+                    atom.GetSymbol() == "O"
+                    and atom.GetValence(Chem.ValenceType.EXPLICIT) == 2
             ):
                 atom.SetFormalCharge(0)
 
@@ -539,7 +462,7 @@ class Mol(Chem.Mol):
         is_protein = (
             l_options["protein"]
             if l_options["protein"] != "auto"
-            else self.GetNumHeavyAtoms() >= PROTEINS_HEAVY_ATOMS_CUTOFF
+            else self.GetNumHeavyAtoms() >= VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF
         )
 
         if is_protein:
@@ -776,15 +699,7 @@ class Mol(Chem.Mol):
         rotatable_dihedrals = []
         dihedral_angles = []
 
-        rotatable_bond_struct = Chem.MolFromSmarts(
-            "[!$(*#*)&!D1&!$(C(F)(F)F)&!$(C(Cl)(Cl)Cl)&!$(C(Br)(Br)Br)&!$(C([CH3])"
-            "([CH3])[CH3])&!$([CD3](=[N,O,S])-!@[#7,O,S!D1])&!$([#7,O,S!D1]-!@[CD3]"
-            "=[N,O,S])&!$([CD3](=[N+])-!@[#7!D1])&!$([#7!D1]-!@[CD3]=[N+])]-,:;!@"
-            "[!$(*#*)&!D1&!$(C(F)(F)F)&!$(C(Cl)(Cl)Cl)&!$(C(Br)(Br)Br)&!$(C([CH3])"
-            "([CH3])[CH3])]"
-        )
-
-        rotatable_bonds = self.GetSubstructMatches(rotatable_bond_struct)
+        rotatable_bonds = self.GetSubstructMatches(ROTATABLE_BOND_STRUCT)
 
         distance_matrix = np.array(Chem.GetDistanceMatrix(self))[self._center_atom, :]
 
@@ -932,7 +847,7 @@ class Mol(Chem.Mol):
         return self.__dihedral_angles
 
     def set_dihedral_angle(
-        self, i_dihedral: int, angle_rad: float, conf_id: int = -1
+            self, i_dihedral: int, angle_rad: float, conf_id: int = -1
     ) -> None:
         """Set the dihedral angle of a molecule :class:`~rdkit.Chem.rdchem.Conformer` for a
         specific dihedral.
@@ -973,15 +888,12 @@ class Mol(Chem.Mol):
             self.set_dihedral_angle(i, angle, conf_id)
 
     # TODO: optimizations here would be great (even with loss of default conformer updating?)
+    # TODO: allow different rotation types
     def transform(
-        self,
-        roll: float,
-        pitch: float,
-        yaw: float,
-        x: float,
-        y: float,
-        z: float,
-        conf_id: int = -1,
+            self,
+            rotation: NDArray[np.float32],
+            translation: NDArray[np.float32],
+            conf_id: int = -1,
     ) -> None:
         """Transforms the conformer of the molecule with respect to the center atom's coordinates.
 
@@ -1006,7 +918,13 @@ class Mol(Chem.Mol):
         """
         conf = self.GetConformer(conf_id)
 
-        rotate = _rotation_matrix_from_euler(roll, pitch, yaw)
+        if self.layout.rot_type == "euler":
+            assert len(rotation) == 3, "Rotation must be a 3-vector for Ligand with euler rotation."
+            rotate = _rotation_matrix_from_euler(*rotation)
+        else:
+            assert len(rotation) == 4, "Rotation must be a 4-vector for Ligand with quaternion rotation."
+            rotate = _rotation_matrix_from_quat(*rotation)
+
         translate = _translation_matrix_from_coordinates(x, y, z)
 
         new_transform = translate @ rotate
@@ -1031,7 +949,7 @@ class Mol(Chem.Mol):
 
         Chem.rdMolTransforms.TransformConformer(conf, transformation_matrix)
 
-    def update(self, new_vars: NDArray, new_conf: bool = False) -> int:
+    def update(self, pose: Pose | NDArray, new_conf: bool = False) -> int:
         """Update the molecule with the new variables.
 
         Input should be shaped like ``(6 + n_dihedrals,)``.
@@ -1060,28 +978,16 @@ class Mol(Chem.Mol):
             which is the id of the global conformer.
 
         """
-        assert len(new_vars) == 6 + len(self.__rotatable_dihedrals), f'Unexpected number of variables: {len(new_vars)}. Expected: {6 + len(self.__rotatable_dihedrals)}.'
+        assert pose.layout == self.layout, "Pose and molecule layout do not match."
 
         conf_id = -1
         if new_conf:
             conf_id = self.AddConformer(self.GetConformer(), assignId=True)
 
-        transformation = new_vars[:6]
-        dihedrals = new_vars[6:]
-
-        self.transform(*transformation, conf_id=conf_id)
-        self.set_dihedral_angles(dihedrals, conf_id=conf_id)
+        self.transform(pose.rotation, pose.translation, conf_id=conf_id)
+        self.set_dihedral_angles(pose.torsions, conf_id=conf_id)
 
         return conf_id
-
-    # TODO: breaks if center atom is changed after init.
-    def reset(self):
-        """Resets the ligand to its initial state.
-
-        Resets ligand rotation, position, and dihedral angles to the state upon initialization.
-        """
-        self.transform(*self._init_state[0], *self._init_state[1])
-        self.set_dihedral_angles(self._init_state[2])
 
     @property
     def center_atom(self):
@@ -1127,13 +1033,13 @@ class Mol(Chem.Mol):
         return self.__cur_rotation
 
     def place_in(
-        self,
-        binding_site: Bounds,
-        n_positions: int,
-        n_conformations: int,
-        placement: str = "random",
-        conformations: str = "conformer",
-        combine: str = "random",
+            self,
+            binding_site: Bounds,
+            n_positions: int,
+            n_conformations: int,
+            placement: str = "random",
+            conformations: str = "conformer",
+            combine: str = "random",
     ) -> NDArray:
         """Retrieve a list of random placements and conformers for the molecule in the binding_site.
 
@@ -1300,7 +1206,7 @@ class Mol(Chem.Mol):
         if close_writer:
             writer.close()
 
-    def v_to_sdf(self, file: str, v: NDArray):
+    def v_to_sdf(self, file: str, poses: list[Pose]):
         """Write the current molecule with positions `v` to an SDF file.
 
         Parameters
@@ -1324,3 +1230,42 @@ class Mol(Chem.Mol):
         # TODO!
         return id(self)
 
+
+@dataclass(frozen=True)
+class PoseLayout:
+    rot_type: Literal["euler", "quat"]  # 'euler' | 'quat'
+    n_tors: int
+
+    # precomputed properties
+    rot_dim: int = field(init=False, repr=False, compare=False)
+    rot_slice: slice = field(init=False, repr=False, compare=False)
+    trans_slice: slice = field(init=False, repr=False, compare=False)
+    tors_slice: slice = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        d = 3 if self.rot_type == 'euler' else 4 if self.rot_type == 'quat' else None
+        if d is None:
+            raise ValueError(f"Unknown rot_type {self.rot_type!r}. Expected 'euler' or 'quat'.")
+
+        object.__setattr__(self, 'rot_dim', d)
+        object.__setattr__(self, 'rot_slice', slice(0, d))
+        object.__setattr__(self, 'trans_slice', slice(d, d + 3))
+        object.__setattr__(self, 'tors_slice', slice(d + 3, None))
+
+
+class Pose:
+    __slots__ = ('_v', 'layout', 'rotation', 'translation', 'torsions')
+
+    def __init__(self, v: NDArray, layout: PoseLayout):
+        self._v = np.asarray(v)
+        self.layout = layout
+        self.rotation = self._v[self.layout.rot_slice]
+        self.translation = self._v[self.layout.trans_slice]
+        self.torsions = self._v[self.layout.tors_slice]
+
+    def __array__(self, dtype=None):
+        return self._v if dtype is None else self._v.astype(dtype)
+
+    @classmethod
+    def from_array(cls, v: NDArray, layout: PoseLayout):
+        return cls(np.asarray(v).copy(), layout)

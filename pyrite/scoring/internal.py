@@ -91,9 +91,24 @@ class InternalEnergy(ScoringFunction):
 
         mmff_props = Chem.AllChem.MMFFGetMoleculeProperties(self.mol)
         self._mmff_ff = Chem.AllChem.MMFFGetMoleculeForceField(self.mol, mmff_props)
-        self._mmff_ff.Initialize()
+        if self._mmff_ff is None:
+            # MMFF94 cannot assign atom types for this molecule (unusual connectivity).
+            # Fall back to UFF; if that also fails, internal energy returns 0.
+            import warnings
+            self._mmff_ff = Chem.AllChem.UFFGetMoleculeForceField(self.mol)
+            if self._mmff_ff is None:
+                warnings.warn(
+                    f"InternalEnergy: MMFF and UFF both failed for {molecule}; "
+                    "internal energy will be zero.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+        if self._mmff_ff is not None:
+            self._mmff_ff.Initialize()
 
     def _score(self, conf_id, *args, **kwargs) -> float:
+        if self._mmff_ff is None:
+            return 0.0
         pos = self.mol.GetConformer(conf_id).GetPositions()
         self._mmff_ff.Initialize()
         flat_pos = pos.reshape(-1).tolist()
