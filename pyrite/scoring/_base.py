@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 
@@ -68,11 +70,8 @@ class ScoringFunction(ABC):
         mol.RemoveConformer(conf_id)
         return score
 
-    # TODO: add mechanism that allows for retrieval of subscores.
-    #       idea: in _combined, store dict of {k: ScoringFunction, v: score}, keep adding to this dict (flattened, not nested)
-    #             dont return that with get_score, but store and allow retrieval (either method or property)
-    #             user can then use CSF.subscores[SF] to get subscores (for plotting etc)
-    def get_score(self, conf_id: int = -1) -> float:
+
+    def get_score(self, conf_id: int = -1, subscores: dict[ScoringFunction, float] | None = None) -> float:
         """Retrieves the score.
 
         This method first retrieves all dependencies of this ``ScoringFunction`` instance, merges
@@ -103,6 +102,8 @@ class ScoringFunction(ABC):
             self._opt_deps_cache = opt_deps
         computed = {dep: dep.compute(conf_id) for dep in opt_deps}
 
+        if subscores is not None:
+            return self._score_and_store(conf_id, computed, subscores)
         return self._score(conf_id, computed=computed)
 
     def clamp(
@@ -127,6 +128,11 @@ class ScoringFunction(ABC):
         Clamp
         """
         return Clamp(self, min_score, max_score)
+
+    def _score_and_store(self, conf_id: int, computed: dict[Dependency, Any], subscores: dict[ScoringFunction, float]):
+        score = self._score(conf_id, computed=computed)
+        subscores[self] = score
+        return score
 
     @abstractmethod
     def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
@@ -280,6 +286,15 @@ class _CombinedScoringFunction(ScoringFunction):  # pylint: disable=too-few-publ
             total += func._score(conf_id, computed=computed)
         return total
 
+    def _score_and_store(self, conf_id: int, computed: dict[Dependency, Any], subscores: dict[ScoringFunction, float]):
+        total = 0.0
+        func: ScoringFunction
+        for func in self.funcs:
+            # pylint: disable=protected-access
+            total += func._score_and_store(conf_id, computed=computed, subscores=subscores)
+        subscores[self] = total
+        return total
+
     def __repr__(self):
         return f"<{type(self).__name__}: {' + '.join(map(str, self.funcs))}>"
 
@@ -351,6 +366,30 @@ class _ScaledScoringFunction(ScoringFunction):
             case _:
                 raise TypeError(f"Unsupported operator for scaling: '{self.operator}'")
 
+    def _score_and_store(self, conf_id, computed, subscores) -> float:
+        # pylint: disable=protected-access
+
+        left_val = self.left
+        right_val = self.right
+        if isinstance(self.left, ScoringFunction):
+            left_val = self.left._score_and_store(conf_id, computed=computed, subscores=subscores)
+        if isinstance(self.right, ScoringFunction):
+            right_val = self.right._score_and_store(conf_id, computed=computed, subscores=subscores)
+
+        score = 0
+        match self.operator:
+            case "*":
+                score = left_val * right_val
+            case "/":
+                score = left_val / right_val
+            case "^":
+                score = left_val**right_val
+            case _:
+                raise TypeError(f"Unsupported operator for scaling: '{self.operator}'")
+
+        subscores[self] = score
+        return score
+
     def __str__(self):
         return f"{self.left} {self.operator} {self.right}"
 
@@ -403,6 +442,15 @@ class Clamp(ScoringFunction):
             self.max_score,
         )
 
+    def _score_and_store(self, conf_id, computed, subscores) -> float:
+        score = np.clip(
+            self.scoring_function._score_and_store(conf_id, computed=computed, subscores=subscores),
+            self.min_score,
+            self.max_score,
+        )
+        subscores[self] = score
+        return score
+
     def __repr__(self):
         return f"<{type(self).__name__}: {self.scoring_function.__repr__()} in [{self.min_score}, {self.max_score}]>"
 
@@ -428,80 +476,3 @@ class ConstantTerm(ScoringFunction):
     def _score(self, *args, **kwargs) -> float:
         return self.constant
 
-#
-# class MyProblem:
-#     def __init__(
-#         self,
-#         ligand2,
-#         binding_site2,
-#         scoring_function: ScoringFunction,
-#         dihedral_quantize_degree: int = 0,
-#     ):
-#         self.ligand = ligand2
-#         self.binding_site = binding_site2
-#         self.scoring_function = scoring_function
-#         self.dihedral_quantize_degree = dihedral_quantize_degree
-#
-#         bounds2 = [(-2 * np.pi, 2 * np.pi)] * (6 + len(self.ligand.dihedral_angles))
-#         bounds2[3:6] = self.binding_site.get_translation_bounds()
-#
-#         if self.dihedral_quantize_degree > 0:
-#             self._bins = int(360 // self.dihedral_quantize_degree)
-#             if 360 % self._bins != 0:
-#                 raise ValueError(
-#                     "dihedral_quantize_degree must be a divisor of 360 degrees"
-#                 )
-#             bounds2[6:] = [(-self._bins, self._bins)] * len(self.ligand.dihedral_angles)
-#
-#         self.bounds = ([x[0] for x in bounds2], [x[1] for x in bounds2])
-#
-#     def quantize_dihedrals(self, vs):
-#         v_2d = np.atleast_2d(vs)
-#
-#         b_div = (2 * np.pi) / self._bins
-#         v_2d[:, 6:] //= b_div
-#
-#         if vs.ndim < 2:
-#             return v_2d[0, :]
-#
-#         return v_2d
-#
-#     def dequantize_dihedrals(self, vs):
-#         v_2d = np.atleast_2d(vs)
-#
-#         b_div = (2 * np.pi) / self._bins
-#         v_2d[:, 6:] *= b_div
-#
-#         if vs.ndim < 2:
-#             return v_2d[0, :]
-#         return v_2d
-#
-#     def get_nix(self):
-#         if self.dihedral_quantize_degree > 0:
-#             return len(self.ligand.dihedral_angles)
-#         return 0
-#
-#     def __deepcopy__(self, memo):
-#         # create blank instance
-#         new = self.__class__.__new__(self.__class__)
-#         memo[id(self)] = new
-#         # shallow‐copy ligand to preserve its subclass
-#         new.ligand = self.ligand
-#         new.scoring_function = self.scoring_function
-#         new.binding_site = self.binding_site
-#         # deep‐copy everything else
-#         for k, v in self.__dict__.items():
-#             if k != "ligand" and k != "scoring_function" and k != "binding_site":
-#                 setattr(new, k, copy.deepcopy(v, memo))
-#         return new
-#
-#     def get_bounds(self):
-#         return self.bounds
-#
-#     def fitness(self, x):
-#         if self.dihedral_quantize_degree > 0:
-#             deq_x = self.dequantize_dihedrals(x)
-#         else:
-#             deq_x = x
-#
-#         return [self.scoring_function.step(deq_x, self.ligand)]
