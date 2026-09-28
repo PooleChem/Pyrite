@@ -29,6 +29,12 @@ ROTATABLE_BOND_STRUCT = Chem.MolFromSmarts(
             "([CH3])[CH3])]"
         )
 
+HBA_STRUCT = Chem.MolFromSmarts(
+            "[$([O,S;H1;v2]-[!$(*=[O,N,P,S])]),$([O,S;H0;v2]),$([O,S;-]),$([N;v3;!$(N-*=!@[O,N,P,S])]),$([nH0,o,s;+0])]"
+        )
+
+NON_POLAR_H_STRUCT = Chem.MolFromSmarts("[#1;$([#1]-[#6,#14])]")
+
 VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF = 1000
 
 
@@ -53,27 +59,7 @@ class Mol(Chem.Mol):
 
     """
 
-    __default_ligand_draw_options = {
-        "protein": False,
-        "size": (400, 300),
-        "colorPalette": "default",
-        "note": "",
-        "highlight": "",
-        "colorscheme": "default",
-    }
-
-    __default_protein_draw_options = {
-        "protein": True,
-        "size": (400, 300),
-        "color": "blue",
-        "style": "rectangle",
-        "surfacetype": "MS",
-        "surfacecolor": "white",
-        "surfaceopacity": 0.75,
-        "stickresidues": [],
-        "hideprotein": False,
-        "note": "",
-    }
+    # region Construction
 
     def __new__(cls, mol: Chem.Mol = None, **kwargs):
         if mol is None:
@@ -180,7 +166,6 @@ class Mol(Chem.Mol):
         """
         return cls(mol, hydrogens=hydrogens, **kwargs)
 
-    # TODO: implement the PDBFixer stuff.
     @classmethod
     def from_pdb(
             cls,
@@ -278,7 +263,6 @@ class Mol(Chem.Mol):
         h_for_init = "keep" if hydrogens == "add" else hydrogens
         return cls(mol, hydrogens=h_for_init, **kwargs)
 
-    # TODO: be able to load and return multiple ligands from the same SDF file. (for v_from_sdf too)
     @classmethod
     def from_sdf(
             cls,
@@ -310,7 +294,6 @@ class Mol(Chem.Mol):
         RDLogger.EnableLog("rdApp.*")
         return cls(mol, hydrogens=hydrogens, **kwargs)
 
-# TODO: refactor to poses
     @classmethod
     def v_from_sdf(
             cls,
@@ -436,6 +419,631 @@ class Mol(Chem.Mol):
         if sanitize:
             Chem.SanitizeMol(self)
         return self
+
+    # endregion
+
+    # region Chemistry / topology analysis
+
+    def __assign_atom_types(self):
+        self._atom_types = np.array([AtomType.Unknown] * len(self.GetAtoms()))
+
+        hba = [m[0] for m in self.GetSubstructMatches(HBA_STRUCT)]
+
+        non_polar_h = [m[0] for m in self.GetSubstructMatches(NON_POLAR_H_STRUCT)]
+
+        for i, atom in enumerate(self.GetAtoms()):
+            atomic_number = atom.GetAtomicNum()
+
+            a_str = atom.GetSymbol()
+            if atomic_number == 1 and atom.GetIdx() not in non_polar_h:
+                a_str = "HD"
+            elif atomic_number == 6 and atom.GetIsAromatic():
+                a_str = "A"
+            elif atomic_number == 8:
+                a_str = "OA"
+            elif atomic_number == 7 and atom.GetIdx() in hba:
+                a_str = "NA"
+            elif atomic_number == 16 and atom.GetIdx() in hba:
+                a_str = "SA"
+
+            a_type = AtomType.GenericMetal
+            # Assign atom type
+            for _, t in vina_atom_consts.items():
+                if a_str == t.ad_name:
+                    a_type = t.type
+                    break
+
+            hbonded = False
+            heterobonded = False
+
+            # Get hbonded and heterobonded
+            for neigh in atom.GetNeighbors():
+                if neigh.GetSymbol() == "H":
+                    hbonded = True
+                elif neigh.GetSymbol() != "C":
+                    heterobonded = True
+
+            a_type = a_type.adjust(hbonded, heterobonded)
+
+            self._atom_types[i] = a_type
+
+    def __get_center_atom(self):
+        conf = self.GetConformer()
+        centroid = Chem.rdMolTransforms.ComputeCentroid(conf)
+
+        closest_dist = float("inf")
+        closest_i = None
+        for atom in self.GetAtoms():
+            if atom.GetAtomicNum() > 1:
+                i = atom.GetIdx()
+                dist = np.linalg.norm(conf.GetAtomPosition(i) - centroid)
+
+                if dist < closest_dist:
+                    closest_dist = dist
+                    closest_i = i
+
+        return closest_i
+
+    def __compute_rotatable_dihedrals(self, flex_hydrogens: bool = False):
+        """
+        Calculates the rotatable dihedral angles and stores them along with their
+        indices defining the dihedral in the molecule. This includes identifying
+        rotatable bonds, constructing dihedral definitions, and determining dihedral
+        angles for each rotatable bond in the molecule. The results are stored as
+        attributes for later use.
+
+        """
+
+        # num_rotatable_bonds = Chem.rdMolDescriptors.CalcNumRotatableBonds(
+        #     self, strict=True
+        # )
+
+        # self.__rotatable_dihedrals = np.empty(num_rotatable_bonds, dtype=object)
+        # self.__dihedral_angles = np.zeros(num_rotatable_bonds)
+        rotatable_dihedrals = []
+        dihedral_angles = []
+
+        rotatable_bonds = self.GetSubstructMatches(ROTATABLE_BOND_STRUCT)
+
+        distance_matrix = np.array(Chem.GetDistanceMatrix(self))[self._center_atom, :]
+
+        for _, b in enumerate(rotatable_bonds):
+            i_atom_1 = b[0]
+            i_atom_2 = b[1]
+
+            if not flex_hydrogens:
+                heavy_degree_atom_1 = sum(
+                    [
+                        1
+                        for nbr in self.GetAtomWithIdx(i_atom_1).GetNeighbors()
+                        if nbr.GetAtomicNum() > 1
+                    ]
+                )
+                heavy_degree_atom_2 = sum(
+                    [
+                        1
+                        for nbr in self.GetAtomWithIdx(i_atom_2).GetNeighbors()
+                        if nbr.GetAtomicNum() > 1
+                    ]
+                )
+                if heavy_degree_atom_1 == 1 or heavy_degree_atom_2 == 1:
+                    continue
+
+            atom_1_neighbors = self.GetAtomWithIdx(i_atom_1).GetNeighbors()
+            atom_2_neighbors = self.GetAtomWithIdx(i_atom_2).GetNeighbors()
+
+            ix_atom_1_neighbors = [
+                a.GetIdx() for a in atom_1_neighbors if a.GetIdx() != i_atom_2
+            ]
+            ix_atom_2_neighbors = [
+                a.GetIdx() for a in atom_2_neighbors if a.GetIdx() != i_atom_1
+            ]
+
+            dihedral = (
+                min(ix_atom_1_neighbors),
+                i_atom_1,
+                i_atom_2,
+                min(ix_atom_2_neighbors),
+            )
+
+            # (a, b, c, d)  |    o (center atom)
+            # Als center_atom dichter bij b -> draait niet.
+            # Als center_atom dichter bij c -> draait wel -> invert dihedral.
+            # print(distance_matrix[dihedral[1]], distance_matrix[dihedral[2]])
+            if distance_matrix[dihedral[2]] < distance_matrix[dihedral[1]]:
+                dihedral = dihedral[::-1]
+
+            rotatable_dihedrals.append(dihedral)
+            # Dont care about:?
+            dihedral_angles.append(
+                (Chem.rdMolTransforms.GetDihedralRad(self.GetConformer(), *dihedral))
+            )
+
+        self.__rotatable_dihedrals = rotatable_dihedrals
+        self.__dihedral_angles = dihedral_angles
+
+    @property
+    def atom_types(self):
+        """The atom types of all atoms in the ligand.
+
+        Returns
+        -------
+        numpy.ndarray
+        """
+        return self._atom_types
+
+    # endregion
+
+    # region Pose & geometry
+
+    @property
+    def positions(self):
+        """The positions of all atoms in the global conformer.
+
+        Returns
+        -------
+        list
+        """
+        return self.GetConformer().GetPositions()
+
+    def get_positions(self, conf_id: int = -1) -> NDArray[np.float32]:
+        """Returns the positions of all atoms in a specific conformer.
+
+        Parameters
+        ----------
+        conf_id : int, default -1
+             The conformer id to retrieve positions from. By default selects the global conformer.
+
+        Returns
+        -------
+        list
+        """
+        return self.GetConformer(conf_id).GetPositions()
+
+    @property
+    def rotatable_dihedrals(self):
+        """The rotatable dihedrals of the molecule.
+
+        Returns
+        -------
+        list
+            A list containing all rotatable dihedrals in the molecule,
+            indicated by four atom indices. An entry looks like
+            ``[i, j, k, l]``, where the rotated bond is between
+            ``j`` and ``k``, and all atoms attached to ``k`` are moved.
+
+        """
+        return self.__rotatable_dihedrals
+
+    @property
+    def dihedral_angles(self) -> NDArray[np.float32]:
+        """The dihedral angles of the rotatable dihedrals in the molecule.
+
+        Returns
+        -------
+        list
+            A list containing all dihedral angles in the molecule, in radians.
+
+        """
+        if not len(self.__rotatable_dihedrals) > 0:
+            self.__compute_rotatable_dihedrals()
+        for i, dihedral in enumerate(self.__rotatable_dihedrals):
+            self.__dihedral_angles[i] = Chem.rdMolTransforms.GetDihedralRad(
+                self.GetConformer(), *dihedral
+            )
+        return self.__dihedral_angles
+
+    @property
+    def n_tors(self):
+        """The number of torsions in the molecule."""
+        return self.layout.n_tors
+
+    def set_dihedral_angle(
+            self, i_dihedral: int, angle_rad: float, conf_id: int = -1
+    ) -> None:
+        """Set the dihedral angle of a molecule :class:`~rdkit.Chem.rdchem.Conformer` for a
+        specific dihedral.
+
+        Parameters
+        ----------
+        i_dihedral : int
+            The index of the rotatable dihedral bond.
+        angle_rad : float
+            The dihedral angle in radians.
+        conf_id : int, default -1
+            The conformer id to set the dihedral to. By default selects the global conformer.
+        """
+        Chem.rdMolTransforms.SetDihedralRad(
+            self.GetConformer(conf_id),
+            *self.__rotatable_dihedrals[i_dihedral],
+            angle_rad,
+        )
+
+    def set_dihedral_angles(self, angles_rad: list[float], conf_id: int = -1) -> None:
+        """Sets the dihedral angles for a molecule.
+
+        Parameters
+        ----------
+        angles_rad : array_like
+            A list of float values representing dihedral angles in radians.
+        conf_id : int, default -1
+            The conformer id to set the dihedrals to. By default selects the global conformer.
+        """
+        if len(angles_rad) > 0 and len(self.__rotatable_dihedrals) == 0:
+            warnings.warn(
+                "set_dihedral_angles called with angles but this Mol has no rotatable dihedrals. "
+                "Did you forget flexible=True when constructing the Mol?",
+                UserWarning,
+                stacklevel=2,
+            )
+        for i, angle in enumerate(angles_rad):
+            self.set_dihedral_angle(i, angle, conf_id)
+
+    def transform(
+            self,
+            rotation: NDArray[np.float32],
+            translation: NDArray[np.float32],
+            conf_id: int = -1,
+    ) -> None:
+        """Transforms the conformer of the molecule with respect to the center atom's coordinates.
+
+        Parameters
+        ----------
+        roll : float
+            Roll angle of rotation in radians.
+        pitch : float
+            Pitch angle of rotation in radians.
+        yaw :
+            Yaw angle of rotation in radians.
+        x : float
+            Translation along the x-axis.
+        y : float
+            Translation along the y-axis.
+        z : float
+            Translation along the z-axis.
+
+        conf_id : int
+            The conformer id to transform. By default selects the global conformer.
+
+        """
+        conf = self.GetConformer(conf_id)
+
+        if self.layout.rot_type == "euler":
+            assert len(rotation) == 3, "Rotation must be a 3-vector for Ligand with euler rotation."
+            rotate = _rotation_matrix_from_euler(*rotation)
+        else:
+            assert len(rotation) == 4, "Rotation must be a 4-vector for Ligand with quaternion rotation."
+            rotate = _rotation_matrix_from_quat(*rotation)
+
+        center_atom = conf.GetAtomPosition(self._center_atom)
+        center_atom_coords = np.array(
+            [center_atom.x, center_atom.y, center_atom.z],
+        )
+
+        transformation_matrix = _compose_delta_transform(rotate[:3, :3], translation, self.__cur_rotation_matrix[:3, :3], center_atom_coords)
+
+        if conf_id == -1:
+            self.__cur_rotation_matrix = rotate[:3, :3]
+            self.__cur_rotation = np.asarray(rotation)
+        # else:
+        #     transformation_matrix = new_transform
+        #     transformation_matrix[:3, 3] -= new_transform[:3, :3] @ center_atom_coords
+
+        Chem.rdMolTransforms.TransformConformer(conf, transformation_matrix)
+
+    def update(self, pose: Pose | NDArray, new_conf: bool = False) -> int:
+        """Update the molecule with the new variables.
+
+        Input should be shaped like ``(6 + n_dihedrals,)``.
+
+        This method can act either on the default :class:`~rdkit.Chem.rdchem.Conformer`,
+        or can create a new conformer, apply the update and return the new conformers id.
+
+        .. note::
+            Using this method to create a new conformer on update is recommended. This allows for
+            parallelization, as each thread is able to use their own conformer.
+            See: TODO
+
+        Parameters
+        ----------
+        new_vars : array_like
+            Array containing the new variables in the order of
+            ``(roll, pitch, yaw, x, y, z, *dihedrals)``.
+
+        new_conf : bool, default False
+            Whether to create a new conformer to apply the update to.
+
+        Returns
+        -------
+        int
+            Conformer id of the updated molecule. If no new conformer is created, returns -1,
+            which is the id of the global conformer.
+
+        """
+        if isinstance(pose, Pose):
+            assert pose.layout == self.layout, "Pose and molecule layout do not match."
+        else:
+            assert len(pose) == self.layout.rot_dim + 3 + self.layout.n_tors, "Pose parameterization does not match molecule layout."
+            pose = Pose(pose, self.layout)
+
+        conf_id = -1
+        if new_conf:
+            conf_id = self.AddConformer(self.GetConformer(), assignId=True)
+
+        self.transform(pose.rotation, pose.translation, conf_id=conf_id)
+        self.set_dihedral_angles(pose.torsions, conf_id=conf_id)
+
+        return conf_id
+
+    @property
+    def center_atom(self):
+        """The index of the atom used as center of the molecule.
+
+        Returns
+        -------
+        int
+        """
+        return self._center_atom
+
+    @center_atom.setter
+    def center_atom(self, value):
+        self.transform(self.layout.identity_rotation, np.zeros(3))
+        self._center_atom = value
+        self.transform(self.layout.identity_rotation, np.zeros(3))
+
+    @property
+    def position(self):
+        """The position of the molecule.
+
+        This is equal to the position of the center atom.
+
+        Returns
+        -------
+        list
+            A list of shape (3,) containing the x, y, and z coordinates of the center atom.
+        """
+        center_atom_coords = self.GetConformer().GetAtomPosition(self._center_atom)
+        return [center_atom_coords.x, center_atom_coords.y, center_atom_coords.z]
+
+    @property
+    def rotation(self):
+        """The current rotation of the molecule.
+
+        This is the roll, pitch, and yaw angles of global conformer of the molecule.
+
+        Returns
+        -------
+        list
+            A list of shape (3,) containing the roll, pitch, and yaw angles of the molecule.
+        """
+        return self.__cur_rotation
+
+    # endregion
+
+    # region Search-space sampling / placement
+
+    def place_in(
+            self,
+            binding_site: Bounds,
+            n_positions: int,
+            n_conformations: int,
+            placement: str = "random",
+            conformations: str = "conformer",
+            combine: str = "random",
+    ) -> Poses:
+        """Retrieve a list of random placements and conformers for the molecule in the binding_site.
+
+
+        Parameters
+        ----------
+        binding_site : Bounds
+            The binding site in which to place the ligand.
+        n_positions : int
+            The number of ligand positions to generate. When `placement` = ``grid``, this is the
+            size of the grid in every axis. For example, an `n_positions` of 4 would yield
+            :math:`4^3` positions.
+        n_conformations : int
+            The number of conformations to generate.
+        placement : {'random', 'grid'}, default 'random'
+            The placement method to use. ``random`` places the ligand randomly in the binding site.
+            ``grid`` creates a grid in the binding site.
+        conformations : {'conformer', 'random}, default 'conformer'
+            The conformer generation method to use. ``conformer`` will create conformers using
+            RDKit :func:`~rdkit.Chem.rdDistGeom.EmbedMultipleConfs`. ``random`` will set
+            all dihedral angles to random values. This is faster, but can create
+            physically impossible configurations.
+        combine : {'random', 'grid'}, default 'random'
+            The combination method. ``random`` will create random combinations of positions and
+            dihedral angles. When ``n_positions >= n_conformations``, a random conformation is
+            chosen for every position, and the other way around. This results in an output size of
+            ``max(n_positions, n_conformations)``.
+            ``grid`` combines all positions with all conformations, resulting in an output size of
+            ``n_positions * n_conformations``.
+
+
+        Returns
+        -------
+        numpy.ndarray
+            An array of shape ``(max(n_positions, n_conformations), 6 + n_dihedrals)`` when
+            `combine` is ``random``, or shape
+            ``(n_positions * n_conformations, 6 + n_dihedrals)`` when `combine` is ``grid``.
+        """
+
+        if placement not in {"random", "grid"}:
+            raise ValueError("placement must be either 'random' or 'grid'")
+        if conformations not in {
+            "conformer",
+            "random",
+        }:  # TODO: add none (just default dihedrals)
+            raise ValueError("conformations must be either 'conformer' or 'random'")
+        if combine not in {"random", "grid"}:  # TODO: rename to product
+            raise ValueError("combine must be either 'random' or 'grid'")
+
+        positions = []
+        if placement == "random":
+            positions = binding_site.place_random_uniform(n_positions)
+        elif placement == "grid":
+            positions = binding_site.place_grid(n_positions)
+
+        dihedrals = []
+        if conformations == "conformer":
+            dihedrals = self.get_n_conformer_dihedral_configurations(n_conformations)
+        elif conformations == "random":
+            dihedrals = self.get_n_random_dihedral_configurations(n_conformations)
+
+        out_pos, out_dih = [], []
+        if combine == "random":
+            if positions.shape[0] >= dihedrals.shape[0]:
+                sel_dihedrals = np.random.choice(
+                    dihedrals.shape[0], size=positions.shape[0], replace=True
+                )
+                out_pos = positions
+                out_dih = dihedrals[sel_dihedrals]
+            else:
+                sel_positions = np.random.choice(
+                    positions.shape[0], size=dihedrals.shape[0], replace=True
+                )
+                out_pos = positions[sel_positions]
+                out_dih = dihedrals
+
+        elif combine == "grid":
+            out_pos = np.repeat(positions, dihedrals.shape[0], axis=0)
+            out_dih = np.tile(dihedrals, (positions.shape[0], 1))
+
+        return Poses(np.concatenate((out_pos, out_dih), axis=1), self.layout)
+
+    def get_n_random_dihedral_configurations(self, n: int) -> NDArray:
+        """Retrieve a list of `n` random dihedral configurations for the molecule.
+
+        .. warning::
+            This returns lists of truly random dihedral configurations, and may thus result
+            in physically impossible configurations.
+
+        Parameters
+        ----------
+        n : int
+            The number of configurations to generate.
+
+
+        Returns
+        -------
+        numpy.ndarray
+            An array of shape ``(n_dihedrals, n)`` containing `n` dihedral configurations.
+        """
+        return np.random.rand(n, len(self.__rotatable_dihedrals)) * 2 * np.pi - np.pi
+
+    def get_n_conformer_dihedral_configurations(self, n: int) -> NDArray:
+        """Retrieve a list of `n` conformation-based dihedral configurations for the molecule.
+
+        .. note::
+            This method does not necessarily result in unique configurations.
+
+
+        Parameters
+        ----------
+        n : int
+            The number of configurations to generate.
+
+
+        Returns
+        -------
+        numpy.ndarray
+            An array of shape ``(n_dihedrals, n)`` containing `n` dihedral configurations.
+        """
+        params = Chem.AllChem.ETKDGv3()
+        params.randomSeed = 0xC0FFEE
+
+        new_mol = Chem.Mol(self)
+
+        cids = Chem.AllChem.EmbedMultipleConfs(new_mol, n, params)
+
+        configurations = np.empty((n, len(self.__rotatable_dihedrals)))
+        for i, cid in enumerate(cids):
+            dihedral_angles = np.zeros(len(self.__rotatable_dihedrals))
+            for j, dihedral in enumerate(self.__rotatable_dihedrals):
+                dihedral_angles[j] = Chem.rdMolTransforms.GetDihedralRad(
+                    new_mol.GetConformer(cid), *dihedral
+                )
+            configurations[i] = dihedral_angles
+
+        return configurations
+
+    # endregion
+
+    # region Export
+
+    def to_sdf(self, file: str | SDWriter, conf_id: int = -1):
+        """Write the current molecule to an SDF file.
+
+        Parameters
+        ----------
+        file : str, ~rdkit.Chem.rdmolfiles.SDWriter
+            Either a filename of a file to create, or an open
+            :class:`~rdkit.Chem.rdmolfiles.SDWriter` object to write to.
+        conf_id : int, optional
+            The conformer id to write.
+
+        """
+
+        close_writer = False
+        if isinstance(file, str):
+            writer = SDWriter(file)
+            close_writer = True
+        elif isinstance(file, SDWriter):
+            writer = file
+        else:
+            raise ValueError("file must be either filename str or SDWriter")
+
+        writer.write(self, confId=conf_id)
+
+        if close_writer:
+            writer.close()
+
+    def v_to_sdf(self, file: str, poses: list[Pose]):
+        """Write the current molecule with positions `v` to an SDF file.
+
+        Parameters
+        ----------
+        file : str
+            The path to the file to create.
+        v : array_like
+            An array of shape ``(6 + n_dihedrals, n)``, containing molecular positions to write.
+
+        """
+
+        writer = Chem.SDWriter(file)
+
+        for var in v:
+            conf_id = self.update(var, new_conf=True)
+            self.to_sdf(writer, conf_id=conf_id)
+            self.RemoveConformer(conf_id)
+        writer.close()
+
+    # endregion
+
+    # region Visualization / display
+
+    __default_ligand_draw_options = {
+        "protein": False,
+        "size": (400, 300),
+        "colorPalette": "default",
+        "note": "",
+        "highlight": "",
+        "colorscheme": "default",
+    }
+
+    __default_protein_draw_options = {
+        "protein": True,
+        "size": (400, 300),
+        "color": "blue",
+        "style": "rectangle",
+        "surfacetype": "MS",
+        "surfacecolor": "white",
+        "surfaceopacity": 0.75,
+        "stickresidues": [],
+        "hideprotein": False,
+        "note": "",
+    }
 
     def set_draw_options(self, options):
         """Set draw options.
@@ -616,611 +1224,15 @@ class Mol(Chem.Mol):
         d2d.FinishDrawing()
         return d2d.GetDrawingText()
 
-    def __assign_atom_types(self):
-        self._atom_types = np.array([AtomType.Unknown] * len(self.GetAtoms()))
+    # endregion
 
-        hba_struct = Chem.MolFromSmarts(
-            "[$([O,S;H1;v2]-[!$(*=[O,N,P,S])]),$([O,S;H0;v2]),$([O,S;-]),$([N;v3;!$(N-*=!@[O,N,P,S])]),$([nH0,o,s;+0])]"
-        )
-        hba = [m[0] for m in self.GetSubstructMatches(hba_struct)]
-
-        non_polar_h_struct = Chem.MolFromSmarts("[#1;$([#1]-[#6,#14])]")
-        non_polar_h = [m[0] for m in self.GetSubstructMatches(non_polar_h_struct)]
-
-        for i, atom in enumerate(self.GetAtoms()):
-            atomic_number = atom.GetAtomicNum()
-
-            a_str = atom.GetSymbol()
-            if atomic_number == 1 and atom.GetIdx() not in non_polar_h:
-                a_str = "HD"
-            elif atomic_number == 6 and atom.GetIsAromatic():
-                a_str = "A"
-            elif atomic_number == 8:
-                a_str = "OA"
-            elif atomic_number == 7 and atom.GetIdx() in hba:
-                a_str = "NA"
-            elif atomic_number == 16 and atom.GetIdx() in hba:
-                a_str = "SA"
-
-            a_type = AtomType.GenericMetal
-            # Assign atom type
-            for _, t in vina_atom_consts.items():
-                if a_str == t.ad_name:
-                    a_type = t.type
-                    break
-
-            hbonded = False
-            heterobonded = False
-
-            # Get hbonded and heterobonded
-            for neigh in atom.GetNeighbors():
-                if neigh.GetSymbol() == "H":
-                    hbonded = True
-                elif neigh.GetSymbol() != "C":
-                    heterobonded = True
-
-            a_type = a_type.adjust(hbonded, heterobonded)
-
-            self._atom_types[i] = a_type
-
-    def __get_center_atom(self):
-        conf = self.GetConformer()
-        centroid = Chem.rdMolTransforms.ComputeCentroid(conf)
-
-        closest_dist = float("inf")
-        closest_i = None
-        for atom in self.GetAtoms():
-            if atom.GetAtomicNum() > 1:
-                i = atom.GetIdx()
-                dist = np.linalg.norm(conf.GetAtomPosition(i) - centroid)
-
-                if dist < closest_dist:
-                    closest_dist = dist
-                    closest_i = i
-
-        return closest_i
-
-    def __compute_rotatable_dihedrals(self, flex_hydrogens: bool = False):
-        """
-        Calculates the rotatable dihedral angles and stores them along with their
-        indices defining the dihedral in the molecule. This includes identifying
-        rotatable bonds, constructing dihedral definitions, and determining dihedral
-        angles for each rotatable bond in the molecule. The results are stored as
-        attributes for later use.
-
-        """
-
-        # num_rotatable_bonds = Chem.rdMolDescriptors.CalcNumRotatableBonds(
-        #     self, strict=True
-        # )
-
-        # self.__rotatable_dihedrals = np.empty(num_rotatable_bonds, dtype=object)
-        # self.__dihedral_angles = np.zeros(num_rotatable_bonds)
-        rotatable_dihedrals = []
-        dihedral_angles = []
-
-        rotatable_bonds = self.GetSubstructMatches(ROTATABLE_BOND_STRUCT)
-
-        distance_matrix = np.array(Chem.GetDistanceMatrix(self))[self._center_atom, :]
-
-        for _, b in enumerate(rotatable_bonds):
-            i_atom_1 = b[0]
-            i_atom_2 = b[1]
-
-            if not flex_hydrogens:
-                heavy_degree_atom_1 = sum(
-                    [
-                        1
-                        for nbr in self.GetAtomWithIdx(i_atom_1).GetNeighbors()
-                        if nbr.GetAtomicNum() > 1
-                    ]
-                )
-                heavy_degree_atom_2 = sum(
-                    [
-                        1
-                        for nbr in self.GetAtomWithIdx(i_atom_2).GetNeighbors()
-                        if nbr.GetAtomicNum() > 1
-                    ]
-                )
-                if heavy_degree_atom_1 == 1 or heavy_degree_atom_2 == 1:
-                    continue
-
-            atom_1_neighbors = self.GetAtomWithIdx(i_atom_1).GetNeighbors()
-            atom_2_neighbors = self.GetAtomWithIdx(i_atom_2).GetNeighbors()
-
-            ix_atom_1_neighbors = [
-                a.GetIdx() for a in atom_1_neighbors if a.GetIdx() != i_atom_2
-            ]
-            ix_atom_2_neighbors = [
-                a.GetIdx() for a in atom_2_neighbors if a.GetIdx() != i_atom_1
-            ]
-
-            dihedral = (
-                min(ix_atom_1_neighbors),
-                i_atom_1,
-                i_atom_2,
-                min(ix_atom_2_neighbors),
-            )
-
-            # (a, b, c, d)  |    o (center atom)
-            # Als center_atom dichter bij b -> draait niet.
-            # Als center_atom dichter bij c -> draait wel -> invert dihedral.
-            # print(distance_matrix[dihedral[1]], distance_matrix[dihedral[2]])
-            if distance_matrix[dihedral[2]] < distance_matrix[dihedral[1]]:
-                dihedral = dihedral[::-1]
-
-            rotatable_dihedrals.append(dihedral)
-            # Dont care about:?
-            dihedral_angles.append(
-                (Chem.rdMolTransforms.GetDihedralRad(self.GetConformer(), *dihedral))
-            )
-
-        self.__rotatable_dihedrals = rotatable_dihedrals
-        self.__dihedral_angles = dihedral_angles
-
-    @property
-    def atom_types(self):
-        """The atom types of all atoms in the ligand.
-
-        Returns
-        -------
-        numpy.ndarray
-        """
-        return self._atom_types
-
-    def atom_type(self, atom_index: int, mask: NDArray = None):
-        """Get the atom type of the specified atom, optionally taking `mask` into account.
-        # TODO: what does that mean? Revise receptor masking?
-
-        Parameters
-        ----------
-        atom_index : int
-            The atom id for which to get the atom type.
-        mask : numpy.ndarray, optional
-            An array by which to mask the receptor atoms before indexing. Useful in combination
-            with e.g. :class:`~pyrite.scoring.dependencies.KNNDependency` on a masked receptor.
-
-        Returns
-        -------
-        AtomType
-        """
-        if mask is None:
-            mask = np.full_like(self._atom_types, True)
-        return (self._atom_types[mask])[atom_index]
-
-    # TODO: cache positions
-    @property
-    def positions(self):
-        """The positions of all atoms in the global conformer.
-
-        Returns
-        -------
-        list
-        """
-        return self.GetConformer().GetPositions()
-
-    def get_positions(self, conf_id: int = -1) -> NDArray[np.float32]:
-        """Returns the positions of all atoms in a specific conformer.
-
-        Parameters
-        ----------
-        conf_id : int, default -1
-             The conformer id to retrieve positions from. By default selects the global conformer.
-
-        Returns
-        -------
-        list
-        """
-        return self.GetConformer(conf_id).GetPositions()
-
-    @property
-    def rotatable_dihedrals(self):
-        """The rotatable dihedrals of the molecule.
-
-        Returns
-        -------
-        list
-            A list containing all rotatable dihedrals in the molecule,
-            indicated by four atom indices. An entry looks like
-            ``[i, j, k, l]``, where the rotated bond is between
-            ``j`` and ``k``, and all atoms attached to ``k`` are moved.
-
-        """
-        return self.__rotatable_dihedrals
-
-    @property
-    def dihedral_angles(self) -> NDArray[np.float32]:
-        """The dihedral angles of the rotatable dihedrals in the molecule.
-
-        Returns
-        -------
-        list
-            A list containing all dihedral angles in the molecule, in radians.
-
-        """
-        if not len(self.__rotatable_dihedrals) > 0:
-            self.__compute_rotatable_dihedrals()
-        for i, dihedral in enumerate(self.__rotatable_dihedrals):
-            self.__dihedral_angles[i] = Chem.rdMolTransforms.GetDihedralRad(
-                self.GetConformer(), *dihedral
-            )
-        return self.__dihedral_angles
-
-    def set_dihedral_angle(
-            self, i_dihedral: int, angle_rad: float, conf_id: int = -1
-    ) -> None:
-        """Set the dihedral angle of a molecule :class:`~rdkit.Chem.rdchem.Conformer` for a
-        specific dihedral.
-
-        Parameters
-        ----------
-        i_dihedral : int
-            The index of the rotatable dihedral bond.
-        angle_rad : float
-            The dihedral angle in radians.
-        conf_id : int, default -1
-            The conformer id to set the dihedral to. By default selects the global conformer.
-        """
-        Chem.rdMolTransforms.SetDihedralRad(
-            self.GetConformer(conf_id),
-            *self.__rotatable_dihedrals[i_dihedral],
-            angle_rad,
-        )
-
-    def set_dihedral_angles(self, angles_rad: list[float], conf_id: int = -1) -> None:
-        """Sets the dihedral angles for a molecule.
-
-        Parameters
-        ----------
-        angles_rad : array_like
-            A list of float values representing dihedral angles in radians.
-        conf_id : int, default -1
-            The conformer id to set the dihedrals to. By default selects the global conformer.
-        """
-        if len(angles_rad) > 0 and len(self.__rotatable_dihedrals) == 0:
-            warnings.warn(
-                "set_dihedral_angles called with angles but this Mol has no rotatable dihedrals. "
-                "Did you forget flexible=True when constructing the Mol?",
-                UserWarning,
-                stacklevel=2,
-            )
-        for i, angle in enumerate(angles_rad):
-            self.set_dihedral_angle(i, angle, conf_id)
-
-
-    def transform(
-            self,
-            rotation: NDArray[np.float32],
-            translation: NDArray[np.float32],
-            conf_id: int = -1,
-    ) -> None:
-        """Transforms the conformer of the molecule with respect to the center atom's coordinates.
-
-        Parameters
-        ----------
-        roll : float
-            Roll angle of rotation in radians.
-        pitch : float
-            Pitch angle of rotation in radians.
-        yaw :
-            Yaw angle of rotation in radians.
-        x : float
-            Translation along the x-axis.
-        y : float
-            Translation along the y-axis.
-        z : float
-            Translation along the z-axis.
-
-        conf_id : int
-            The conformer id to transform. By default selects the global conformer.
-
-        """
-        conf = self.GetConformer(conf_id)
-
-        if self.layout.rot_type == "euler":
-            assert len(rotation) == 3, "Rotation must be a 3-vector for Ligand with euler rotation."
-            rotate = _rotation_matrix_from_euler(*rotation)
-        else:
-            assert len(rotation) == 4, "Rotation must be a 4-vector for Ligand with quaternion rotation."
-            rotate = _rotation_matrix_from_quat(*rotation)
-
-        center_atom = conf.GetAtomPosition(self._center_atom)
-        center_atom_coords = np.array(
-            [center_atom.x, center_atom.y, center_atom.z],
-        )
-
-        transformation_matrix = _compose_delta_transform(rotate[:3, :3], translation, self.__cur_rotation_matrix[:3, :3], center_atom_coords)
-
-        if conf_id == -1:
-            self.__cur_rotation_matrix = rotate[:3, :3]
-            self.__cur_rotation = np.asarray(rotation)
-        # else:
-        #     transformation_matrix = new_transform
-        #     transformation_matrix[:3, 3] -= new_transform[:3, :3] @ center_atom_coords
-
-        Chem.rdMolTransforms.TransformConformer(conf, transformation_matrix)
-
-    def update(self, pose: Pose | NDArray, new_conf: bool = False) -> int:
-        """Update the molecule with the new variables.
-
-        Input should be shaped like ``(6 + n_dihedrals,)``.
-
-        This method can act either on the default :class:`~rdkit.Chem.rdchem.Conformer`,
-        or can create a new conformer, apply the update and return the new conformers id.
-
-        .. note::
-            Using this method to create a new conformer on update is recommended. This allows for
-            parallelization, as each thread is able to use their own conformer.
-            See: TODO
-
-        Parameters
-        ----------
-        new_vars : array_like
-            Array containing the new variables in the order of
-            ``(roll, pitch, yaw, x, y, z, *dihedrals)``.
-
-        new_conf : bool, default False
-            Whether to create a new conformer to apply the update to.
-
-        Returns
-        -------
-        int
-            Conformer id of the updated molecule. If no new conformer is created, returns -1,
-            which is the id of the global conformer.
-
-        """
-        assert pose.layout == self.layout, "Pose and molecule layout do not match."
-
-        conf_id = -1
-        if new_conf:
-            conf_id = self.AddConformer(self.GetConformer(), assignId=True)
-
-        self.transform(pose.rotation, pose.translation, conf_id=conf_id)
-        self.set_dihedral_angles(pose.torsions, conf_id=conf_id)
-
-        return conf_id
-
-    @property
-    def center_atom(self):
-        """The index of the atom used as center of the molecule.
-
-        Returns
-        -------
-        int
-        """
-        return self._center_atom
-
-    @center_atom.setter
-    def center_atom(self, value):
-        self.transform(self.layout.identity_rotation, np.zeros(3))
-        self._center_atom = value
-        self.transform(self.layout.identity_rotation, np.zeros(3))
-
-
-    @property
-    def position(self):
-        """The position of the molecule.
-
-        This is equal to the position of the center atom.
-
-        Returns
-        -------
-        list
-            A list of shape (3,) containing the x, y, and z coordinates of the center atom.
-        """
-        center_atom_coords = self.GetConformer().GetAtomPosition(self._center_atom)
-        return [center_atom_coords.x, center_atom_coords.y, center_atom_coords.z]
-
-    @property
-    def rotation(self):
-        """The current rotation of the molecule.
-
-        This is the roll, pitch, and yaw angles of global conformer of the molecule.
-
-        Returns
-        -------
-        list
-            A list of shape (3,) containing the roll, pitch, and yaw angles of the molecule.
-        """
-        return self.__cur_rotation
-
-    def place_in(
-            self,
-            binding_site: Bounds,
-            n_positions: int,
-            n_conformations: int,
-            placement: str = "random",
-            conformations: str = "conformer",
-            combine: str = "random",
-    ) -> Poses:
-        """Retrieve a list of random placements and conformers for the molecule in the binding_site.
-
-
-        Parameters
-        ----------
-        binding_site : Bounds
-            The binding site in which to place the ligand.
-        n_positions : int
-            The number of ligand positions to generate. When `placement` = ``grid``, this is the
-            size of the grid in every axis. For example, an `n_positions` of 4 would yield
-            :math:`4^3` positions.
-        n_conformations : int
-            The number of conformations to generate.
-        placement : {'random', 'grid'}, default 'random'
-            The placement method to use. ``random`` places the ligand randomly in the binding site.
-            ``grid`` creates a grid in the binding site.
-        conformations : {'conformer', 'random}, default 'conformer'
-            The conformer generation method to use. ``conformer`` will create conformers using
-            RDKit :func:`~rdkit.Chem.rdDistGeom.EmbedMultipleConfs`. ``random`` will set
-            all dihedral angles to random values. This is faster, but can create
-            physically impossible configurations.
-        combine : {'random', 'grid'}, default 'random'
-            The combination method. ``random`` will create random combinations of positions and
-            dihedral angles. When ``n_positions >= n_conformations``, a random conformation is
-            chosen for every position, and the other way around. This results in an output size of
-            ``max(n_positions, n_conformations)``.
-            ``grid`` combines all positions with all conformations, resulting in an output size of
-            ``n_positions * n_conformations``.
-
-
-        Returns
-        -------
-        numpy.ndarray
-            An array of shape ``(max(n_positions, n_conformations), 6 + n_dihedrals)`` when
-            `combine` is ``random``, or shape
-            ``(n_positions * n_conformations, 6 + n_dihedrals)`` when `combine` is ``grid``.
-        """
-
-        if placement not in {"random", "grid"}:
-            raise ValueError("placement must be either 'random' or 'grid'")
-        if conformations not in {
-            "conformer",
-            "random",
-        }:  # TODO: add none (just default dihedrals)
-            raise ValueError("conformations must be either 'conformer' or 'random'")
-        if combine not in {"random", "grid"}:  # TODO: rename to product
-            raise ValueError("combine must be either 'random' or 'grid'")
-
-        positions = []
-        if placement == "random":
-            positions = binding_site.place_random_uniform(n_positions)
-        elif placement == "grid":
-            positions = binding_site.place_grid(n_positions)
-
-        dihedrals = []
-        if conformations == "conformer":
-            dihedrals = self.get_n_conformer_dihedral_configurations(n_conformations)
-        elif conformations == "random":
-            dihedrals = self.get_n_random_dihedral_configurations(n_conformations)
-
-        out_pos, out_dih = [], []
-        if combine == "random":
-            if positions.shape[0] >= dihedrals.shape[0]:
-                sel_dihedrals = np.random.choice(
-                    dihedrals.shape[0], size=positions.shape[0], replace=True
-                )
-                out_pos = positions
-                out_dih = dihedrals[sel_dihedrals]
-            else:
-                sel_positions = np.random.choice(
-                    positions.shape[0], size=dihedrals.shape[0], replace=True
-                )
-                out_pos = positions[sel_positions]
-                out_dih = dihedrals
-
-        elif combine == "grid":
-            out_pos = np.repeat(positions, dihedrals.shape[0], axis=0)
-            out_dih = np.tile(dihedrals, (positions.shape[0], 1))
-
-        return Poses(np.concatenate((out_pos, out_dih), axis=1), self.layout)
-
-    # TODO: not too keen on this placement
-    def get_n_random_dihedral_configurations(self, n: int) -> NDArray:
-        """Retrieve a list of `n` random dihedral configurations for the molecule.
-
-        .. warning::
-            This returns lists of truly random dihedral configurations, and may thus result
-            in physically impossible configurations.
-
-        Parameters
-        ----------
-        n : int
-            The number of configurations to generate.
-
-
-        Returns
-        -------
-        numpy.ndarray
-            An array of shape ``(n_dihedrals, n)`` containing `n` dihedral configurations.
-        """
-        return np.random.rand(n, len(self.__rotatable_dihedrals)) * 2 * np.pi - np.pi
-
-    def get_n_conformer_dihedral_configurations(self, n: int) -> NDArray:
-        """Retrieve a list of `n` conformation-based dihedral configurations for the molecule.
-
-        .. note::
-            This method does not necessarily result in unique configurations.
-
-
-        Parameters
-        ----------
-        n : int
-            The number of configurations to generate.
-
-
-        Returns
-        -------
-        numpy.ndarray
-            An array of shape ``(n_dihedrals, n)`` containing `n` dihedral configurations.
-        """
-        params = Chem.AllChem.ETKDGv3()
-        params.randomSeed = 0xC0FFEE
-
-        new_mol = Chem.Mol(self)
-
-        cids = Chem.AllChem.EmbedMultipleConfs(new_mol, n, params)
-
-        configurations = np.empty((n, len(self.__rotatable_dihedrals)))
-        for i, cid in enumerate(cids):
-            dihedral_angles = np.zeros(len(self.__rotatable_dihedrals))
-            for j, dihedral in enumerate(self.__rotatable_dihedrals):
-                dihedral_angles[j] = Chem.rdMolTransforms.GetDihedralRad(
-                    new_mol.GetConformer(cid), *dihedral
-                )
-            configurations[i] = dihedral_angles
-
-        return configurations
-
-    def to_sdf(self, file: str | SDWriter, conf_id: int = -1):
-        """Write the current molecule to an SDF file.
-
-        Parameters
-        ----------
-        file : str, ~rdkit.Chem.rdmolfiles.SDWriter
-            Either a filename of a file to create, or an open
-            :class:`~rdkit.Chem.rdmolfiles.SDWriter` object to write to.
-        conf_id : int, optional
-            The conformer id to write.
-
-        """
-
-        close_writer = False
-        if isinstance(file, str):
-            writer = SDWriter(file)
-            close_writer = True
-        elif isinstance(file, SDWriter):
-            writer = file
-        else:
-            raise ValueError("file must be either filename str or SDWriter")
-
-        writer.write(self, confId=conf_id)
-
-        if close_writer:
-            writer.close()
-
-    def v_to_sdf(self, file: str, poses: list[Pose]):
-        """Write the current molecule with positions `v` to an SDF file.
-
-        Parameters
-        ----------
-        file : str
-            The path to the file to create.
-        v : array_like
-            An array of shape ``(6 + n_dihedrals, n)``, containing molecular positions to write.
-
-        """
-
-        writer = Chem.SDWriter(file)
-
-        for var in v:
-            conf_id = self.update(var, new_conf=True)
-            self.to_sdf(writer, conf_id=conf_id)
-            self.RemoveConformer(conf_id)
-        writer.close()
+    # region Dunder / misc
 
     def __hash__(self):
         # TODO!
         return id(self)
+
+    # endregion
 
 
 @dataclass(frozen=True)
@@ -1282,6 +1294,9 @@ class Poses:
         self.rotation = self._vs[:, layout.rot_slice]
         self.translation = self._vs[:, layout.trans_slice]
         self.torsions = self._vs[:, layout.tors_slice]
+
+    def __eq__(self, other):
+        return bool(np.array_equal(self._vs, other._vs)) and self.layout == other.layout
 
     def __len__(self):
         return len(self._vs)
