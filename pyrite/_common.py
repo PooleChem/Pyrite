@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 from rdkit import Chem, RDLogger
 from rdkit.Chem import Draw, SDWriter
 
-from ._util import _rotation_matrix_from_euler, _rotation_matrix_to_euler, _translation_matrix_from_coordinates, _rotation_matrix_from_quat
+from ._util import _rotation_matrix_from_euler, _rotation_matrix_to_euler, _translation_matrix_from_coordinates, _rotation_matrix_from_quat, _compose_delta_transform
 from .atom_consts import AtomType, vina_atom_consts
 from .view import Viewer
 
@@ -126,7 +126,7 @@ class Mol(Chem.Mol):
         # Set the layout
         self.layout: PoseLayout = PoseLayout(rotation_type, len(self.__rotatable_dihedrals))
 
-        self.__cur_transform = np.eye(4)
+        self.__cur_rotation_matrix = np.eye(3)
         self.__cur_rotation = np.zeros(self.layout.rot_dim)
 
         # If more than 1000 heavy atoms: assume protein for viewing
@@ -887,8 +887,7 @@ class Mol(Chem.Mol):
         for i, angle in enumerate(angles_rad):
             self.set_dihedral_angle(i, angle, conf_id)
 
-    # TODO: optimizations here would be great (even with loss of default conformer updating?)
-    # TODO: allow different rotation types
+
     def transform(
             self,
             rotation: NDArray[np.float32],
@@ -925,24 +924,16 @@ class Mol(Chem.Mol):
             assert len(rotation) == 4, "Rotation must be a 4-vector for Ligand with quaternion rotation."
             rotate = _rotation_matrix_from_quat(*rotation)
 
-        translate = _translation_matrix_from_coordinates(x, y, z)
-
-        new_transform = translate @ rotate
-
         center_atom = conf.GetAtomPosition(self._center_atom)
         center_atom_coords = np.array(
             [center_atom.x, center_atom.y, center_atom.z],
         )
 
-        self.__cur_transform[:3, 3] = center_atom_coords
-
-        reverse = np.linalg.inv(self.__cur_transform)
-
-        transformation_matrix = new_transform @ reverse
+        transformation_matrix = _compose_delta_transform(rotate[:3, :3], translation, self.__cur_rotation_matrix[:3, :3], center_atom_coords)
 
         if conf_id == -1:
-            self.__cur_transform = new_transform
-            self.__cur_rotation = [roll, pitch, yaw]
+            self.__cur_rotation_matrix = rotate[:3, :3]
+            self.__cur_rotation = np.asarray(rotation)
         # else:
         #     transformation_matrix = new_transform
         #     transformation_matrix[:3, 3] -= new_transform[:3, :3] @ center_atom_coords
@@ -1001,9 +992,10 @@ class Mol(Chem.Mol):
 
     @center_atom.setter
     def center_atom(self, value):
-        self.transform(0, 0, 0, 0, 0, 0)
+        self.transform(self.layout.identity_rotation, np.zeros(3))
         self._center_atom = value
-        self.transform(0, 0, 0, 0, 0, 0)
+        self.transform(self.layout.identity_rotation, np.zeros(3))
+
 
     @property
     def position(self):
@@ -1040,7 +1032,7 @@ class Mol(Chem.Mol):
             placement: str = "random",
             conformations: str = "conformer",
             combine: str = "random",
-    ) -> NDArray:
+    ) -> Poses:
         """Retrieve a list of random placements and conformers for the molecule in the binding_site.
 
 
@@ -1120,7 +1112,7 @@ class Mol(Chem.Mol):
             out_pos = np.repeat(positions, dihedrals.shape[0], axis=0)
             out_dih = np.tile(dihedrals, (positions.shape[0], 1))
 
-        return np.concatenate((out_pos, out_dih), axis=1)
+        return Poses(np.concatenate((out_pos, out_dih), axis=1), self.layout)
 
     # TODO: not too keen on this placement
     def get_n_random_dihedral_configurations(self, n: int) -> NDArray:
@@ -1252,6 +1244,12 @@ class PoseLayout:
         object.__setattr__(self, 'trans_slice', slice(d, d + 3))
         object.__setattr__(self, 'tors_slice', slice(d + 3, None))
 
+    @property
+    def identity_rotation(self) -> NDArray[np.float32]:
+        if self.rot_type == 'euler':
+            return np.zeros(3)
+        return np.array([1, 0, 0, 0], dtype=np.float32)
+
 
 class Pose:
     __slots__ = ('_v', 'layout', 'rotation', 'translation', 'torsions')
@@ -1266,6 +1264,44 @@ class Pose:
     def __array__(self, dtype=None):
         return self._v if dtype is None else self._v.astype(dtype)
 
+    def __eq__(self, other):
+        return bool(np.array_equal(self._v, other._v)) and self.layout == other.layout
+
+
     @classmethod
     def from_array(cls, v: NDArray, layout: PoseLayout):
         return cls(np.asarray(v).copy(), layout)
+
+
+class Poses:
+    __slots__ = ('_vs', 'layout', 'rotation', 'translation', 'torsions')
+
+    def __init__(self, vs: NDArray, layout: PoseLayout):
+        self._vs = np.asarray(vs)
+        self.layout = layout
+        self.rotation = self._vs[:, layout.rot_slice]
+        self.translation = self._vs[:, layout.trans_slice]
+        self.torsions = self._vs[:, layout.tors_slice]
+
+    def __len__(self):
+        return len(self._vs)
+
+    def __array__(self, dtype=None):
+        return self._vs if dtype is None else self._vs.astype(dtype)
+
+    def __getitem__(self, idx):
+        if isinstance(idx, (int, np.integer)):
+            return Pose(self._vs[idx], self.layout)
+        return Poses(self._vs[idx], self.layout)
+
+    def __iter__(self):
+        for row in self._vs:
+            yield Pose(row, self.layout)
+
+    @classmethod
+    def from_array(cls, vs: NDArray, layout: PoseLayout):
+        return cls(np.asarray(vs).copy(), layout)
+
+    @classmethod
+    def from_poses(cls, poses: list[Pose], layout: PoseLayout | None = None):
+        return cls(np.stack([np.asarray(p) for p in poses]), layout or poses[0].layout)

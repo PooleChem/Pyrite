@@ -24,7 +24,6 @@ def _rotation_matrix_to_euler(r: NDArray):
     return phi, theta, psi
 
 
-# TODO: Support Quaternions
 @njit
 def _rotation_matrix_from_euler(roll: float, pitch: float, yaw: float):
     r"""Create a rotation matrix from Euler angles.
@@ -143,3 +142,27 @@ def _translation_matrix_from_coordinates(x: float, y: float, z: float):
     m[1, 3] = y
     m[2, 3] = z
     return m
+
+@njit
+def _compose_delta_transform(r_new: NDArray, translation: NDArray, r_prev: NDArray, center: NDArray):
+    """
+    As rotation matrices are orthogonal, their inverse is the same as their transpose. We can therefore
+    calculate the inverse in closed form.
+
+    Parameters
+    ----------
+    r_new
+    translation
+    r_prev
+    center
+
+    Returns
+    -------
+
+    """
+    m = r_new @ r_prev.T
+    t = translation - m @ center
+    out = np.eye(4)
+    out[:3, :3] = m
+    out[:3, 3] = t
+    return out
