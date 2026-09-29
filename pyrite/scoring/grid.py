@@ -129,8 +129,8 @@ class GridScore(ScoringFunction):
             return GridScore._leaves(sf.scoring_function)
         return [sf]
 
-    def get_dependencies(self) -> set[Dependency]:
-        return set()  # the grid itself replaces the need for a live KNN query at score time
+    def get_dependencies(self) -> list[Dependency]:
+        return []  # the grid itself replaces the need for a live KNN query at score time
 
     def _score(self, conf_id, computed) -> float:
         positions = self._probe_mol.get_positions(conf_id)[self._probe_mask]

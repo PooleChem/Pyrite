@@ -6,7 +6,7 @@ from typing import Any, Callable
 import numpy as np
 from numpy.typing import NDArray
 
-from .dependencies import Dependency
+from .dependencies import Dependency, _NarrowingComputed
 from .. import Mol
 import copy
 
@@ -100,7 +100,11 @@ class ScoringFunction(ABC):
             raw_deps = self.get_dependencies()
             opt_deps = Dependency.merge_all(raw_deps)
             self._opt_deps_cache = opt_deps
-        computed = {dep: dep.compute(conf_id) for dep in opt_deps}
+        # _NarrowingComputed, not a plain dict: opt_deps holds one representative
+        # per merged group, but different dependencies sharing that group (e.g.
+        # different k/cutoff) still need their own narrowed view back — see
+        # Dependency.narrow()'s docstring for why that can't be a plain dict.
+        computed = _NarrowingComputed({dep: dep.compute(conf_id) for dep in opt_deps})
 
         if subscores is not None:
             return self._score_and_store(conf_id, computed, subscores)
@@ -133,7 +137,7 @@ class ScoringFunction(ABC):
             raw_deps = self.get_dependencies()
             opt_deps = Dependency.merge_all(raw_deps)
             self._opt_deps_cache = opt_deps
-        computed_batch = {dep: dep.compute_batch(conf_ids) for dep in opt_deps}
+        computed_batch = _NarrowingComputed({dep: dep.compute_batch(conf_ids) for dep in opt_deps})
 
         return self._batch_scores(conf_ids, computed_batch)
 
@@ -212,20 +216,27 @@ class ScoringFunction(ABC):
         float
         """
 
-    def get_dependencies(self) -> set[Dependency]:
+    def get_dependencies(self) -> list[Dependency]:
         """Get the dependencies of this scoring function.
 
-        This method returns a set of the :class:`~pyrite.scoring.dependencies.Dependency` that are
+        This method returns a list of the :class:`~pyrite.scoring.dependencies.Dependency` that are
         used in this scoring function.
 
-        When combining scoring functions, this method returns the set of all dependencies of all
-        combined scoring functions.
+        When combining scoring functions, this method returns every dependency of every combined
+        scoring function — deliberately a ``list``, not a ``set``: two dependencies can compare
+        equal (same ``group_key``, e.g. same point cloud/query — enough to be merged into one
+        shared computation) while still being different instances with different parameters (e.g.
+        ``k``/cutoff) that each need their own narrowed view back (see
+        :meth:`~pyrite.scoring.dependencies.Dependency.narrow`). A ``set`` would silently collapse
+        those down to one arbitrary survivor before :meth:`~pyrite.scoring.dependencies.Dependency.merge_all`
+        ever saw the others. ``merge_all`` does its own grouping/deduplication downstream and works
+        fine with a list that has such "duplicates" in it.
 
         Returns
         -------
-        set
+        list
         """
-        return set()
+        return []
 
     def __neg__(self):
         return _ScaledScoringFunction(-1, "*", self)
@@ -326,10 +337,10 @@ class _CombinedScoringFunction(ScoringFunction):  # pylint: disable=too-few-publ
             else:
                 self.funcs.append(func)
 
-    def get_dependencies(self) -> set[Dependency]:
-        deps = set()
+    def get_dependencies(self) -> list[Dependency]:
+        deps = []
         for func in self.funcs:
-            deps.update(func.get_dependencies())
+            deps.extend(func.get_dependencies())
         return deps
 
     def _score(self, conf_id, computed) -> float:
@@ -406,12 +417,12 @@ class _ScaledScoringFunction(ScoringFunction):
         self.operator = operator
         self.right = right
 
-    def get_dependencies(self) -> set[Dependency]:
-        deps = set()
+    def get_dependencies(self) -> list[Dependency]:
+        deps = []
         if isinstance(self.left, ScoringFunction):
-            deps.update(self.left.get_dependencies())
+            deps.extend(self.left.get_dependencies())
         if isinstance(self.right, ScoringFunction):
-            deps.update(self.right.get_dependencies())
+            deps.extend(self.right.get_dependencies())
         return deps
 
     def _score(self, conf_id, computed) -> float:
@@ -541,7 +552,7 @@ class Clamp(ScoringFunction):
         self.min_score = min_score
         self.max_score = max_score
 
-    def get_dependencies(self) -> set[Dependency]:
+    def get_dependencies(self) -> list[Dependency]:
         return self.scoring_function.get_dependencies()
 
     def _score(self, *args, **kwargs) -> float:

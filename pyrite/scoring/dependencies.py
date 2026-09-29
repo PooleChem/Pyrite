@@ -93,6 +93,41 @@ class Dependency(ABC):
         """
         pass
 
+    def narrow(self, computed: Any) -> Any:
+        """Narrow a computed result down to what *this* dependency instance asked for.
+
+        Dependencies that share a ``group_key`` are merged (see :meth:`merge_all`)
+        into one shared computation, run at whichever parameters cover every member
+        of the group (e.g. the widest ``k``/cutoff among them, for
+        :class:`KNNDependency`) — so the raw result handed back by that shared
+        computation can be wider than what any *individual* dependency in the group
+        actually needs. ``narrow`` is called with that raw, possibly-wider result
+        and should return the view specific to ``self`` — the default here is the
+        identity (nothing to narrow), correct for any dependency type that doesn't
+        have this "computed once, wide; used many times, narrower" shape.
+
+        .. note::
+            This must be resolved per dependency *instance*, not once per merged
+            group — two dependencies in the same group can have the same
+            ``group_key`` (so they merge and share one computation) while still
+            wanting different narrowed views back (e.g. different ``k``/cutoff).
+            A plain ``dict`` can't hold two different values under two keys that
+            compare equal, so this can't be precomputed into a dict keyed by
+            ``group_key`` — it has to be called per instance, on demand (see
+            ``_NarrowingComputed``).
+
+        Parameters
+        ----------
+        computed : Any
+            The raw result from ``compute``/``compute_batch``, for this
+            dependency's merged group.
+
+        Returns
+        -------
+        Any
+        """
+        return computed
+
     @classmethod
     @abstractmethod
     def group_key(cls, dep):
@@ -165,6 +200,31 @@ class Dependency(ABC):
         for (dep_cls, _), group in type_key.items():
             merged.add(dep_cls.merge_group(group))
         return merged
+
+
+class _NarrowingComputed:
+    """Wraps a ``{Dependency: raw_result}`` dict so ``computed[dep]`` returns
+    ``dep``'s own narrowed view (:meth:`Dependency.narrow`) rather than the
+    raw, possibly wider-scoped result a merged group actually computed.
+
+    This has to be resolved lazily, per lookup, not precomputed into a plain
+    dict — two dependencies in the same merged group compare equal (that's
+    what lets them share one computation) but can still want different
+    narrowed views back, and a plain dict can't hold two different values
+    under two keys that compare equal. Narrowing on each ``__getitem__`` call,
+    using the exact instance passed in (not its equivalence class), is what
+    makes ``computed[self.nn_dep]`` correct for every dependent instance
+    sharing a merged group, not just whichever happened to be computed last.
+
+    Used by :meth:`~pyrite.scoring.ScoringFunction.get_score`/``batch_scores``
+    — not something a scoring function author constructs directly.
+    """
+
+    def __init__(self, raw: dict):
+        self._raw = raw
+
+    def __getitem__(self, dep: Dependency):
+        return dep.narrow(self._raw[dep])
 
 
 class KDTreeCache:  # pylint: disable=too-few-public-methods
@@ -279,10 +339,8 @@ class KNNDependency(Dependency):
         mask : NDArray
             A boolean mask indicating which neighbors are valid.
         """
-        # TODO: distance upper bound!
-        # print("dep", self.tree.n)
         r, idx = self.tree.query(
-            self.querying(conf_id), k=self.k, distance_upper_bound=8
+        self.querying(conf_id), k=self.k, distance_upper_bound=self.distance_upper_bound
         )
         return r, idx, (idx != self.tree.n)
 
@@ -312,16 +370,43 @@ class KNNDependency(Dependency):
         mask : NDArray
             Shape ``(n_conf_ids, n_points, k)``.
         """
-        # TODO: distance upper bound! (same as compute(), see the TODO there)
         positions = np.stack([self.querying(conf_id) for conf_id in conf_ids])
         n_conf_ids, n_points, _ = positions.shape
 
         r, idx = self.tree.query(
-            positions.reshape(-1, 3), k=self.k, distance_upper_bound=8
+            positions.reshape(-1, 3), k=self.k, distance_upper_bound=self.distance_upper_bound
         )
         r = r.reshape(n_conf_ids, n_points, self.k)
         idx = idx.reshape(n_conf_ids, n_points, self.k)
         return r, idx, (idx != self.tree.n)
+
+    def narrow(self, computed):
+        """Narrow a merged group's shared query result down to this instance's
+        own `k`/`distance_upper_bound`.
+
+        The merged/shared query (see `merge_group`) runs at the *widest* `k` and
+        `distance_upper_bound` across every dependency in the group, so a member
+        with a smaller `k` gets back extra, farther-out neighbor columns it never
+        asked for, and a member with a smaller cutoff gets back neighbors beyond
+        its own configured distance. Both need trimming back down per instance —
+        slicing to `self.k` neighbor columns (already sorted nearest-first by the
+        KDTree query, so this keeps exactly the `k` nearest) and masking out
+        anything beyond `self.distance_upper_bound`.
+
+        Parameters
+        ----------
+        computed : tuple[NDArray, NDArray, NDArray]
+            The group's raw `(r, idx, mask)`, shape `(..., k_group)` on the last
+            axis, `k_group` >= `self.k`.
+
+        Returns
+        -------
+        tuple[NDArray, NDArray, NDArray]
+        """
+        r, idx, mask = computed
+        r, idx, mask = r[..., :self.k], idx[..., :self.k], mask[..., :self.k]
+        mask = mask & (r < self.distance_upper_bound)
+        return r, idx, mask
 
     @classmethod
     def group_key(cls, dep):
@@ -367,23 +452,17 @@ class KNNDependency(Dependency):
             best_ub.distance_upper_bound,
         )
 
-    # TODO: cutoff?
+    # Deliberately excludes k/distance_upper_bound — that's what lets two
+    # dependencies with different k/cutoff still merge into one shared query
+    # (at the widest of the two). Each instance still gets its own correct view
+    # back via narrow(), so this doesn't lose per-instance correctness — see
+    # narrow()'s docstring for why that has to happen per instance rather than
+    # being resolved here.
     def __hash__(self):
-        return hash(
-            (
-                KNNDependency,
-                self.tree_hash,
-                self.querying,
-                # self.k,
-                # self.distance_upper_bound,
-            )
-        )
+        return hash((KNNDependency, self.tree_hash, self.querying))
 
-    # TODO: cutoff?
     def __eq__(self, other):
         return (
             isinstance(other, KNNDependency)
             and other.group_key(other) == self.group_key(self)
-            # and self.k == other.k
-            # and self.distance_upper_bound == other.distance_upper_bound
         )

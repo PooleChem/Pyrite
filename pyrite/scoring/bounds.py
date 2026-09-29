@@ -65,8 +65,8 @@ class DistanceToPocket(ScoringFunction):
             self.cutoff,
         )
 
-    def get_dependencies(self) -> set[Dependency]:
-        return {self._nn_dep}
+    def get_dependencies(self) -> list[Dependency]:
+        return [self._nn_dep]
 
     def _score(self, conf_id, computed) -> float:
         r, _, mask = computed[self._nn_dep]
@@ -143,8 +143,8 @@ class WeightedBoundsOverlap(ScoringFunction):
 
         self.max_charge = np.max(self.pocket.charges) * self.outside_penalty
 
-    def get_dependencies(self) -> set[Dependency]:
-        return {self.nn_dep}
+    def get_dependencies(self) -> list[Dependency]:
+        return [self.nn_dep]
 
     def _score(self, conf_id, computed) -> float:
         r, idx, safe_mask = computed[self.nn_dep]

@@ -176,8 +176,8 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         # pose) was pure waste.
         self._fixed_radii_masked = self.xs_radii[self.fixed_mol.atom_types[self.fixed_mask]]
 
-    def get_dependencies(self) -> set[Dependency]:
-        return {self.nn_dep}
+    def get_dependencies(self) -> list[Dependency]:
+        return [self.nn_dep]
 
     def _optimal_distance(self, idx, mask, radii, offset: float = 0.0):
         safe_idx = np.where(mask, idx, 0)
@@ -214,8 +214,15 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         s[~self._mask(idx, mask)] = 0.0
         return np.sum(s)
 
-    def _score_field(self, r, idx, atom_type: AtomType) -> NDArray[np.float64]:
-        mask = idx != self.nn_dep.tree.n
+    def _score_field(self, r, idx, atom_type: AtomType, mask=None) -> NDArray[np.float64]:
+        # mask defaults to None (recomputed from idx) for the grid-construction
+        # caller (GridScore builds r/idx directly from a raw KDTree query, with no
+        # pre-existing narrowed mask to inherit). _batch_scores (below) passes its
+        # own already-narrowed mask explicitly — recomputing from idx alone there
+        # would silently undo KNNDependency.narrow()'s per-term cutoff masking,
+        # since narrow() only clears the boolean mask, not idx/r themselves.
+        if mask is None:
+            mask = idx != self.nn_dep.tree.n
 
         # [..., None] adds the trailing neighbor axis so this broadcasts correctly whether
         # atom_type is a scalar (single hypothetical type, e.g. a grid sweep) or an array
@@ -229,15 +236,16 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         return s.sum(axis=-1)
 
     def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
-        r, idx, _ = computed_batch[self.nn_dep]
+        r, idx, mask = computed_batch[self.nn_dep]
         r = r[:, self.probe_mask]
         idx = idx[:, self.probe_mask]
+        mask = mask[:, self.probe_mask]
 
         # the real ligand's own per-atom types — _score_field already handles an
         # array atom_type (verified), summing here over the remaining atoms axis
         # (it already summed over neighbors) gives one score per conformer.
         atom_types = self.probe_mol.atom_types[self.probe_mask]
-        return self._score_field(r, idx, atom_types).sum(axis=-1)
+        return self._score_field(r, idx, atom_types, mask=mask).sum(axis=-1)
 
 
 class Gaussian(_KNNScoringFunction):
@@ -470,7 +478,10 @@ class _SlopeStep(_KNNScoringFunction):
         ignore_non_polar_hydrogens: bool = True,
     ):
         assert good < bad, "Bad distance <= good distance not implemented."
-        super().__init__(probe_mol, fixed_mol, cutoff or bad, k, ignore_non_polar_hydrogens)
+        # `bad` is an offset from optimal_distance (~4 Å for a typical atom pair),
+        # not an absolute search radius — cutoff needs that base distance added,
+        # same pattern as Gaussian's `4 + offset + ...`/Repulsion's `4 + offset`.
+        super().__init__(probe_mol, fixed_mol, cutoff or (4 + bad), k, ignore_non_polar_hydrogens)
         self.good = good
         self.bad = bad
 
@@ -568,7 +579,7 @@ class Hydrophobic(_SlopeStep):
         ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            probe_mol, fixed_mol, good, bad, cutoff or bad, k, ignore_non_polar_hydrogens
+            probe_mol, fixed_mol, good, bad, cutoff, k, ignore_non_polar_hydrogens
         )
 
         self.__init_hydrophobic()
