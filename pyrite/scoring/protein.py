@@ -4,6 +4,7 @@ from typing import Any
 
 import numpy as np
 from numba import njit
+from numpy._typing import NDArray
 
 from .._common import Mol
 from ..atom_consts import AtomType, vina_atom_consts
@@ -151,6 +152,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
 
         self.cutoff = cutoff
         self.k = k
+        self.offset = 0.0
 
         self.__init_radii()
 
@@ -170,18 +172,72 @@ class _KNNScoringFunction(ScoringFunction, ABC):
 
         self.probe_radii = self.xs_radii[self.probe_mol.atom_types[self.probe_mask]]
         # Precomputed once: fixed_mask/fixed_mol.atom_types never change after construction,
-        # so re-filtering them on every _get_optimal_distance call (once per KNN term, per
+        # so re-filtering them on every _optimal_distance call (once per KNN term, per
         # pose) was pure waste.
         self._fixed_radii_masked = self.xs_radii[self.fixed_mol.atom_types[self.fixed_mask]]
 
     def get_dependencies(self) -> set[Dependency]:
         return {self.nn_dep}
 
-    def _get_optimal_distance(self, idx, mask):
+    def _optimal_distance(self, idx, mask, radii, offset: float = 0.0):
         safe_idx = np.where(mask, idx, 0)
         fixed_radii = self._fixed_radii_masked[safe_idx]
 
-        return self.probe_radii[:, None] + fixed_radii[:, :]
+        return radii + fixed_radii + offset
+
+    def _kernel(self, dist: NDArray) -> NDArray:
+        """The elementwise score for each neighbor, as a function of
+        ``(distance - optimal_distance - offset)``. The only thing a
+        concrete ``_KNNScoringFunction`` needs to implement.
+        """
+        raise NotImplementedError
+
+    def _mask(self, idx, mask):
+        """Optional extra neighbor-pairing constraint (e.g. hydrophobic/hbond
+        pairing), on top of plain neighbor validity. Default: no extra
+        restriction.
+        """
+        return mask
+
+    def _mask_field(self, idx, mask, atom_type):
+        return mask
+
+    def _score(self, conf_id, computed) -> float:
+        r, idx, mask = computed[self.nn_dep]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        mask = mask[self.probe_mask]
+
+        dist = r - self._optimal_distance(idx, mask, self.probe_radii[:, None], self.offset)
+        s = self._kernel(dist)
+
+        s[~self._mask(idx, mask)] = 0.0
+        return np.sum(s)
+
+    def _score_field(self, r, idx, atom_type: AtomType) -> NDArray[np.float64]:
+        mask = idx != self.nn_dep.tree.n
+
+        # [..., None] adds the trailing neighbor axis so this broadcasts correctly whether
+        # atom_type is a scalar (single hypothetical type, e.g. a grid sweep) or an array
+        # matching the atoms axis (a real ligand's per-atom types, e.g. a batch of poses) —
+        # a no-op for the scalar case, required for the array case.
+        radii = np.asarray(self.xs_radii[atom_type])[..., None]
+        dist = r - self._optimal_distance(idx, mask, radii, self.offset)
+        s = self._kernel(dist)
+
+        s[~self._mask_field(idx, mask, atom_type)] = 0.0
+        return s.sum(axis=-1)
+
+    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+        r, idx, _ = computed_batch[self.nn_dep]
+        r = r[:, self.probe_mask]
+        idx = idx[:, self.probe_mask]
+
+        # the real ligand's own per-atom types — _score_field already handles an
+        # array atom_type (verified), summing here over the remaining atoms axis
+        # (it already summed over neighbors) gives one score per conformer.
+        atom_types = self.probe_mol.atom_types[self.probe_mask]
+        return self._score_field(r, idx, atom_types).sum(axis=-1)
 
 
 class Gaussian(_KNNScoringFunction):
@@ -263,24 +319,8 @@ class Gaussian(_KNNScoringFunction):
         self.offset = offset
         self.width = width
 
-    @staticmethod
-    def __gaussian(x, w):
-        return _gaussian_kernel(x, w)
-
-    def _score(self, conf_id, computed) -> float:
-        r, idx, mask = computed[self.nn_dep]
-        r = r[self.probe_mask]
-        idx = idx[self.probe_mask]
-        mask = mask[self.probe_mask]
-
-        optimal = self._get_optimal_distance(idx, mask) + self.offset
-        s = self.__gaussian(r - optimal, self.width)
-
-        mask &= r < self.cutoff
-
-        s[~mask] = 0.0
-
-        return np.sum(s)
+    def _kernel(self, dist):
+        return _gaussian_kernel(dist, self.width)
 
 
 class Repulsion(_KNNScoringFunction):
@@ -351,18 +391,9 @@ class Repulsion(_KNNScoringFunction):
         )
         self.offset = offset
 
-    def _score(self, conf_id, computed) -> float:
-        r, idx, mask = computed[self.nn_dep]
-        r = r[self.probe_mask]
-        idx = idx[self.probe_mask]
-        mask = mask[self.probe_mask]
-
-        optimal = self._get_optimal_distance(idx, mask) + self.offset
-        d = r - optimal
-
-        d[~mask | (d > 0.0)] = 0.0
-
-        return np.sum(d * d)
+    def _kernel(self, dist):
+        d = np.minimum(dist, 0.0)
+        return d * d
 
 
 class _SlopeStep(_KNNScoringFunction):
@@ -443,28 +474,8 @@ class _SlopeStep(_KNNScoringFunction):
         self.good = good
         self.bad = bad
 
-    @staticmethod
-    def _slope_step(dist, good, bad):
-        return _slope_step_kernel(dist, good, bad)
-
-    def _mask(self, fixed_val, neighbor_mask):
-        return np.full(fixed_val.shape, True) & neighbor_mask
-
-    def _score(self, conf_id, computed) -> float:
-        r, idx, neighbor_mask = computed[self.nn_dep]
-        r = r[self.probe_mask]
-        idx = idx[self.probe_mask]
-        neighbor_mask = neighbor_mask[self.probe_mask]
-
-        optimal_distance = self._get_optimal_distance(idx, neighbor_mask)
-        dist = r - optimal_distance
-
-        slope_step = self._slope_step(dist, self.good, self.bad)
-
-        mask = self._mask(idx, neighbor_mask)
-        slope_step[~mask] = 0.0
-
-        return np.sum(slope_step)
+    def _kernel(self, dist):
+        return _slope_step_kernel(dist, self.good, self.bad)
 
 
 class Hydrophobic(_SlopeStep):
@@ -585,6 +596,11 @@ class Hydrophobic(_SlopeStep):
             & neighbor_mask
         )
 
+    def _mask_field(self, idx, mask, atom_type):
+        fixed_hydrophobic = self._fixed_hydrophobic_masked[np.where(mask, idx, 0)]
+        hydrophobic = np.asarray(self.xs_hydrophobic[atom_type])[..., None]
+        return hydrophobic & fixed_hydrophobic[:, :] & mask
+
 
 class NonHydrophobic(Hydrophobic):
     r"""
@@ -669,6 +685,11 @@ class NonHydrophobic(Hydrophobic):
         safe_idx = np.where(neighbor_mask, idx, 0)
         fixed_mol_hydrophobic = self._fixed_hydrophobic_masked[safe_idx]
         return ~self.probe_mol_hydrophobic[:, None] & ~fixed_mol_hydrophobic & neighbor_mask
+
+    def _mask_field(self, idx, mask, atom_type):
+        fixed_hydrophobic = self._fixed_hydrophobic_masked[np.where(mask, idx, 0)]
+        hydrophobic = np.asarray(self.xs_hydrophobic[atom_type])[..., None]
+        return ~hydrophobic & ~fixed_hydrophobic[:, :] & mask
 
 
 class NonDirHBond(_SlopeStep):
@@ -785,9 +806,21 @@ class NonDirHBond(_SlopeStep):
 
         fixed_mol_acceptor = self._fixed_acceptor_masked[safe_idx]
         fixed_mol_donor = self._fixed_donor_masked[safe_idx]
-        return (self.probe_mol_donor[:, None] & fixed_mol_acceptor) | (
-            self.probe_mol_acceptor[:, None] & fixed_mol_donor
+        return (
+            (self.probe_mol_donor[:, None] & fixed_mol_acceptor)
+            | (self.probe_mol_acceptor[:, None] & fixed_mol_donor)
         ) & neighbor_mask
+
+    def _mask_field(self, idx, mask, atom_type):
+        safe_idx = np.where(mask, idx, 0)
+        fixed_acceptor = self._fixed_acceptor_masked[safe_idx]
+        fixed_donor = self._fixed_donor_masked[safe_idx]
+        donor = np.asarray(self.xs_donor[atom_type])[..., None]
+        acceptor = np.asarray(self.xs_acceptor[atom_type])[..., None]
+        return (
+            (donor & fixed_acceptor)
+            | (acceptor & fixed_donor)
+        ) & mask
 
 
 class LJ(_KNNScoringFunction):
@@ -917,16 +950,13 @@ class LJ(_KNNScoringFunction):
         self._cap = cap
         self._depth = depth
 
-    def _mask(self, fixed_mol_val, neighbor_mask):
-        return np.full(fixed_mol_val.shape, True) & neighbor_mask
-
     def _score(self, conf_id, computed) -> float:
         r, idx, neighbor_mask = computed[self.nn_dep]
         r = r[self.probe_mask]
         idx = idx[self.probe_mask]
         neighbor_mask = neighbor_mask[self.probe_mask]
 
-        optimal_distance = self._get_optimal_distance(idx, neighbor_mask) + self._offset
+        optimal_distance = self._optimal_distance(idx, neighbor_mask, self.probe_radii[:, None], self._offset)
         mask = self._mask(idx, neighbor_mask)
 
         return _lj_kernel(
@@ -934,6 +964,16 @@ class LJ(_KNNScoringFunction):
             self._i, self._j, self._smoothing, self._cap, self._depth,
             mask,
         )
+
+    # LJ's kernel needs r and optimal_distance separately (not just their difference) and
+    # masks+accumulates inside the numba loop — it doesn't fit _KNNScoringFunction's
+    # _kernel(dist) shape, so it never implements _kernel. Without this, LJ would silently
+    # *inherit* _KNNScoringFunction's _kernel-based _score_field/_batch_scores and crash with
+    # NotImplementedError only when actually called. _score_field = None makes GridScore's
+    # support check correctly reject it; _batch_scores falls back to ScoringFunction's
+    # always-correct generic default instead of the broken kernel-based one.
+    _score_field = None
+    _batch_scores = ScoringFunction._batch_scores
 
 
 class VDW(LJ):
@@ -1194,8 +1234,9 @@ class NonDirHBondLJ(LJ):
 
         fixed_mol_acceptor = self._fixed_acceptor_masked[safe_idx]
         fixed_mol_donor = self._fixed_donor_masked[safe_idx]
-        return (self.probe_mol_donor[:, None] & fixed_mol_acceptor) | (
-            self.probe_mol_acceptor[:, None] & fixed_mol_donor
+        return (
+            (self.probe_mol_donor[:, None] & fixed_mol_acceptor)
+            | (self.probe_mol_acceptor[:, None] & fixed_mol_donor)
         ) & neighbor_mask
 
 
@@ -1279,6 +1320,10 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
 
         self._probe_mol_charges = _probe_mol_charges[self.probe_mask]
         self._fixed_mol_charges = _fixed_mol_charges[self.fixed_mask]
+
+    # Charge-based, not radii-based — no _kernel(dist), same reasoning as LJ above.
+    _score_field = None
+    _batch_scores = ScoringFunction._batch_scores
 
 
 class ElectroStatic(_ChargeScoringFunction):
@@ -1678,6 +1723,11 @@ class _PLP(_KNNScoringFunction, ABC):
             k,
             ignore_non_polar_hydrogens,
         )
+
+    # Per-pair interaction-type lookup, not a radii-relative kernel — no _kernel(dist),
+    # same reasoning as LJ above.
+    _score_field = None
+    _batch_scores = ScoringFunction._batch_scores
 
     @staticmethod
     def potential_four_piece(r, values):

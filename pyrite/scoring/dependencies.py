@@ -53,6 +53,7 @@ from collections import defaultdict
 from typing import Any, Callable
 from hashlib import blake2b
 
+import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial import KDTree
 
@@ -250,10 +251,7 @@ class KNNDependency(Dependency):
         # Get tree key unique to point_cloud
         pc_meta = (self.point_cloud.shape, str(self.point_cloud.dtype))
         pc_data = self.point_cloud.tobytes()
-        pc_h = blake2b(digest_size=8)
-        pc_h.update(repr(pc_meta).encode("utf-8"))
-        pc_h.update(pc_data)
-        self.tree_hash = int.from_bytes(pc_h.digest(), byteorder="big")
+        self.tree_hash = hash((pc_meta, pc_data))
 
         # Initialize tree
         self.tree = KDTreeCache.get_tree(self.tree_hash, self.point_cloud)
@@ -286,6 +284,43 @@ class KNNDependency(Dependency):
         r, idx = self.tree.query(
             self.querying(conf_id), k=self.k, distance_upper_bound=8
         )
+        return r, idx, (idx != self.tree.n)
+
+    def compute_batch(
+        self, conf_ids
+    ) -> tuple[
+        NDArray,
+        NDArray,
+        NDArray,
+    ]:
+        """Execute the nearest neighbor search for many conformers at once.
+
+        Batched equivalent of ``compute`` — queries the tree once for all
+        `conf_ids` instead of once per conformer.
+
+        Parameters
+        ----------
+        conf_ids : array_like[int]
+            The conformer ids from which to retrieve the points to query on.
+
+        Returns
+        -------
+        r : NDArray
+            Shape ``(n_conf_ids, n_points, k)``.
+        idx : NDArray
+            Shape ``(n_conf_ids, n_points, k)``.
+        mask : NDArray
+            Shape ``(n_conf_ids, n_points, k)``.
+        """
+        # TODO: distance upper bound! (same as compute(), see the TODO there)
+        positions = np.stack([self.querying(conf_id) for conf_id in conf_ids])
+        n_conf_ids, n_points, _ = positions.shape
+
+        r, idx = self.tree.query(
+            positions.reshape(-1, 3), k=self.k, distance_upper_bound=8
+        )
+        r = r.reshape(n_conf_ids, n_points, self.k)
+        idx = idx.reshape(n_conf_ids, n_points, self.k)
         return r, idx, (idx != self.tree.n)
 
     @classmethod

@@ -106,6 +106,60 @@ class ScoringFunction(ABC):
             return self._score_and_store(conf_id, computed, subscores)
         return self._score(conf_id, computed=computed)
 
+    def batch_scores(self, conf_ids) -> NDArray[np.float64]:
+        """Score many conformers at once.
+
+        Mirrors ``get_score`` — resolves and merges dependencies once for the whole
+        call, then calls ``_batch_scores``. The default implementation is just a loop
+        over ``get_score`` (correct for every scoring function, no speedup); subclasses
+        that can do better override ``_batch_scores``, not this method.
+
+        .. note::
+            Every id in `conf_ids` must already be a real conformer (e.g. created via
+            ``mol.update(pose, new_conf=True)``) — this does not create conformers itself.
+
+        Parameters
+        ----------
+        conf_ids : array_like[int]
+            The conformer ids to score.
+
+        Returns
+        -------
+        NDArray
+            One score per conformer id, same order as `conf_ids`.
+        """
+        opt_deps = getattr(self, "_opt_deps_cache", None)
+        if opt_deps is None:
+            raw_deps = self.get_dependencies()
+            opt_deps = Dependency.merge_all(raw_deps)
+            self._opt_deps_cache = opt_deps
+        computed_batch = {dep: dep.compute_batch(conf_ids) for dep in opt_deps}
+
+        return self._batch_scores(conf_ids, computed_batch)
+
+    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+        """The batched score function.
+
+        .. note::
+            Do not call this method directly. Use ``batch_scores`` instead.
+
+        :meta public:
+
+        Parameters
+        ----------
+        conf_ids : array_like[int]
+            The conformer ids to score.
+        computed_batch : dict[Dependency, Any]
+            The batched equivalent of ``_score``'s `computed` — supplied by
+            ``batch_scores``. The default implementation below ignores it; it exists
+            for subclasses that override this method to do better than one-at-a-time.
+
+        Returns
+        -------
+        NDArray
+        """
+        return np.array([self.get_score(conf_id) for conf_id in conf_ids])
+
     def clamp(
         self,
         min_score: float = -float("inf"),
@@ -295,6 +349,20 @@ class _CombinedScoringFunction(ScoringFunction):  # pylint: disable=too-few-publ
         subscores[self] = total
         return total
 
+    def _score_field(self, r, idx, atom_type):
+        # pylint: disable=protected-access
+        total = np.zeros(len(r))
+        for func in self.funcs:
+            total = total + func._score_field(r, idx, atom_type)
+        return total
+
+    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+        # pylint: disable=protected-access
+        total = np.zeros(len(conf_ids))
+        for func in self.funcs:
+            total = total + func._batch_scores(conf_ids, computed_batch)
+        return total
+
     def __repr__(self):
         return f"<{type(self).__name__}: {' + '.join(map(str, self.funcs))}>"
 
@@ -390,6 +458,46 @@ class _ScaledScoringFunction(ScoringFunction):
         subscores[self] = score
         return score
 
+    def _score_field(self, r, idx, atom_type):
+        # pylint: disable=protected-access
+
+        left_val = self.left
+        right_val = self.right
+        if isinstance(self.left, ScoringFunction):
+            left_val = self.left._score_field(r, idx, atom_type)
+        if isinstance(self.right, ScoringFunction):
+            right_val = self.right._score_field(r, idx, atom_type)
+
+        match self.operator:
+            case "*":
+                return left_val * right_val
+            case "/":
+                return left_val / right_val
+            case "^":
+                return left_val**right_val
+            case _:
+                raise TypeError(f"Unsupported operator for scaling: '{self.operator}'")
+
+    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+        # pylint: disable=protected-access
+
+        left_val = self.left
+        right_val = self.right
+        if isinstance(self.left, ScoringFunction):
+            left_val = self.left._batch_scores(conf_ids, computed_batch)
+        if isinstance(self.right, ScoringFunction):
+            right_val = self.right._batch_scores(conf_ids, computed_batch)
+
+        match self.operator:
+            case "*":
+                return left_val * right_val
+            case "/":
+                return left_val / right_val
+            case "^":
+                return left_val**right_val
+            case _:
+                raise TypeError(f"Unsupported operator for scaling: '{self.operator}'")
+
     def __str__(self):
         return f"{self.left} {self.operator} {self.right}"
 
@@ -427,11 +535,14 @@ class Clamp(ScoringFunction):
     ):
         self.scoring_function = scoring_function
 
-        if min_score <= max_score:
+        if min_score > max_score:
             raise ValueError("min_score must be <= max_score")
 
         self.min_score = min_score
         self.max_score = max_score
+
+    def get_dependencies(self) -> set[Dependency]:
+        return self.scoring_function.get_dependencies()
 
     def _score(self, *args, **kwargs) -> float:
         # pylint: disable=protected-access
@@ -450,6 +561,22 @@ class Clamp(ScoringFunction):
         )
         subscores[self] = score
         return score
+
+    def _score_field(self, r, idx, atom_type):
+        # pylint: disable=protected-access
+        return np.clip(
+            self.scoring_function._score_field(r, idx, atom_type),
+            self.min_score,
+            self.max_score,
+        )
+
+    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+        # pylint: disable=protected-access
+        return np.clip(
+            self.scoring_function._batch_scores(conf_ids, computed_batch),
+            self.min_score,
+            self.max_score,
+        )
 
     def __repr__(self):
         return f"<{type(self).__name__}: {self.scoring_function.__repr__()} in [{self.min_score}, {self.max_score}]>"
@@ -475,4 +602,10 @@ class ConstantTerm(ScoringFunction):
 
     def _score(self, *args, **kwargs) -> float:
         return self.constant
+
+    def _score_field(self, r, idx, atom_type):
+        return np.full(len(r), self.constant)
+
+    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+        return np.full(len(conf_ids), self.constant)
 

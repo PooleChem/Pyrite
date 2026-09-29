@@ -999,7 +999,7 @@ class Mol(Chem.Mol):
         if close_writer:
             writer.close()
 
-    def v_to_sdf(self, file: str, poses: list[Pose]):
+    def v_to_sdf(self, file: str, poses: Poses):
         """Write the current molecule with positions `v` to an SDF file.
 
         Parameters
@@ -1013,8 +1013,8 @@ class Mol(Chem.Mol):
 
         writer = Chem.SDWriter(file)
 
-        for var in v:
-            conf_id = self.update(var, new_conf=True)
+        for pose in poses:
+            conf_id = self.update(pose, new_conf=True)
             self.to_sdf(writer, conf_id=conf_id)
             self.RemoveConformer(conf_id)
         writer.close()
