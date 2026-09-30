@@ -12,6 +12,7 @@ from numba import njit
 from numpy.typing import NDArray
 from rdkit import Chem, RDLogger
 from rdkit.Chem import Draw, SDWriter
+from scipy.spatial.transform import Rotation
 
 from ._util import _rotation_matrix_from_euler, _rotation_matrix_to_euler, _translation_matrix_from_coordinates, _rotation_matrix_from_quat, _compose_delta_transform
 from .atom_consts import AtomType, vina_atom_consts
@@ -1274,6 +1275,36 @@ class PoseLayout:
         if self.rot_type == 'euler':
             return np.zeros(3)
         return np.array([1, 0, 0, 0], dtype=np.float32)
+
+    def compose_rotation(self, rotation: NDArray, delta_rotvec: NDArray) -> NDArray:
+        """Rotate `rotation` by a small world-frame rotation, in this layout's representation.
+
+        Composes on the left (``dR * R``), so `delta_rotvec` is expressed in the fixed frame,
+        independent of the current orientation (left-invariant), rather than in Euler-angle
+        space where a uniform step is not a uniform rotation.
+
+        Parameters
+        ----------
+        rotation : ndarray
+            Current rotation(s), shape ``(rot_dim,)`` or ``(n, rot_dim)``.
+        delta_rotvec : ndarray
+            Rotation vector(s) (axis * angle, radians), shape ``(3,)`` or ``(n, 3)``,
+            broadcastable against `rotation`.
+
+        Returns
+        -------
+        ndarray
+            The perturbed rotation(s), same shape as `rotation`.
+        """
+        rotation = np.asarray(rotation)
+        d_r = Rotation.from_rotvec(delta_rotvec)
+        if self.rot_type == "euler":
+            # Layout order is (roll, pitch, yaw) = intrinsic ZYX with angles (yaw, pitch, roll).
+            current = Rotation.from_euler("ZYX", rotation[..., ::-1])
+            return (d_r * current).as_euler("ZYX")[..., ::-1]
+        # Layout order is (w, x, y, z); scipy is (x, y, z, w).
+        current = Rotation.from_quat(rotation[..., [1, 2, 3, 0]])
+        return (d_r * current).as_quat()[..., [3, 0, 1, 2]]
 
 
 class Pose:
