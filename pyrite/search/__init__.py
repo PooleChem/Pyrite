@@ -15,6 +15,7 @@ The ``pyrite.search`` namespace holds the optimization strategies used to find g
    random_hop
    geometric_annealing
    adaptive_stepsize
+   boltzmann_diversity_filter
 """
 
 from pyrite.search.basin_hopping import (
@@ -23,5 +24,12 @@ from pyrite.search.basin_hopping import (
     geometric_annealing,
     random_hop,
 )
+from pyrite.search.placement import boltzmann_diversity_filter
 
-__all__ = ["BasinHopping", "random_hop", "geometric_annealing", "adaptive_stepsize"]
+__all__ = [
+    "BasinHopping",
+    "random_hop",
+    "geometric_annealing",
+    "adaptive_stepsize",
+    "boltzmann_diversity_filter",
+]
