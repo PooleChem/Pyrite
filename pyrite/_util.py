@@ -2,6 +2,7 @@ import numpy as np
 from numba import njit
 from numpy.typing import NDArray
 
+
 def _rotation_matrix_to_euler(r: NDArray):
     """
     Extract ZYX (yaw-pitch-roll) Euler angles from a 3×3 rotation matrix R.
@@ -143,8 +144,11 @@ def _translation_matrix_from_coordinates(x: float, y: float, z: float):
     m[2, 3] = z
     return m
 
+
 @njit
-def _compose_delta_transform(r_new: NDArray, translation: NDArray, r_prev: NDArray, center: NDArray):
+def _compose_delta_transform(
+    r_new: NDArray, translation: NDArray, r_prev: NDArray, center: NDArray
+):
     """
     As rotation matrices are orthogonal, their inverse is the same as their transpose. We can therefore
     calculate the inverse in closed form.

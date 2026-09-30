@@ -84,7 +84,12 @@ class GridScore(ScoringFunction):
         # goes through — just point its query at grid vertices instead of
         # the real ligand. Reuses the already-built/cached KDTree (same
         # point_cloud -> same tree_hash -> KDTreeCache hit).
-        grid_dep = KNNDependency(knn_dep.point_cloud, lambda conf_id: grid_points, knn_dep.k, knn_dep.distance_upper_bound)
+        grid_dep = KNNDependency(
+            knn_dep.point_cloud,
+            lambda conf_id: grid_points,
+            knn_dep.k,
+            knn_dep.distance_upper_bound,
+        )
         r_grid, idx_grid, _ = grid_dep.compute(conf_id=None)
 
         atom_types = sorted(set(self._probe_mol.atom_types[self._probe_mask].tolist()))
@@ -92,7 +97,10 @@ class GridScore(ScoringFunction):
         for atom_type in atom_types:
             values = scoring_function._score_field(r_grid, idx_grid, atom_type).reshape(shape)
             self._interpolators[atom_type] = RegularGridInterpolator(
-                axes, values, bounds_error=False, fill_value=0.0,
+                axes,
+                values,
+                bounds_error=False,
+                fill_value=0.0,
             )
 
     def _make_grid_points(self, binding_site: Bounds, spacing: float, padding: float):
@@ -100,9 +108,7 @@ class GridScore(ScoringFunction):
         # independent of rotation — covers the same gap the prototype's
         # sampled-envelope approach was closing, without needing to sample
         center = self._probe_mol.positions[self._probe_mol.center_atom]
-        reach = np.linalg.norm(
-            self._probe_mol.positions[self._probe_mask] - center, axis=1
-        ).max()
+        reach = np.linalg.norm(self._probe_mol.positions[self._probe_mask] - center, axis=1).max()
 
         translation_bounds = binding_site.get_translation_bounds()
         mins = np.array([lo for lo, _ in translation_bounds]) - reach - padding
@@ -148,10 +154,9 @@ class GridScore(ScoringFunction):
         # pipeline yet — see POSE_NATIVE_SCORING_PLAN.md), but the interpolator
         # calls below — the actual thing this batches — run once per atom type
         # across every pose at once, not once per atom type *per pose*.
-        positions = np.stack([
-            self._probe_mol.get_positions(conf_id)[self._probe_mask]
-            for conf_id in conf_ids
-        ])  # (n_poses, n_atoms, 3)
+        positions = np.stack(
+            [self._probe_mol.get_positions(conf_id)[self._probe_mask] for conf_id in conf_ids]
+        )  # (n_poses, n_atoms, 3)
         types = self._probe_mol.atom_types[self._probe_mask]  # (n_atoms,) — same every pose
 
         total = np.zeros(len(conf_ids))

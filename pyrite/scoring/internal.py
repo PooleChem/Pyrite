@@ -95,6 +95,7 @@ class InternalEnergy(ScoringFunction):
             # MMFF94 cannot assign atom types for this molecule (unusual connectivity).
             # Fall back to UFF; if that also fails, internal energy returns 0.
             import warnings
+
             self._mmff_ff = Chem.AllChem.UFFGetMoleculeForceField(self.mol)
             if self._mmff_ff is None:
                 warnings.warn(

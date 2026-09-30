@@ -114,9 +114,7 @@ class Bounds(ABC):
         rotation = np.array(rotation)
         if rotation.shape == (3,):
             # Euler angles
-            self._rotation_matrix = np.array(
-                _rotation_matrix_from_euler(*rotation)[:3, :3]
-            )
+            self._rotation_matrix = np.array(_rotation_matrix_from_euler(*rotation)[:3, :3])
         elif rotation.shape == (3, 3):
             # Rotation matrix
             self._rotation_matrix = np.array(rotation)
@@ -359,9 +357,7 @@ class Bounds(ABC):
         axes = rotation_grid + translation_grid
 
         roll, yaw, pitch, x, y, z = np.meshgrid(*axes, indexing="ij")
-        s = np.vstack(
-            [roll.ravel(), yaw.ravel(), pitch.ravel(), x.ravel(), y.ravel(), z.ravel()]
-        ).T
+        s = np.vstack([roll.ravel(), yaw.ravel(), pitch.ravel(), x.ravel(), y.ravel(), z.ravel()]).T
 
         if not rotation_grid:
             s[:, 0:3] = np.random.rand(s.shape[0], 3)
@@ -528,9 +524,7 @@ class SphericalBounds(Bounds):
     r = 0
     __r2 = 0
 
-    def __init__(
-        self, r, at: tuple[float, float, float] = None, rotation: NDArray = None
-    ):
+    def __init__(self, r, at: tuple[float, float, float] = None, rotation: NDArray = None):
         if at is None:
             at = [0, 0, 0]
         if rotation is None:
@@ -591,9 +585,7 @@ class CylindricalBounds(Bounds):
     r = 0
     __r2 = 0
 
-    def __init__(
-        self, h, r, at: tuple[float, float, float] = None, rotation: NDArray = None
-    ):
+    def __init__(self, h, r, at: tuple[float, float, float] = None, rotation: NDArray = None):
         if at is None:
             at = [0, 0, 0]
         if rotation is None:
@@ -627,9 +619,7 @@ class CylindricalBounds(Bounds):
         r_ = self.r * np.sqrt(u)
 
         v_2d[:, 0] = r_ * np.cos(phi)
-        v_2d[:, 1] = (
-            h * self._bounding_box_at_origin[1] - self._bounding_box_at_origin[1] / 2
-        )
+        v_2d[:, 1] = h * self._bounding_box_at_origin[1] - self._bounding_box_at_origin[1] / 2
         v_2d[:, 2] = r_ * -np.sin(phi)
 
         if v.ndim < 2:
@@ -876,9 +866,7 @@ class Pocket(Bounds):
                 ):
                     yield xx, yy, zz
 
-        result_close = tree.query_ball_point(
-            grid, 2 * sphere_radius, return_length=True
-        )
+        result_close = tree.query_ball_point(grid, 2 * sphere_radius, return_length=True)
 
         occupied = result_close >= 1
 
@@ -940,9 +928,7 @@ class Pocket(Bounds):
                             distance_to_residue[nbr] = 1
                             q.append(nbr)
                         elif distance_to_residue_occ[nbr] < 0:
-                            distance_to_residue_occ[nbr] = (
-                                distance_to_residue_occ[idx] + 1
-                            )
+                            distance_to_residue_occ[nbr] = distance_to_residue_occ[idx] + 1
                             q_occ.append(nbr)
 
             # BFS distance_to_residue
@@ -1073,9 +1059,7 @@ class Pocket(Bounds):
             for line in f:
                 if line.startswith("ATOM"):
                     line = line.split()
-                    centers.append(
-                        np.array([float(line[5]), float(line[6]), float(line[7])])
-                    )
+                    centers.append(np.array([float(line[5]), float(line[6]), float(line[7])]))
                     charges.append(float(line[8]))
                     radii.append(float(line[9]))
 
@@ -1099,14 +1083,8 @@ class Pocket(Bounds):
         # at = np.array([(x_min + x_max) / 2, (y_min + y_max) / 2, (z_min + z_max) / 2])
         # bbv = np.array([x_max, y_max, z_max]) - at
 
-        dimensions = (
-            np.max(self.centers, axis=0)
-            - np.min(self.centers, axis=0)
-            + 2 * self.radii[0]
-        )
-        center = np.mean(
-            [np.min(self.centers, axis=0), np.max(self.centers, axis=0)], axis=0
-        )
+        dimensions = np.max(self.centers, axis=0) - np.min(self.centers, axis=0) + 2 * self.radii[0]
+        center = np.mean([np.min(self.centers, axis=0), np.max(self.centers, axis=0)], axis=0)
 
         return tuple((dimensions, center))
 
@@ -1141,9 +1119,7 @@ class Pocket(Bounds):
     def _sum_of_distances_kdtree(self, p: NDArray):
         warnings.deprecated()
         nearest_neighbor_distances = self.tree.query(p, k=1)[0]
-        return float(
-            np.sum(np.maximum(nearest_neighbor_distances - self.radii[0], 0.0))
-        )
+        return float(np.sum(np.maximum(nearest_neighbor_distances - self.radii[0], 0.0)))
 
     def transform_sample_to_bounds(self, v: NDArray) -> NDArray:
         raise NotImplementedError

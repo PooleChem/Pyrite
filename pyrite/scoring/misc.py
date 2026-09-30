@@ -34,9 +34,7 @@ class RMSD(ScoringFunction):
         else:
             self.ref_mol = ref_mol
 
-        matches = self.probe_mol.GetSubstructMatches(
-            self.ref_mol, uniquify=True, useChirality=True
-        )
+        matches = self.probe_mol.GetSubstructMatches(self.ref_mol, uniquify=True, useChirality=True)
         self._atom_map = [
             list(zip(range(self.probe_mol.GetNumAtoms()), match)) for match in matches
         ]
@@ -110,7 +108,9 @@ class Crowding(ScoringFunction):
     ):
         self.mol = molecule
 
-        self._ref_mol = Mol(Chem.Mol(molecule), flexible=True)  # TODO: create copy function for molecule.
+        self._ref_mol = Mol(
+            Chem.Mol(molecule), flexible=True
+        )  # TODO: create copy function for molecule.
 
         self._registered_conf = []
         if register_initial:
@@ -119,12 +119,8 @@ class Crowding(ScoringFunction):
         self._offset = offset
         self._divide = divide
 
-        matches = self.mol.GetSubstructMatches(
-            self.mol, uniquify=True, useChirality=True
-        )
-        self._atom_map = [
-            list(zip(range(self.mol.GetNumAtoms()), match)) for match in matches
-        ]
+        matches = self.mol.GetSubstructMatches(self.mol, uniquify=True, useChirality=True)
+        self._atom_map = [list(zip(range(self.mol.GetNumAtoms()), match)) for match in matches]
 
     def register_pose(self, v):
         """Register a new :class:`~pyrite.Mol` pose.
@@ -193,10 +189,7 @@ class NumProteinAtomsWithinA(ScoringFunction):
     ):
         self.probe_mol = probe_mol
         self._mask = np.array(
-            [
-                not ignore_hs_ligand or atom.GetAtomicNum() > 1
-                for atom in self.probe_mol.GetAtoms()
-            ]
+            [not ignore_hs_ligand or atom.GetAtomicNum() > 1 for atom in self.probe_mol.GetAtoms()]
         )
         self.ref_mol = ref_mol
         self.a = a
@@ -205,9 +198,7 @@ class NumProteinAtomsWithinA(ScoringFunction):
     def _score(self, conf_id, computed) -> float:
         conf_pos = self.probe_mol.GetConformer(conf_id).GetPositions()
 
-        return sum(
-            self.tree.query_ball_point(conf_pos[self._mask], self.a, return_length=True)
-        )
+        return sum(self.tree.query_ball_point(conf_pos[self._mask], self.a, return_length=True))
 
 
 class NumTors(ScoringFunction):

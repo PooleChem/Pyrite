@@ -171,9 +171,7 @@ class Dependency(ABC):
         return hash((type(self), self.group_key(self)))
 
     def __eq__(self, other):
-        return isinstance(other, type(self)) and other.group_key(
-            other
-        ) == self.group_key(self)
+        return isinstance(other, type(self)) and other.group_key(other) == self.group_key(self)
 
     @classmethod
     def merge_all(cls, deps):
@@ -339,7 +337,9 @@ class KNNDependency(Dependency):
             A boolean mask indicating which neighbors are valid.
         """
         r, idx = self.tree.query(
-        self.querying(conf_id), k=self.k, distance_upper_bound=self.distance_upper_bound
+            self.querying(conf_id),
+            k=self.k,
+            distance_upper_bound=self.distance_upper_bound,
         )
         return r, idx, (idx != self.tree.n)
 
@@ -373,7 +373,9 @@ class KNNDependency(Dependency):
         n_conf_ids, n_points, _ = positions.shape
 
         r, idx = self.tree.query(
-            positions.reshape(-1, 3), k=self.k, distance_upper_bound=self.distance_upper_bound
+            positions.reshape(-1, 3),
+            k=self.k,
+            distance_upper_bound=self.distance_upper_bound,
         )
         r = r.reshape(n_conf_ids, n_points, self.k)
         idx = idx.reshape(n_conf_ids, n_points, self.k)
@@ -403,7 +405,7 @@ class KNNDependency(Dependency):
         tuple[NDArray, NDArray, NDArray]
         """
         r, idx, mask = computed
-        r, idx, mask = r[..., :self.k], idx[..., :self.k], mask[..., :self.k]
+        r, idx, mask = r[..., : self.k], idx[..., : self.k], mask[..., : self.k]
         mask = mask & (r < self.distance_upper_bound)
         return r, idx, mask
 
@@ -461,7 +463,4 @@ class KNNDependency(Dependency):
         return hash((KNNDependency, self.tree_hash, self.querying))
 
     def __eq__(self, other):
-        return (
-            isinstance(other, KNNDependency)
-            and other.group_key(other) == self.group_key(self)
-        )
+        return isinstance(other, KNNDependency) and other.group_key(other) == self.group_key(self)

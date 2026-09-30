@@ -38,8 +38,8 @@ def _slope_step_kernel(dist, good, bad):
 @njit
 def _lj_kernel(r, optimal_distance, i_exp, j_exp, smoothing, cap, depth, mask):
     # c_i / c_j are 2D element-wise ops — supported by Numba.
-    c_i = (optimal_distance ** i_exp) * depth * j_exp / (i_exp - j_exp)
-    c_j = (optimal_distance ** j_exp) * depth * i_exp / (j_exp - i_exp)
+    c_i = (optimal_distance**i_exp) * depth * j_exp / (i_exp - j_exp)
+    c_j = (optimal_distance**j_exp) * depth * i_exp / (j_exp - i_exp)
 
     # Accumulate in a loop to avoid 2D boolean fancy indexing.
     total = 0.0
@@ -55,7 +55,7 @@ def _lj_kernel(r, optimal_distance, i_exp, j_exp, smoothing, cap, depth, mask):
                 r2 = rval + smoothing
             else:
                 r2 = opt
-            total += min(cap, c_i[row, col] / r2 ** i_exp + c_j[row, col] / r2 ** j_exp)
+            total += min(cap, c_i[row, col] / r2**i_exp + c_j[row, col] / r2**j_exp)
     return total
 
 
@@ -365,9 +365,7 @@ class Repulsion(_KNNScoringFunction):
         cutoff: float = None,
         k: int = 400,
     ):
-        super().__init__(
-            probe_mol, fixed_mol, cutoff or 4 + offset, k
-        )
+        super().__init__(probe_mol, fixed_mol, cutoff or 4 + offset, k)
         self.offset = offset
 
     def _kernel(self, dist):
@@ -539,9 +537,7 @@ class Hydrophobic(_SlopeStep):
         cutoff: float = None,
         k: int = 400,
     ):
-        super().__init__(
-            probe_mol, fixed_mol, good, bad, cutoff, k
-        )
+        super().__init__(probe_mol, fixed_mol, good, bad, cutoff, k)
 
         self.__init_hydrophobic()
 
@@ -551,9 +547,7 @@ class Hydrophobic(_SlopeStep):
         for _, t in vina_atom_consts.items():
             self.xs_hydrophobic[t.type.value] = t.xs_hydrophobe
 
-        self.probe_mol_hydrophobic = self.xs_hydrophobic[
-            self.probe_mol.atom_types[self.probe_mask]
-        ]
+        self.probe_mol_hydrophobic = self.xs_hydrophobic[self.probe_mol.atom_types[self.probe_mask]]
         # Precomputed once — see _KNNScoringFunction.__init_radii for why.
         self._fixed_hydrophobic_masked = self.xs_hydrophobic[
             self.fixed_mol._atom_types[self.fixed_mask]
@@ -562,11 +556,7 @@ class Hydrophobic(_SlopeStep):
     def _mask(self, idx, neighbor_mask):
         safe_idx = np.where(neighbor_mask, idx, 0)
         fixed_mol_hydrophobic = self._fixed_hydrophobic_masked[safe_idx]
-        return (
-            self.probe_mol_hydrophobic[:, None]
-            & fixed_mol_hydrophobic[:, :]
-            & neighbor_mask
-        )
+        return self.probe_mol_hydrophobic[:, None] & fixed_mol_hydrophobic[:, :] & neighbor_mask
 
     def _mask_field(self, idx, mask, atom_type):
         fixed_hydrophobic = self._fixed_hydrophobic_masked[np.where(mask, idx, 0)]
@@ -744,9 +734,7 @@ class NonDirHBond(_SlopeStep):
         cutoff: float = None,
         k: int = 400,
     ):
-        super().__init__(
-            probe_mol, fixed_mol, good, bad, cutoff, k
-        )
+        super().__init__(probe_mol, fixed_mol, good, bad, cutoff, k)
 
         self.__init_hbond_possible()
 
@@ -780,10 +768,7 @@ class NonDirHBond(_SlopeStep):
         fixed_donor = self._fixed_donor_masked[safe_idx]
         donor = np.asarray(self.xs_donor[atom_type])[..., None]
         acceptor = np.asarray(self.xs_acceptor[atom_type])[..., None]
-        return (
-            (donor & fixed_acceptor)
-            | (acceptor & fixed_donor)
-        ) & mask
+        return ((donor & fixed_acceptor) | (acceptor & fixed_donor)) & mask
 
 
 class LJ(_KNNScoringFunction):
@@ -913,12 +898,19 @@ class LJ(_KNNScoringFunction):
         idx = idx[self.probe_mask]
         neighbor_mask = neighbor_mask[self.probe_mask]
 
-        optimal_distance = self._optimal_distance(idx, neighbor_mask, self.probe_radii[:, None], self._offset)
+        optimal_distance = self._optimal_distance(
+            idx, neighbor_mask, self.probe_radii[:, None], self._offset
+        )
         mask = self._mask(idx, neighbor_mask)
 
         return _lj_kernel(
-            r, optimal_distance,
-            self._i, self._j, self._smoothing, self._cap, self._depth,
+            r,
+            optimal_distance,
+            self._i,
+            self._j,
+            self._smoothing,
+            self._cap,
+            self._depth,
             mask,
         )
 
@@ -1249,10 +1241,7 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
             [a.GetDoubleProp("_GasteigerCharge") for a in self.probe_mol.GetAtoms()]
         )
         _fixed_mol_charges = np.array(
-            [
-                a.GetDoubleProp("_GasteigerCharge")
-                for a in self.fixed_mol.GetAtoms()
-            ]
+            [a.GetDoubleProp("_GasteigerCharge") for a in self.fixed_mol.GetAtoms()]
         )
         _probe_mol_charges[np.isnan(_probe_mol_charges)] = 0.0
         _fixed_mol_charges[np.isnan(_fixed_mol_charges)] = 0.0
@@ -1957,16 +1946,12 @@ class PlantsPLP(_PLP):
             )
             | (
                 is_donacc(lig_types)[:, None]
-                & (is_donor(rec_types) | is_acceptor(rec_types) | is_donacc(rec_types))[
-                    None, :
-                ]
+                & (is_donor(rec_types) | is_acceptor(rec_types) | is_donacc(rec_types))[None, :]
             )
         )
 
         self.mask_buried = (
-            (is_donor(lig_types) | is_acceptor(lig_types) | is_donacc(lig_types))[
-                :, None
-            ]
+            (is_donor(lig_types) | is_acceptor(lig_types) | is_donacc(lig_types))[:, None]
             & is_nonpolar(rec_types)[None, :]
         ) | (
             is_nonpolar(lig_types)[:, None]
@@ -1980,9 +1965,9 @@ class PlantsPLP(_PLP):
 
         self.mask_np = is_nonpolar(lig_types)[:, None] & is_nonpolar(rec_types)[None, :]
 
-        self.mask_metal = (is_acceptor(lig_types) | is_donacc(lig_types))[
-            :, None
-        ] & is_metal(rec_types)[None, :]
+        self.mask_metal = (is_acceptor(lig_types) | is_donacc(lig_types))[:, None] & is_metal(
+            rec_types
+        )[None, :]
 
         lut[self.mask_rep] = PlantsPLP._InteractionType.REPULSIVE
         lut[self.mask_hb] = PlantsPLP._InteractionType.HBOND
@@ -1999,9 +1984,7 @@ class PlantsPLP(_PLP):
         mask = mask[self.probe_mask]
         safe_idx = np.where(mask, idx, 0)
 
-        interact_types = np.take_along_axis(
-            self.interaction_types, safe_idx, axis=1
-        )  # M <3 J
+        interact_types = np.take_along_axis(self.interaction_types, safe_idx, axis=1)  # M <3 J
 
         s = np.zeros_like(r)
 
@@ -2014,11 +1997,9 @@ class PlantsPLP(_PLP):
             s[interact_types == i_type] = self.potential_four_piece(
                 r[interact_types == i_type], self.parameters[i_type]
             )
-        s[interact_types == PlantsPLP._InteractionType.REPULSIVE] = (
-            self.potential_two_piece(
-                r[interact_types == PlantsPLP._InteractionType.REPULSIVE],
-                self.parameters[PlantsPLP._InteractionType.REPULSIVE],
-            )
+        s[interact_types == PlantsPLP._InteractionType.REPULSIVE] = self.potential_two_piece(
+            r[interact_types == PlantsPLP._InteractionType.REPULSIVE],
+            self.parameters[PlantsPLP._InteractionType.REPULSIVE],
         )
 
         return np.sum(s)

@@ -112,12 +112,8 @@ class AtomType(IntEnum):
 
         elif self == AtomType.NitrogenDonor or self == AtomType.Nitrogen:
             return AtomType.NitrogenDonor if hbonded else AtomType.Nitrogen
-        elif (
-            self == AtomType.NitrogenDonorAcceptor or self == AtomType.NitrogenAcceptor
-        ):
-            return (
-                AtomType.NitrogenDonorAcceptor if hbonded else AtomType.NitrogenAcceptor
-            )
+        elif self == AtomType.NitrogenDonorAcceptor or self == AtomType.NitrogenAcceptor:
+            return AtomType.NitrogenDonorAcceptor if hbonded else AtomType.NitrogenAcceptor
 
         elif self == AtomType.OxygenDonor or self == AtomType.Oxygen:
             return AtomType.OxygenDonor if hbonded else AtomType.Oxygen

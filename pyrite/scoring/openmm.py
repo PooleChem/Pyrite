@@ -94,9 +94,7 @@ class OpenMMForceField(ScoringFunction):
         self.__simulation = openmm.Simulation(
             self._complex.to_openmm(), self.__system, self.__integrator, self.__platform
         )
-        self.__simulation.context.setPositions(
-            self._complex.get_positions().to_openmm()
-        )
+        self.__simulation.context.setPositions(self._complex.get_positions().to_openmm())
 
         if minimize_receptor > 0:
             for _ in tqdm(range(minimize_receptor), desc="Minimizing receptor"):
@@ -134,9 +132,7 @@ class OpenMMForceField(ScoringFunction):
         ]
 
     def __update_complex(self) -> None:
-        positions = from_openmm(
-            self.__simulation.context.getState(positions=True).getPositions()
-        )
+        positions = from_openmm(self.__simulation.context.getState(positions=True).getPositions())
         self._complex.set_positions(positions)
         self.__complex_pos = [
             m.conformers[0].to_openmm().value_in_unit(unit.angstrom)
@@ -227,9 +223,7 @@ class OpenMMForceField(ScoringFunction):
         for i, force in enumerate(forces):
             # Bond force: 713
             # Angle force: 3447
-            if isinstance(
-                force, (HarmonicBondForce, HarmonicAngleForce, CMMotionRemover)
-            ):
+            if isinstance(force, (HarmonicBondForce, HarmonicAngleForce, CMMotionRemover)):
                 force_ix_to_remove.append(i)
                 continue
 
@@ -241,13 +235,9 @@ class OpenMMForceField(ScoringFunction):
                     force.usesPeriodicBoundaryConditions()
                 )
                 for torsion_i in range(force.getNumTorsions()):
-                    p1, p2, p3, p4, periodicity, phase, k = force.getTorsionParameters(
-                        torsion_i
-                    )
+                    p1, p2, p3, p4, periodicity, phase, k = force.getTorsionParameters(torsion_i)
                     if len(self.__ligand_indices & {p1, p2, p3, p4}) > 0:
-                        new_periodic_force.addTorsion(
-                            p1, p2, p3, p4, periodicity, phase, k
-                        )
+                        new_periodic_force.addTorsion(p1, p2, p3, p4, periodicity, phase, k)
                 force_ix_to_remove.append(i)
                 forces_to_add.append(new_periodic_force)
                 continue

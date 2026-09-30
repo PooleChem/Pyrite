@@ -119,7 +119,9 @@ class TestTranslationMatrixFromCoordinates:
         assert np.allclose(_translation_matrix_from_coordinates(0.0, 0.0, 0.0), np.eye(4))
 
     def test_known_values(self):
-        expected = np.array([[1, 0, 0, 10], [0, 1, 0, -4], [0, 0, 1, 20], [0, 0, 0, 1]], dtype=float)
+        expected = np.array(
+            [[1, 0, 0, 10], [0, 1, 0, -4], [0, 0, 1, 20], [0, 0, 0, 1]], dtype=float
+        )
         assert np.allclose(_translation_matrix_from_coordinates(10.0, -4.0, 20.0), expected)
 
     @pytest.mark.parametrize("x,y,z", [(1.5, -2.3, 0.0), (0.0, 0.0, 100.0), (-7.1, 4.4, -3.3)])

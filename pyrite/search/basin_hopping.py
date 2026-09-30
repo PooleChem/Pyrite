@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable, Any
+from typing import Any, Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -66,9 +66,10 @@ def geometric_annealing(T_start: float, T_end: float) -> Callable[[int, int], fl
     T : callable
         ``T(i, niter) -> float``, the temperature of hop `i` (0-based) in a run of `niter` hops.
     """
+
     def T(i: int, niter: int) -> float:
         ratio = (T_end / T_start) ** (1.0 / max(niter - 1, 1))
-        return T_start * (ratio ** i)
+        return T_start * (ratio**i)
 
     return T
 
@@ -109,6 +110,7 @@ def adaptive_stepsize(
         history of the hops before hop `i`. It is a pure function; the state lives in
         :meth:`BasinHopping.run`, so one rule can be shared between runs.
     """
+
     def adapt(stepsize: float, accepted: NDArray, i: int) -> float:
         if i == 0 or i % window != 0 or len(accepted) < window:
             return stepsize

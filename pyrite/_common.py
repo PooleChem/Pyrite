@@ -14,7 +14,13 @@ from rdkit import Chem, RDLogger
 from rdkit.Chem import Draw, SDWriter
 from scipy.spatial.transform import Rotation
 
-from ._util import _rotation_matrix_from_euler, _rotation_matrix_to_euler, _translation_matrix_from_coordinates, _rotation_matrix_from_quat, _compose_delta_transform
+from ._util import (
+    _rotation_matrix_from_euler,
+    _rotation_matrix_to_euler,
+    _translation_matrix_from_coordinates,
+    _rotation_matrix_from_quat,
+    _compose_delta_transform,
+)
 from .atom_consts import AtomType, vina_atom_consts
 from .view import Viewer
 
@@ -23,16 +29,16 @@ if TYPE_CHECKING:
 
 
 ROTATABLE_BOND_STRUCT = Chem.MolFromSmarts(
-            "[!$(*#*)&!D1&!$(C(F)(F)F)&!$(C(Cl)(Cl)Cl)&!$(C(Br)(Br)Br)&!$(C([CH3])"
-            "([CH3])[CH3])&!$([CD3](=[N,O,S])-!@[#7,O,S!D1])&!$([#7,O,S!D1]-!@[CD3]"
-            "=[N,O,S])&!$([CD3](=[N+])-!@[#7!D1])&!$([#7!D1]-!@[CD3]=[N+])]-,:;!@"
-            "[!$(*#*)&!D1&!$(C(F)(F)F)&!$(C(Cl)(Cl)Cl)&!$(C(Br)(Br)Br)&!$(C([CH3])"
-            "([CH3])[CH3])]"
-        )
+    "[!$(*#*)&!D1&!$(C(F)(F)F)&!$(C(Cl)(Cl)Cl)&!$(C(Br)(Br)Br)&!$(C([CH3])"
+    "([CH3])[CH3])&!$([CD3](=[N,O,S])-!@[#7,O,S!D1])&!$([#7,O,S!D1]-!@[CD3]"
+    "=[N,O,S])&!$([CD3](=[N+])-!@[#7!D1])&!$([#7!D1]-!@[CD3]=[N+])]-,:;!@"
+    "[!$(*#*)&!D1&!$(C(F)(F)F)&!$(C(Cl)(Cl)Cl)&!$(C(Br)(Br)Br)&!$(C([CH3])"
+    "([CH3])[CH3])]"
+)
 
 HBA_STRUCT = Chem.MolFromSmarts(
-            "[$([O,S;H1;v2]-[!$(*=[O,N,P,S])]),$([O,S;H0;v2]),$([O,S;-]),$([N;v3;!$(N-*=!@[O,N,P,S])]),$([nH0,o,s;+0])]"
-        )
+    "[$([O,S;H1;v2]-[!$(*=[O,N,P,S])]),$([O,S;H0;v2]),$([O,S;-]),$([N;v3;!$(N-*=!@[O,N,P,S])]),$([nH0,o,s;+0])]"
+)
 
 NON_POLAR_H_STRUCT = Chem.MolFromSmarts("[#1;$([#1]-[#6,#14])]")
 
@@ -75,14 +81,14 @@ class Mol(Chem.Mol):
         return inst
 
     def __init__(
-            self,
-            mol: Chem.Mol = None,
-            hydrogens: Literal["keep", "add", "remove"] = "remove",
-            flex_hydrogens: bool = False,
-            flexible: bool = False,            # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of dihedrals, or manual, or by resid.
-            center_atom: int = None,
-            rotation_type: Literal["euler", "quat"] = "euler",
-            ignore_non_polar_hydrogens: bool = True,
+        self,
+        mol: Chem.Mol = None,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        flex_hydrogens: bool = False,
+        flexible: bool = False,  # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of dihedrals, or manual, or by resid.
+        center_atom: int = None,
+        rotation_type: Literal["euler", "quat"] = "euler",
+        ignore_non_polar_hydrogens: bool = True,
     ):
         self.__rotatable_dihedrals = np.array([], dtype=object)
         self.__dihedral_angles = np.array([])
@@ -96,9 +102,7 @@ class Mol(Chem.Mol):
             mol = Chem.AllChem.RemoveHs(mol)
 
         # TODO: this doesnt make sense for proteins. In a protein, all dihedrals should be oriented wrt the backbone, not the center atom.
-        self._center_atom = (
-            center_atom if center_atom is not None else self.__get_center_atom()
-        )
+        self._center_atom = center_atom if center_atom is not None else self.__get_center_atom()
 
         if self.GetNumConformers() == 0:
             Chem.SanitizeMol(self)
@@ -118,7 +122,10 @@ class Mol(Chem.Mol):
         # potentially disagreeing about) the same mask from the same atom_types.
         self.scoring_mask = ~(
             ignore_non_polar_hydrogens
-            & ((self._atom_types == AtomType.Hydrogen) | (self._atom_types == AtomType.PolarHydrogen))
+            & (
+                (self._atom_types == AtomType.Hydrogen)
+                | (self._atom_types == AtomType.PolarHydrogen)
+            )
         )
 
         Chem.rdPartialCharges.ComputeGasteigerCharges(self)
@@ -137,10 +144,10 @@ class Mol(Chem.Mol):
 
     @classmethod
     def from_smiles(
-            cls,
-            smiles: str,
-            hydrogens: Literal["keep", "add", "remove"] = "remove",
-            **kwargs,
+        cls,
+        smiles: str,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        **kwargs,
     ):
         """Constructs an instance of :class:`Mol` from a SMILES string representation of a molecule.
 
@@ -160,10 +167,10 @@ class Mol(Chem.Mol):
 
     @classmethod
     def from_rdkit(
-            cls,
-            mol: Chem.Mol,
-            hydrogens: Literal["keep", "add", "remove"] = "remove",
-            **kwargs,
+        cls,
+        mol: Chem.Mol,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        **kwargs,
     ):
         """Create an instance of :class:`Mol` from an RDKit :class:`~rdkit.Chem.rdchem.Mol` object.
 
@@ -182,12 +189,12 @@ class Mol(Chem.Mol):
 
     @classmethod
     def from_pdb(
-            cls,
-            pdb_file: str,
-            hydrogens: Literal["keep", "add", "remove"] = "remove",
-            template_smiles: str = None,
-            template_sdf: str = None,
-            **kwargs,
+        cls,
+        pdb_file: str,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        template_smiles: str = None,
+        template_sdf: str = None,
+        **kwargs,
     ):
         r"""Creates an instance of :class:`Mol` from a PDB file.
 
@@ -219,9 +226,7 @@ class Mol(Chem.Mol):
         Mol
         """
 
-        mol = Chem.MolFromPDBFile(
-            pdb_file, sanitize=False, removeHs=(hydrogens == "remove")
-        )
+        mol = Chem.MolFromPDBFile(pdb_file, sanitize=False, removeHs=(hydrogens == "remove"))
 
         if mol is None:
             raise ValueError(f"RDKit could not parse PDB file: {pdb_file}")
@@ -238,9 +243,7 @@ class Mol(Chem.Mol):
             if info is not None
         }
         if bad_residues:
-            labels = ", ".join(
-                f"chain {c} res {r}{i.strip()}" for c, r, i in sorted(bad_residues)
-            )
+            labels = ", ".join(f"chain {c} res {r}{i.strip()}" for c, r, i in sorted(bad_residues))
             warnings.warn(
                 f"from_pdb: removed {len(bad_residues)} residue(s) with impossible valence "
                 f"({labels}). Check the source PDB for non-standard or metal-coordinated residues.",
@@ -249,13 +252,18 @@ class Mol(Chem.Mol):
             )
             edit = Chem.RWMol(mol)
             for idx in sorted(
-                    [a.GetIdx() for a in mol.GetAtoms()
-                     if a.GetPDBResidueInfo() and (
-                            a.GetPDBResidueInfo().GetChainId(),
-                            a.GetPDBResidueInfo().GetResidueNumber(),
-                            a.GetPDBResidueInfo().GetInsertionCode(),
-                    ) in bad_residues],
-                    reverse=True,
+                [
+                    a.GetIdx()
+                    for a in mol.GetAtoms()
+                    if a.GetPDBResidueInfo()
+                    and (
+                        a.GetPDBResidueInfo().GetChainId(),
+                        a.GetPDBResidueInfo().GetResidueNumber(),
+                        a.GetPDBResidueInfo().GetInsertionCode(),
+                    )
+                    in bad_residues
+                ],
+                reverse=True,
             ):
                 edit.RemoveAtom(idx)
             mol = edit.GetMol()
@@ -279,10 +287,10 @@ class Mol(Chem.Mol):
 
     @classmethod
     def from_sdf(
-            cls,
-            mol_file: str,
-            hydrogens: Literal["keep", "add", "remove"] = "remove",
-            **kwargs,
+        cls,
+        mol_file: str,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        **kwargs,
     ):
         """Creates an instance of :class:`Mol` from an SDF file.
 
@@ -310,11 +318,11 @@ class Mol(Chem.Mol):
 
     @classmethod
     def v_from_sdf(
-            cls,
-            mol_file: str,
-            hydrogens: Literal["keep", "add", "remove"] = "remove",
-            rmsd_delta: float = 0.5,
-            **kwargs,
+        cls,
+        mol_file: str,
+        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        rmsd_delta: float = 0.5,
+        **kwargs,
     ):
         """Creates a :class:`Mol` from an SDF file, and also returns a list of variables
         representing the conformations in the SDF file.
@@ -367,9 +375,7 @@ class Mol(Chem.Mol):
         atom_map = [t for sub in atom_map for t in sub]  # Flatten
 
         v = []
-        with Chem.SDMolSupplier(
-                mol_file, removeHs=(hydrogens == "remove"), sanitize=False
-        ) as supl:
+        with Chem.SDMolSupplier(mol_file, removeHs=(hydrogens == "remove"), sanitize=False) as supl:
             for pose in supl:
                 if Chem.CanonSmiles(Chem.MolToSmiles(pose)) != canon_smiles:
                     raise ValueError("Molecules in SDF file are not equal.")
@@ -399,9 +405,7 @@ class Mol(Chem.Mol):
     def _fix_mol_valence(self, sanitize=True):
         Chem.SanitizeMol(
             self,
-            sanitizeOps=(
-                    Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES
-            ),
+            sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES),
         )
 
         for atom in self.GetAtoms():
@@ -411,21 +415,12 @@ class Mol(Chem.Mol):
             #     atom.GetFormalCharge(),
             # )
 
-            if (
-                    atom.GetSymbol() == "N"
-                    and atom.GetValence(Chem.ValenceType.EXPLICIT) == 4
-            ):
+            if atom.GetSymbol() == "N" and atom.GetValence(Chem.ValenceType.EXPLICIT) == 4:
                 atom.SetFormalCharge(+1)
-            if (
-                    atom.GetSymbol() == "O"
-                    and atom.GetValence(Chem.ValenceType.EXPLICIT) == 1
-            ):
+            if atom.GetSymbol() == "O" and atom.GetValence(Chem.ValenceType.EXPLICIT) == 1:
                 atom.SetFormalCharge(-1)
             # incorrect epoxide fix TODO: check with David
-            if (
-                    atom.GetSymbol() == "O"
-                    and atom.GetValence(Chem.ValenceType.EXPLICIT) == 2
-            ):
+            if atom.GetSymbol() == "O" and atom.GetValence(Chem.ValenceType.EXPLICIT) == 2:
                 atom.SetFormalCharge(0)
 
         self.UpdatePropertyCache(strict=sanitize)
@@ -546,12 +541,8 @@ class Mol(Chem.Mol):
             atom_1_neighbors = self.GetAtomWithIdx(i_atom_1).GetNeighbors()
             atom_2_neighbors = self.GetAtomWithIdx(i_atom_2).GetNeighbors()
 
-            ix_atom_1_neighbors = [
-                a.GetIdx() for a in atom_1_neighbors if a.GetIdx() != i_atom_2
-            ]
-            ix_atom_2_neighbors = [
-                a.GetIdx() for a in atom_2_neighbors if a.GetIdx() != i_atom_1
-            ]
+            ix_atom_1_neighbors = [a.GetIdx() for a in atom_1_neighbors if a.GetIdx() != i_atom_2]
+            ix_atom_2_neighbors = [a.GetIdx() for a in atom_2_neighbors if a.GetIdx() != i_atom_1]
 
             dihedral = (
                 min(ix_atom_1_neighbors),
@@ -652,9 +643,7 @@ class Mol(Chem.Mol):
         """The number of torsions in the molecule."""
         return self.layout.n_tors
 
-    def set_dihedral_angle(
-            self, i_dihedral: int, angle_rad: float, conf_id: int = -1
-    ) -> None:
+    def set_dihedral_angle(self, i_dihedral: int, angle_rad: float, conf_id: int = -1) -> None:
         """Set the dihedral angle of a molecule :class:`~rdkit.Chem.rdchem.Conformer` for a
         specific dihedral.
 
@@ -694,10 +683,10 @@ class Mol(Chem.Mol):
             self.set_dihedral_angle(i, angle, conf_id)
 
     def transform(
-            self,
-            rotation: NDArray[np.float32],
-            translation: NDArray[np.float32],
-            conf_id: int = -1,
+        self,
+        rotation: NDArray[np.float32],
+        translation: NDArray[np.float32],
+        conf_id: int = -1,
     ) -> None:
         """Transforms the conformer of the molecule with respect to the center atom's coordinates.
 
@@ -726,7 +715,9 @@ class Mol(Chem.Mol):
             assert len(rotation) == 3, "Rotation must be a 3-vector for Ligand with euler rotation."
             rotate = _rotation_matrix_from_euler(*rotation)
         else:
-            assert len(rotation) == 4, "Rotation must be a 4-vector for Ligand with quaternion rotation."
+            assert len(rotation) == 4, (
+                "Rotation must be a 4-vector for Ligand with quaternion rotation."
+            )
             rotate = _rotation_matrix_from_quat(*rotation)
 
         center_atom = conf.GetAtomPosition(self._center_atom)
@@ -734,7 +725,12 @@ class Mol(Chem.Mol):
             [center_atom.x, center_atom.y, center_atom.z],
         )
 
-        transformation_matrix = _compose_delta_transform(rotate[:3, :3], translation, self.__cur_rotation_matrix[:3, :3], center_atom_coords)
+        transformation_matrix = _compose_delta_transform(
+            rotate[:3, :3],
+            translation,
+            self.__cur_rotation_matrix[:3, :3],
+            center_atom_coords,
+        )
 
         if conf_id == -1:
             self.__cur_rotation_matrix = rotate[:3, :3]
@@ -777,7 +773,9 @@ class Mol(Chem.Mol):
         if isinstance(pose, Pose):
             assert pose.layout == self.layout, "Pose and molecule layout do not match."
         else:
-            assert len(pose) == self.layout.rot_dim + 3 + self.layout.n_tors, "Pose parameterization does not match molecule layout."
+            assert len(pose) == self.layout.rot_dim + 3 + self.layout.n_tors, (
+                "Pose parameterization does not match molecule layout."
+            )
             pose = Pose(pose, self.layout)
 
         conf_id = -1
@@ -837,13 +835,13 @@ class Mol(Chem.Mol):
     # region Search-space sampling / placement
 
     def place_in(
-            self,
-            binding_site: Bounds,
-            n_positions: int,
-            n_conformations: int,
-            placement: str = "random",
-            conformations: str = "conformer",
-            combine: str = "random",
+        self,
+        binding_site: Bounds,
+        n_positions: int,
+        n_conformations: int,
+        placement: str = "random",
+        conformations: str = "conformer",
+        combine: str = "random",
     ) -> Poses:
         """Deprecated: use :func:`pyrite.search.place_in`, ``place_in(mol, binding_site, ...)``."""
         warnings.warn(
@@ -853,7 +851,15 @@ class Mol(Chem.Mol):
         )
         from pyrite.search.placement import place_in
 
-        return place_in(self, binding_site, n_positions, n_conformations, placement, conformations, combine)
+        return place_in(
+            self,
+            binding_site,
+            n_positions,
+            n_conformations,
+            placement,
+            conformations,
+            combine,
+        )
 
     def get_n_random_dihedral_configurations(self, n: int) -> NDArray:
         """Retrieve a list of `n` random dihedral configurations for the molecule.
@@ -1194,14 +1200,14 @@ class PoseLayout:
     tors_slice: slice = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
-        d = 3 if self.rot_type == 'euler' else 4 if self.rot_type == 'quat' else None
+        d = 3 if self.rot_type == "euler" else 4 if self.rot_type == "quat" else None
         if d is None:
             raise ValueError(f"Unknown rot_type {self.rot_type!r}. Expected 'euler' or 'quat'.")
 
-        object.__setattr__(self, 'rot_dim', d)
-        object.__setattr__(self, 'rot_slice', slice(0, d))
-        object.__setattr__(self, 'trans_slice', slice(d, d + 3))
-        object.__setattr__(self, 'tors_slice', slice(d + 3, None))
+        object.__setattr__(self, "rot_dim", d)
+        object.__setattr__(self, "rot_slice", slice(0, d))
+        object.__setattr__(self, "trans_slice", slice(d, d + 3))
+        object.__setattr__(self, "tors_slice", slice(d + 3, None))
 
     @property
     def n_dims(self) -> int:
@@ -1210,7 +1216,7 @@ class PoseLayout:
 
     @property
     def identity_rotation(self) -> NDArray[np.float32]:
-        if self.rot_type == 'euler':
+        if self.rot_type == "euler":
             return np.zeros(3)
         return np.array([1, 0, 0, 0], dtype=np.float32)
 
@@ -1246,7 +1252,7 @@ class PoseLayout:
 
 
 class Pose:
-    __slots__ = ('_v', 'layout', 'rotation', 'translation', 'torsions')
+    __slots__ = ("_v", "layout", "rotation", "translation", "torsions")
 
     def __init__(self, v: NDArray, layout: PoseLayout):
         self._v = np.asarray(v)
@@ -1278,7 +1284,7 @@ class Pose:
 
 
 class Poses:
-    __slots__ = ('_vs', 'layout', 'rotation', 'translation', 'torsions')
+    __slots__ = ("_vs", "layout", "rotation", "translation", "torsions")
 
     def __init__(self, vs: NDArray, layout: PoseLayout):
         self._vs = np.asarray(vs)

@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 from wsgiref.validate import bad_header_value_re
 
 from IPython.display import display, HTML
-from ipywidgets import IntSlider, interactive, widgets, VBox,  Layout
+from ipywidgets import IntSlider, interactive, widgets, VBox, Layout
 
 
 import html as _html
@@ -54,9 +54,7 @@ class Viewer:
         self._iframe = None
         self._widget = None
         self._slider = None
-        self.view = py3Dmol.view(
-            width=width, height=height, options={"doAssembly": True}
-        )
+        self.view = py3Dmol.view(width=width, height=height, options={"doAssembly": True})
         self.max_m_id = -1
         self.add(*args, options=options)
 
@@ -68,8 +66,6 @@ class Viewer:
         self._ligand = None
         self._out = None
         self._view_state_key = f"pyrite_view_state_{id(self)}"
-
-
 
     def add(self, *args, options=None):
         """Adds all positional arguments to the viewer.
@@ -271,7 +267,6 @@ class Viewer:
     def _ipython_display_(self):
         display(self.as_widget())
 
-
     def _render_iframe(self):
         """Render the current py3Dmol view into an iframe and persist camera state across reloads."""
         if self._iframe is None:
@@ -334,7 +329,6 @@ class Viewer:
     </script>
     """
 
-   
         # Put our script right before </body> if possible
         if "</body>" in page:
             page = page.replace("</body>", persist_js + "\n</body>")

@@ -41,7 +41,6 @@ class ScoringFunction(ABC):
     ):
         pass
 
-
     # TODO: should this take one mol? Multiple?
     def step(self, x: NDArray, mol: Mol) -> float:
         """The step function.
@@ -70,8 +69,9 @@ class ScoringFunction(ABC):
         mol.RemoveConformer(conf_id)
         return score
 
-
-    def get_score(self, conf_id: int = -1, subscores: dict[ScoringFunction, float] | None = None) -> float:
+    def get_score(
+        self, conf_id: int = -1, subscores: dict[ScoringFunction, float] | None = None
+    ) -> float:
         """Retrieves the score.
 
         This method first retrieves all dependencies of this ``ScoringFunction`` instance, merges
@@ -187,7 +187,12 @@ class ScoringFunction(ABC):
         """
         return Clamp(self, min_score, max_score)
 
-    def _score_and_store(self, conf_id: int, computed: dict[Dependency, Any], subscores: dict[ScoringFunction, float]):
+    def _score_and_store(
+        self,
+        conf_id: int,
+        computed: dict[Dependency, Any],
+        subscores: dict[ScoringFunction, float],
+    ):
         score = self._score(conf_id, computed=computed)
         subscores[self] = score
         return score
@@ -246,9 +251,7 @@ class ScoringFunction(ABC):
             return _CombinedScoringFunction(self, other)
         if isinstance(other, (float, int)):
             return _CombinedScoringFunction(self, ConstantTerm(other))
-        raise TypeError(
-            f"Unsupported operand type(s) for +: 'ScoringFunction' and '{type(other)}'"
-        )
+        raise TypeError(f"Unsupported operand type(s) for +: 'ScoringFunction' and '{type(other)}'")
 
     def __radd__(self, other):
         return self.__add__(other)
@@ -258,9 +261,7 @@ class ScoringFunction(ABC):
             return _CombinedScoringFunction(self, -other)
         if isinstance(other, (float, int)):
             return _CombinedScoringFunction(self, ConstantTerm(-other))
-        raise TypeError(
-            f"Unsupported operand type(s) for -: 'ScoringFunction' and '{type(other)}'"
-        )
+        raise TypeError(f"Unsupported operand type(s) for -: 'ScoringFunction' and '{type(other)}'")
 
     def __rsub__(self, other):
         return (-self).__add__(other)
@@ -351,7 +352,12 @@ class _CombinedScoringFunction(ScoringFunction):  # pylint: disable=too-few-publ
             total += func._score(conf_id, computed=computed)
         return total
 
-    def _score_and_store(self, conf_id: int, computed: dict[Dependency, Any], subscores: dict[ScoringFunction, float]):
+    def _score_and_store(
+        self,
+        conf_id: int,
+        computed: dict[Dependency, Any],
+        subscores: dict[ScoringFunction, float],
+    ):
         total = 0.0
         func: ScoringFunction
         for func in self.funcs:
@@ -619,4 +625,3 @@ class ConstantTerm(ScoringFunction):
 
     def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
         return np.full(len(conf_ids), self.constant)
-
