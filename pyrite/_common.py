@@ -1271,6 +1271,11 @@ class PoseLayout:
         object.__setattr__(self, 'tors_slice', slice(d + 3, None))
 
     @property
+    def n_dims(self) -> int:
+        """The length of a pose vector in this layout."""
+        return self.rot_dim + 3 + self.n_tors
+
+    @property
     def identity_rotation(self) -> NDArray[np.float32]:
         if self.rot_type == 'euler':
             return np.zeros(3)

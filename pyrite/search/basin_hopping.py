@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Callable
+from typing import Callable, Any
 
 import numpy as np
 from numpy.typing import NDArray
 from scipy.optimize import OptimizeResult, minimize
 
-from pyrite._common import Pose
+from pyrite._common import Pose, Poses
 
 
 def random_hop(
@@ -196,7 +196,7 @@ class BasinHopping:
         )
         self.rng = np.random.default_rng() if rng is None else rng
 
-    def run(self, x0: Pose, niter: int) -> OptimizeResult:
+    def run(self, x0: Pose, niter: int) -> OptimizeResult[str, Any]:
         """Run `niter` hops from `x0`.
 
         Parameters
@@ -211,8 +211,16 @@ class BasinHopping:
         -------
         scipy.optimize.OptimizeResult
             With ``x`` (a :class:`~pyrite._common.Pose`) and ``fun`` of the best minimum found,
-            ``nit`` (the number of hops), and ``accepted`` (a boolean array of length `niter`,
-            one entry per hop).
+            ``nit`` (the number of hops), and one entry per hop, each an array of length
+            `niter`, so that the run can be inspected afterwards:
+
+            - ``accepted``: whether the hop's minimum was accepted.
+            - ``stepsizes``: the step size the hop was made with, after adaptation.
+            - ``temperatures``: the temperature used in the hop's acceptance test.
+            - ``scores``: the score of the minimum reached from the hop, whether or not it was
+              accepted. (The score of the starting minimum is not included.)
+            - ``poses``: the minimum reached from the hop, as a :class:`~pyrite._common.Poses`
+              in the layout of `x0`, row for row with ``scores``.
         """
         layout = x0.layout
 
@@ -226,6 +234,10 @@ class BasinHopping:
         x, fx = minimize_from(x0)
         best_x, best_fx = x, fx
         accepted = np.zeros(niter, dtype=bool)
+        stepsizes = np.zeros(niter)
+        temperatures = np.zeros(niter)
+        scores = np.zeros(niter)
+        poses = np.zeros((niter, layout.n_dims))
         stepsize = self.stepsize
 
         for i in range(niter):
@@ -234,10 +246,20 @@ class BasinHopping:
             x_new, fx_new = minimize_from(self.hop(x, self.rng, stepsize))
             dE = fx_new - fx
             T = self.T(i, niter) if callable(self.T) else self.T
+            stepsizes[i], temperatures[i], scores[i], poses[i] = stepsize, T, fx_new, np.asarray(x_new)
             accepted[i] = dE < 0 or self.rng.random() < np.exp(-dE / max(T, 1e-6))
             if accepted[i]:
                 x, fx = x_new, fx_new
             if fx_new < best_fx:
                 best_x, best_fx = x_new, fx_new
 
-        return OptimizeResult(x=best_x, fun=best_fx, nit=niter, accepted=accepted)
+        return OptimizeResult(
+            x=best_x,
+            fun=best_fx,
+            nit=niter,
+            accepted=accepted,
+            stepsizes=stepsizes,
+            temperatures=temperatures,
+            scores=scores,
+            poses=Poses(poses, layout),
+        )
