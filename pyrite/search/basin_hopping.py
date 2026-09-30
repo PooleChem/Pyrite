@@ -246,7 +246,8 @@ class BasinHopping:
             x_new, fx_new = minimize_from(self.hop(x, self.rng, stepsize))
             dE = fx_new - fx
             T = self.T(i, niter) if callable(self.T) else self.T
-            stepsizes[i], temperatures[i], scores[i], poses[i] = stepsize, T, fx_new, np.asarray(x_new)
+            stepsizes[i], temperatures[i] = stepsize, T
+            scores[i], poses[i] = fx_new, np.asarray(x_new)
             accepted[i] = dE < 0 or self.rng.random() < np.exp(-dE / max(T, 1e-6))
             if accepted[i]:
                 x, fx = x_new, fx_new

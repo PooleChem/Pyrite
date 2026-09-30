@@ -845,86 +845,15 @@ class Mol(Chem.Mol):
             conformations: str = "conformer",
             combine: str = "random",
     ) -> Poses:
-        """Retrieve a list of random placements and conformers for the molecule in the binding_site.
+        """Deprecated: use :func:`pyrite.search.place_in`, ``place_in(mol, binding_site, ...)``."""
+        warnings.warn(
+            "Mol.place_in is deprecated, use pyrite.search.place_in(mol, binding_site, ...) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        from pyrite.search.placement import place_in
 
-
-        Parameters
-        ----------
-        binding_site : Bounds
-            The binding site in which to place the ligand.
-        n_positions : int
-            The number of ligand positions to generate. When `placement` = ``grid``, this is the
-            size of the grid in every axis. For example, an `n_positions` of 4 would yield
-            :math:`4^3` positions.
-        n_conformations : int
-            The number of conformations to generate.
-        placement : {'random', 'grid'}, default 'random'
-            The placement method to use. ``random`` places the ligand randomly in the binding site.
-            ``grid`` creates a grid in the binding site.
-        conformations : {'conformer', 'random}, default 'conformer'
-            The conformer generation method to use. ``conformer`` will create conformers using
-            RDKit :func:`~rdkit.Chem.rdDistGeom.EmbedMultipleConfs`. ``random`` will set
-            all dihedral angles to random values. This is faster, but can create
-            physically impossible configurations.
-        combine : {'random', 'grid'}, default 'random'
-            The combination method. ``random`` will create random combinations of positions and
-            dihedral angles. When ``n_positions >= n_conformations``, a random conformation is
-            chosen for every position, and the other way around. This results in an output size of
-            ``max(n_positions, n_conformations)``.
-            ``grid`` combines all positions with all conformations, resulting in an output size of
-            ``n_positions * n_conformations``.
-
-
-        Returns
-        -------
-        numpy.ndarray
-            An array of shape ``(max(n_positions, n_conformations), 6 + n_dihedrals)`` when
-            `combine` is ``random``, or shape
-            ``(n_positions * n_conformations, 6 + n_dihedrals)`` when `combine` is ``grid``.
-        """
-
-        if placement not in {"random", "grid"}:
-            raise ValueError("placement must be either 'random' or 'grid'")
-        if conformations not in {
-            "conformer",
-            "random",
-        }:  # TODO: add none (just default dihedrals)
-            raise ValueError("conformations must be either 'conformer' or 'random'")
-        if combine not in {"random", "grid"}:  # TODO: rename to product
-            raise ValueError("combine must be either 'random' or 'grid'")
-
-        positions = []
-        if placement == "random":
-            positions = binding_site.place_random_uniform(n_positions)
-        elif placement == "grid":
-            positions = binding_site.place_grid(n_positions)
-
-        dihedrals = []
-        if conformations == "conformer":
-            dihedrals = self.get_n_conformer_dihedral_configurations(n_conformations)
-        elif conformations == "random":
-            dihedrals = self.get_n_random_dihedral_configurations(n_conformations)
-
-        out_pos, out_dih = [], []
-        if combine == "random":
-            if positions.shape[0] >= dihedrals.shape[0]:
-                sel_dihedrals = np.random.choice(
-                    dihedrals.shape[0], size=positions.shape[0], replace=True
-                )
-                out_pos = positions
-                out_dih = dihedrals[sel_dihedrals]
-            else:
-                sel_positions = np.random.choice(
-                    positions.shape[0], size=dihedrals.shape[0], replace=True
-                )
-                out_pos = positions[sel_positions]
-                out_dih = dihedrals
-
-        elif combine == "grid":
-            out_pos = np.repeat(positions, dihedrals.shape[0], axis=0)
-            out_dih = np.tile(dihedrals, (positions.shape[0], 1))
-
-        return Poses(np.concatenate((out_pos, out_dih), axis=1), self.layout)
+        return place_in(self, binding_site, n_positions, n_conformations, placement, conformations, combine)
 
     def get_n_random_dihedral_configurations(self, n: int) -> NDArray:
         """Retrieve a list of `n` random dihedral configurations for the molecule.
@@ -971,7 +900,11 @@ class Mol(Chem.Mol):
 
         cids = Chem.AllChem.EmbedMultipleConfs(new_mol, n, params)
 
-        configurations = np.empty((n, len(self.__rotatable_dihedrals)))
+        if len(cids) == 0:
+            raise ValueError("RDKit could not embed any conformers of the molecule.")
+
+        # EmbedMultipleConfs can return fewer than `n` conformers.
+        configurations = np.empty((len(cids), len(self.__rotatable_dihedrals)))
         for i, cid in enumerate(cids):
             dihedral_angles = np.zeros(len(self.__rotatable_dihedrals))
             for j, dihedral in enumerate(self.__rotatable_dihedrals):

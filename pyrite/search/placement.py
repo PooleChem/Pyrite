@@ -1,9 +1,109 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 from numpy.typing import ArrayLike
 
-from pyrite._common import Poses
+from pyrite._common import Mol, Poses
+
+if TYPE_CHECKING:
+    from pyrite.bounds import Bounds
+
+
+def place_in(
+    mol: Mol,
+    binding_site: Bounds,
+    n_positions: int,
+    n_conformations: int,
+    placement: str = "random",
+    conformations: str = "conformer",
+    combine: str = "random",
+) -> Poses:
+    """Generate random placements and conformations of a molecule in a binding site.
+
+    Used to create the initial poses of a search. Positions and orientations come from the
+    `binding_site`, and the torsions from the conformations of `mol`; both are then combined.
+
+    .. note::
+        Only the euler rotation layout is supported for now (the `binding_site` samples euler
+        angles), and the randomness comes from the global ``numpy.random`` state.
+
+    Parameters
+    ----------
+    mol : Mol
+        The molecule to place.
+    binding_site : Bounds
+        The binding site in which to place the molecule.
+    n_positions : int
+        The number of molecule positions to generate. When `placement` = ``grid``, this is the
+        size of the grid in every axis. For example, an `n_positions` of 4 would yield
+        :math:`4^3` positions.
+    n_conformations : int
+        The number of conformations to generate.
+    placement : {'random', 'grid'}, default 'random'
+        The placement method to use. ``random`` places the molecule randomly in the binding
+        site. ``grid`` creates a grid in the binding site.
+    conformations : {'conformer', 'random'}, default 'conformer'
+        The conformer generation method to use. ``conformer`` will create conformers using
+        RDKit :func:`~rdkit.Chem.rdDistGeom.EmbedMultipleConfs`. ``random`` will set
+        all dihedral angles to random values. This is faster, but can create
+        physically impossible configurations.
+    combine : {'random', 'grid'}, default 'random'
+        The combination method. ``random`` will create random combinations of positions and
+        dihedral angles. When ``n_positions >= n_conformations``, a random conformation is
+        chosen for every position, and the other way around. This results in an output size of
+        ``max(n_positions, n_conformations)``.
+        ``grid`` combines all positions with all conformations, resulting in an output size of
+        ``n_positions * n_conformations``.
+
+    Returns
+    -------
+    Poses
+        Shape ``(max(n_positions, n_conformations), n_dims)`` when `combine` is ``random``, or
+        ``(n_positions * n_conformations, n_dims)`` when `combine` is ``grid``, in the layout
+        of `mol`.
+    """
+    if mol.layout.rot_type != "euler":
+        raise NotImplementedError(
+            f"place_in only supports the 'euler' rotation layout, not {mol.layout.rot_type!r}: the "
+            "binding site samples euler angles."
+        )
+    if placement not in {"random", "grid"}:
+        raise ValueError("placement must be either 'random' or 'grid'")
+    if conformations not in {"conformer", "random"}:
+        raise ValueError("conformations must be either 'conformer' or 'random'")
+    if combine not in {"random", "grid"}:
+        raise ValueError("combine must be either 'random' or 'grid'")
+
+    if placement == "random":
+        positions = binding_site.place_random_uniform(n_positions)
+    else:
+        positions = binding_site.place_grid(n_positions)
+
+    if conformations == "conformer":
+        dihedrals = mol.get_n_conformer_dihedral_configurations(n_conformations)
+    else:
+        dihedrals = mol.get_n_random_dihedral_configurations(n_conformations)
+
+    if combine == "random":
+        if positions.shape[0] >= dihedrals.shape[0]:
+            sel_dihedrals = np.random.choice(
+                dihedrals.shape[0], size=positions.shape[0], replace=True
+            )
+            out_pos = positions
+            out_dih = dihedrals[sel_dihedrals]
+        else:
+            sel_positions = np.random.choice(
+                positions.shape[0], size=dihedrals.shape[0], replace=True
+            )
+            out_pos = positions[sel_positions]
+            out_dih = dihedrals
+    else:
+        out_pos = np.repeat(positions, dihedrals.shape[0], axis=0)
+        out_dih = np.tile(dihedrals, (positions.shape[0], 1))
+
+    return Poses(np.concatenate((out_pos, out_dih), axis=1), mol.layout)
 
 
 def boltzmann_diversity_filter(
