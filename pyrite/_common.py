@@ -55,6 +55,9 @@ class Mol(Chem.Mol):
         The index of the atom to use as the center point for rotations.
         By default, the center atom is determined automatically by selecting the heavy atom closest
         to the initial conformer centroid.
+    ignore_non_polar_hydrogens : bool, default True
+        Whether non-polar hydrogens are excluded from `scoring_mask` — the mask every
+        scoring function built on this molecule uses to decide which atoms count.
 
 
     """
@@ -78,6 +81,7 @@ class Mol(Chem.Mol):
             flexible: bool = False,            # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of dihedrals, or manual, or by resid.
             center_atom: int = None,
             rotation_type: Literal["euler", "quat"] = "euler",
+            ignore_non_polar_hydrogens: bool = True,
     ):
         self.__rotatable_dihedrals = np.array([], dtype=object)
         self.__dihedral_angles = np.array([])
@@ -107,6 +111,15 @@ class Mol(Chem.Mol):
             self.__compute_rotatable_dihedrals(flex_hydrogens)
 
         self.__assign_atom_types()
+
+        # Which atoms scoring functions should consider — computed once, here, so every
+        # scoring function built on this Mol agrees, instead of each one recomputing (and
+        # potentially disagreeing about) the same mask from the same atom_types.
+        self.scoring_mask = ~(
+            ignore_non_polar_hydrogens
+            & ((self._atom_types == AtomType.Hydrogen) | (self._atom_types == AtomType.PolarHydrogen))
+        )
+
         Chem.rdPartialCharges.ComputeGasteigerCharges(self)
 
         # Set the layout
@@ -1279,6 +1292,16 @@ class Pose:
     def __eq__(self, other):
         return bool(np.array_equal(self._v, other._v)) and self.layout == other.layout
 
+    def __getstate__(self):
+        # Only _v/layout are real state — rotation/translation/torsions are views
+        # derived from them. Pickling them separately (the default for a __slots__
+        # class) serializes each view's own buffer as independent data, so they
+        # come back as copies, not views, after unpickling. Reconstructing via
+        # __init__ in __setstate__ re-derives them as views instead.
+        return self._v, self.layout
+
+    def __setstate__(self, state):
+        self.__init__(*state)
 
     @classmethod
     def from_array(cls, v: NDArray, layout: PoseLayout):
@@ -1297,6 +1320,13 @@ class Poses:
 
     def __eq__(self, other):
         return bool(np.array_equal(self._vs, other._vs)) and self.layout == other.layout
+
+    def __getstate__(self):
+        # See Pose.__getstate__ — same reasoning, same fix.
+        return self._vs, self.layout
+
+    def __setstate__(self, state):
+        self.__init__(*state)
 
     def __len__(self):
         return len(self._vs)

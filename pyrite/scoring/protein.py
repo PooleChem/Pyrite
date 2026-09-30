@@ -111,10 +111,6 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
@@ -129,26 +125,12 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         fixed_mol: Mol,
         cutoff: float = 8.0,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         self.probe_mol = probe_mol
         self.fixed_mol = fixed_mol
 
-        self.probe_mask = ~(
-            ignore_non_polar_hydrogens
-            & (
-                (self.probe_mol.atom_types == AtomType.Hydrogen)
-                | (self.probe_mol.atom_types == AtomType.PolarHydrogen)
-            )
-        )
-
-        self.fixed_mask = ~(
-            ignore_non_polar_hydrogens
-            & (
-                (self.fixed_mol._atom_types == AtomType.Hydrogen)
-                | (self.fixed_mol._atom_types == AtomType.PolarHydrogen)
-            )
-        )
+        self.probe_mask = probe_mol.scoring_mask
+        self.fixed_mask = fixed_mol.scoring_mask
 
         self.cutoff = cutoff
         self.k = k
@@ -300,10 +282,6 @@ class Gaussian(_KNNScoringFunction):
     k : int, default 400
         The number of neighbors to consider. It is necessary to increase this number if a wider or
         higher offset Gaussian is used.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     """
 
@@ -315,14 +293,12 @@ class Gaussian(_KNNScoringFunction):
         width: float = 0.5,
         cutoff: float = None,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
             probe_mol,
             fixed_mol,
             cutoff or 4 + offset + np.e * width,
             k,
-            ignore_non_polar_hydrogens,
         )
         self.offset = offset
         self.width = width
@@ -379,10 +355,6 @@ class Repulsion(_KNNScoringFunction):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
     """
 
     def __init__(
@@ -392,10 +364,9 @@ class Repulsion(_KNNScoringFunction):
         offset: float = 0.0,
         cutoff: float = None,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            probe_mol, fixed_mol, cutoff or 4 + offset, k, ignore_non_polar_hydrogens
+            probe_mol, fixed_mol, cutoff or 4 + offset, k
         )
         self.offset = offset
 
@@ -455,10 +426,6 @@ class _SlopeStep(_KNNScoringFunction):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
@@ -475,13 +442,12 @@ class _SlopeStep(_KNNScoringFunction):
         bad: float = 1.5,
         cutoff: float = None,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         assert good < bad, "Bad distance <= good distance not implemented."
         # `bad` is an offset from optimal_distance (~4 Å for a typical atom pair),
         # not an absolute search radius — cutoff needs that base distance added,
         # same pattern as Gaussian's `4 + offset + ...`/Repulsion's `4 + offset`.
-        super().__init__(probe_mol, fixed_mol, cutoff or (4 + bad), k, ignore_non_polar_hydrogens)
+        super().__init__(probe_mol, fixed_mol, cutoff or (4 + bad), k)
         self.good = good
         self.bad = bad
 
@@ -556,10 +522,6 @@ class Hydrophobic(_SlopeStep):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
@@ -576,10 +538,9 @@ class Hydrophobic(_SlopeStep):
         bad: float = 1.5,
         cutoff: float = None,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            probe_mol, fixed_mol, good, bad, cutoff, k, ignore_non_polar_hydrogens
+            probe_mol, fixed_mol, good, bad, cutoff, k
         )
 
         self.__init_hydrophobic()
@@ -680,10 +641,6 @@ class NonHydrophobic(Hydrophobic):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
@@ -771,10 +728,6 @@ class NonDirHBond(_SlopeStep):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
     See Also
     --------
     NonDirHBondLJ
@@ -790,10 +743,9 @@ class NonDirHBond(_SlopeStep):
         bad: float = 0,
         cutoff: float = None,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
-            probe_mol, fixed_mol, good, bad, cutoff, k, ignore_non_polar_hydrogens
+            probe_mol, fixed_mol, good, bad, cutoff, k
         )
 
         self.__init_hbond_possible()
@@ -925,10 +877,6 @@ class LJ(_KNNScoringFunction):
         Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     """
 
@@ -944,14 +892,12 @@ class LJ(_KNNScoringFunction):
         depth: float = 1.0,
         cutoff: float = None,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
             probe_mol,
             fixed_mol,
             cutoff or 8 + offset,
             k,
-            ignore_non_polar_hydrogens,
         )
 
         self._i = i
@@ -1078,10 +1024,6 @@ class VDW(LJ):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
     See Also
     --------
     LJ
@@ -1099,7 +1041,6 @@ class VDW(LJ):
         cap: float = 100.0,
         cutoff: float = None,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
             probe_mol,
@@ -1111,7 +1052,6 @@ class VDW(LJ):
             cap=cap,
             cutoff=cutoff,
             k=k,
-            ignore_non_polar_hydrogens=ignore_non_polar_hydrogens,
         )
 
 
@@ -1190,10 +1130,6 @@ class NonDirHBondLJ(LJ):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
     See Also
     --------
     NonDirHBond
@@ -1209,7 +1145,6 @@ class NonDirHBondLJ(LJ):
         cap: float = 100.0,
         cutoff: float = None,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
             probe_mol,
@@ -1222,7 +1157,6 @@ class NonDirHBondLJ(LJ):
             depth=5.0,
             cutoff=cutoff,
             k=k,
-            ignore_non_polar_hydrogens=ignore_non_polar_hydrogens,
         )
         self.__init_hbond_possible()
 
@@ -1278,10 +1212,6 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
@@ -1305,14 +1235,12 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
         fixed_mol: Mol,
         cutoff: float = 8.0,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
             probe_mol,
             fixed_mol,
             cutoff,
             k,
-            ignore_non_polar_hydrogens,
         )
         self.__init_charges()
 
@@ -1407,10 +1335,6 @@ class ElectroStatic(_ChargeScoringFunction):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
     References
     ----------
     .. [1] Gasteiger, Johann, and Mario Marsili.
@@ -1429,14 +1353,12 @@ class ElectroStatic(_ChargeScoringFunction):
         cap: float = 100.0,
         cutoff: float = 8.0,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
             probe_mol,
             fixed_mol,
             cutoff,
             k,
-            ignore_non_polar_hydrogens,
         )
 
         self._power = power
@@ -1554,10 +1476,6 @@ class AD4Solvation(_ChargeScoringFunction):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
     References
     ----------
     .. [1] Gasteiger, Johann, and Mario Marsili.
@@ -1575,14 +1493,12 @@ class AD4Solvation(_ChargeScoringFunction):
         s_q: float = 0.01097,
         cutoff: float = 8.0,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
             probe_mol,
             fixed_mol,
             cutoff,
             k,
-            ignore_non_polar_hydrogens,
         )
 
         self._d_sigma = d_sigma
@@ -1707,10 +1623,6 @@ class _PLP(_KNNScoringFunction, ABC):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
@@ -1725,14 +1637,12 @@ class _PLP(_KNNScoringFunction, ABC):
         fixed_mol: Mol,
         cutoff: float = 8.0,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
             probe_mol,
             fixed_mol,
             cutoff,
             k,
-            ignore_non_polar_hydrogens,
         )
 
     # Per-pair interaction-type lookup, not a radii-relative kernel — no _kernel(dist),
@@ -1947,10 +1857,6 @@ class PlantsPLP(_PLP):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     References
     ----------
@@ -1968,14 +1874,12 @@ class PlantsPLP(_PLP):
         weights: tuple[float, float, float, float, float] | None = None,
         cutoff: float = 8.0,
         k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
     ):
         super().__init__(
             probe_mol,
             fixed_mol,
             cutoff,
             k,
-            ignore_non_polar_hydrogens,
         )
         if weights is None:
             weights = (-4.0, -7.0, -0.05, -0.40, 0.50)
