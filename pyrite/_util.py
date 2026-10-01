@@ -166,11 +166,17 @@ def _compose_delta_transform(
     -------
 
     """
-    m = r_new @ r_prev.T
-    t = translation - m @ center
+    # Written out instead of `r_new @ r_prev.T`: the callers pass non-contiguous 3x3 slices of 4x4
+    # matrices, for which Numba's matrix product is slower than these loops (and warns about it).
     out = np.eye(4)
-    out[:3, :3] = m
-    out[:3, 3] = t
+    for i in range(3):
+        for j in range(3):
+            out[i, j] = (
+                r_new[i, 0] * r_prev[j, 0] + r_new[i, 1] * r_prev[j, 1] + r_new[i, 2] * r_prev[j, 2]
+            )
+        out[i, 3] = translation[i] - (
+            out[i, 0] * center[0] + out[i, 1] * center[1] + out[i, 2] * center[2]
+        )
     return out
 
 

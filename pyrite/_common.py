@@ -94,14 +94,17 @@ class Mol(Chem.Mol):
         elif hydrogens == "remove":
             mol = Chem.AllChem.RemoveHs(mol)
 
-        # TODO: this doesnt make sense for proteins. In a protein, all torsions should be oriented wrt the backbone, not the center atom.
-        self._center_atom = center_atom if center_atom is not None else self.__get_center_atom()
-
+        # The center atom is chosen from the conformer, so a molecule without one (e.g. from a
+        # SMILES string) needs it embedded first.
         if self.GetNumConformers() == 0:
             Chem.SanitizeMol(self)
             params = Chem.AllChem.ETKDGv3()
             params.randomSeed = 0xC0FFEE
-            Chem.AllChem.EmbedMolecule(self, params)  # TODO: cant do if not sanitized.
+            if Chem.AllChem.EmbedMolecule(self, params) == -1:  # TODO: cant do if not sanitized.
+                raise ValueError("RDKit could not embed a 3D conformer of the molecule.")
+
+        # TODO: this doesnt make sense for proteins. In a protein, all torsions should be oriented wrt the backbone, not the center atom.
+        self._center_atom = center_atom if center_atom is not None else self.__get_center_atom()
 
         # TODO: make property. Setting it will then compute the torsions if needed. Perhaps bool | list ?
         self.is_flexible = flexible
