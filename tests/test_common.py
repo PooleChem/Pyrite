@@ -2,6 +2,7 @@ import math
 
 import numpy as np
 
+from pyrite._common import Mol
 from pyrite._util import (
     _rotation_matrix_from_euler,
     _rotation_matrix_to_euler,
@@ -72,11 +73,12 @@ def test_fix_mol_valence():
 ########################
 # This class is big
 
-from pyrite._common import Mol
-
 
 def test_create_mol_O2():
-    smiles = "O=O"
+    # A molecule without coordinates: a conformer has to be embedded before the center atom
+    # can be chosen.
+    mol = Mol.from_smiles("O=O")
 
-    mol = Mol.from_smiles(smiles)
-    print(mol.positions)
+    assert mol.positions.shape == (2, 3)
+    assert 1.0 < np.linalg.norm(mol.positions[0] - mol.positions[1]) < 1.4
+    assert mol.n_tors == 0

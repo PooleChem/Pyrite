@@ -13,7 +13,7 @@ _common:
   - _translation_matrix_from_coordinates
 
 scoring/protein.py (via static / standalone calls):
-  - _SlopeStep._slope_step
+  - _slope_step_kernel
   - Gaussian._score  (via __gaussian kernel)
   - Repulsion._score
   - Hydrophobic._score
@@ -40,7 +40,7 @@ from pyrite.scoring.protein import (
     NonDirHBond,
     PlantsPLP,
     Repulsion,
-    _SlopeStep,
+    _slope_step_kernel,
 )
 
 # ---------------------------------------------------------------------------
@@ -135,39 +135,39 @@ class TestTranslationMatrixFromCoordinates:
 
 
 # ---------------------------------------------------------------------------
-# _SlopeStep._slope_step  (static — no molecule needed)
+# _slope_step_kernel  (module-level numba function — no molecule needed)
 # ---------------------------------------------------------------------------
 
 
 class TestSlopeStep:
-    """Tests for _SlopeStep._slope_step(dist, good, bad)."""
+    """Tests for _slope_step_kernel(dist, good, bad)."""
 
     def test_below_good_scores_one(self):
         dist = np.array([-1.0, 0.0, 0.4])
-        result = _SlopeStep._slope_step(dist, good=0.5, bad=1.5)
+        result = _slope_step_kernel(dist, good=0.5, bad=1.5)
         assert np.allclose(result, 1.0)
 
     def test_above_bad_scores_zero(self):
         dist = np.array([1.5, 2.0, 10.0])
-        result = _SlopeStep._slope_step(dist, good=0.5, bad=1.5)
+        result = _slope_step_kernel(dist, good=0.5, bad=1.5)
         assert np.allclose(result, 0.0)
 
     def test_slope_region(self):
         good, bad = 0.5, 1.5
         dist = np.array([0.5, 1.0, 1.5])
-        result = _SlopeStep._slope_step(dist, good=good, bad=bad)
+        result = _slope_step_kernel(dist, good=good, bad=bad)
         expected = np.clip((dist - bad) / (good - bad), 0.0, 1.0)
         assert np.allclose(result, expected)
 
     def test_exact_boundaries(self):
-        result = _SlopeStep._slope_step(np.array([0.5]), good=0.5, bad=1.5)
+        result = _slope_step_kernel(np.array([0.5]), good=0.5, bad=1.5)
         assert np.allclose(result, 1.0)
-        result = _SlopeStep._slope_step(np.array([1.5]), good=0.5, bad=1.5)
+        result = _slope_step_kernel(np.array([1.5]), good=0.5, bad=1.5)
         assert np.allclose(result, 0.0)
 
     def test_output_shape_preserved(self):
         dist = np.zeros((5, 3))
-        result = _SlopeStep._slope_step(dist, good=0.5, bad=1.5)
+        result = _slope_step_kernel(dist, good=0.5, bad=1.5)
         assert result.shape == dist.shape
 
 
