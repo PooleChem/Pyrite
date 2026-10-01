@@ -133,11 +133,74 @@ is used to limit the number of expensive operations performed during scoring.
 
 """
 
-from ._base import *
-from .dependencies import *
+from ._base import (
+    Clamp,
+    ConstantTerm,
+    ScoringFunction,
+)
+from .bounds import (
+    DistanceToPocket,
+    OutOfBoundsPenalty,
+    WeightedBoundsOverlap,
+)
+from .dependencies import (
+    Dependency,
+    KDTreeCache,
+    KNNDependency,
+)
+from .internal import (
+    InternalEnergy,
+    InternalOverlap,
+)
+from .misc import (
+    RMSD,
+    Crowding,
+    NumAtoms,
+    NumProteinAtomsWithinA,
+    NumTors,
+)
 
 # from .openmm import *
-from .protein import *
-from .bounds import *
-from .internal import *
-from .misc import *
+from .protein import (
+    LJ,
+    VDW,
+    AD4Solvation,
+    ElectroStatic,
+    Gaussian,
+    Hydrophobic,
+    NonDirHBond,
+    NonDirHBondLJ,
+    NonHydrophobic,
+    PlantsPLP,
+    Repulsion,
+)
+
+__all__ = [
+    "AD4Solvation",
+    "Clamp",
+    "ConstantTerm",
+    "Crowding",
+    "Dependency",
+    "DistanceToPocket",
+    "ElectroStatic",
+    "Gaussian",
+    "Hydrophobic",
+    "InternalEnergy",
+    "InternalOverlap",
+    "KDTreeCache",
+    "KNNDependency",
+    "LJ",
+    "NonDirHBond",
+    "NonDirHBondLJ",
+    "NonHydrophobic",
+    "NumAtoms",
+    "NumProteinAtomsWithinA",
+    "NumTors",
+    "OutOfBoundsPenalty",
+    "PlantsPLP",
+    "RMSD",
+    "Repulsion",
+    "ScoringFunction",
+    "VDW",
+    "WeightedBoundsOverlap",
+]

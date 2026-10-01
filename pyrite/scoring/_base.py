@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
 
+from .._common import Mol
 from .dependencies import Dependency, _NarrowingComputed
-from .. import Mol
-import copy
 
 # speed grade:
 """
@@ -94,7 +93,6 @@ class ScoringFunction(ABC):
         score : float
             The score associated with the conformer.
         """
-
         opt_deps = getattr(self, "_opt_deps_cache", None)
         if opt_deps is None:
             raw_deps = self.get_dependencies()
@@ -525,7 +523,6 @@ class _ScaledScoringFunction(ScoringFunction):
 class Clamp(ScoringFunction):
     """
     Clamps the output of a scoring function.
-
 
     Parameters
     ----------

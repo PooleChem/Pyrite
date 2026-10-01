@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import warnings
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -8,18 +7,16 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import py3Dmol
 from IPython.display import SVG, Image, display
-from numba import njit
 from numpy.typing import NDArray
 from rdkit import Chem, RDLogger
 from rdkit.Chem import Draw, SDWriter
 from scipy.spatial.transform import Rotation
 
 from ._util import (
-    _rotation_matrix_from_euler,
-    _rotation_matrix_to_euler,
-    _translation_matrix_from_coordinates,
-    _rotation_matrix_from_quat,
     _compose_delta_transform,
+    _rotation_matrix_from_euler,
+    _rotation_matrix_from_quat,
+    _rotation_matrix_to_euler,
 )
 from .atom_consts import AtomType, vina_atom_consts
 from .view import Viewer
@@ -225,7 +222,6 @@ class Mol(Chem.Mol):
         -------
         Mol
         """
-
         mol = Chem.MolFromPDBFile(pdb_file, sanitize=False, removeHs=(hydrogens == "remove"))
 
         if mol is None:
@@ -502,7 +498,6 @@ class Mol(Chem.Mol):
         attributes for later use.
 
         """
-
         # num_rotatable_bonds = Chem.rdMolDescriptors.CalcNumRotatableBonds(
         #     self, strict=True
         # )
@@ -561,7 +556,7 @@ class Mol(Chem.Mol):
             rotatable_dihedrals.append(dihedral)
             # Dont care about:?
             dihedral_angles.append(
-                (Chem.rdMolTransforms.GetDihedralRad(self.GetConformer(), *dihedral))
+                Chem.rdMolTransforms.GetDihedralRad(self.GetConformer(), *dihedral)
             )
 
         self.__rotatable_dihedrals = rotatable_dihedrals
@@ -937,7 +932,6 @@ class Mol(Chem.Mol):
             The conformer id to write.
 
         """
-
         close_writer = False
         if isinstance(file, str):
             writer = SDWriter(file)
@@ -963,7 +957,6 @@ class Mol(Chem.Mol):
             An array of shape ``(6 + n_dihedrals, n)``, containing molecular positions to write.
 
         """
-
         writer = Chem.SDWriter(file)
 
         for pose in poses:
@@ -1007,7 +1000,6 @@ class Mol(Chem.Mol):
             The options to apply.
 
         """
-
         # unknown = set(options) - set(self.draw_options)
         # if unknown:
         #     raise ValueError(f"Unknown options: {unknown}")

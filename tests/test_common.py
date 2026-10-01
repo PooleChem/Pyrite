@@ -1,9 +1,10 @@
-import numpy as np
 import math
 
-from pyrite._common import (
-    _rotation_matrix_to_euler,
+import numpy as np
+
+from pyrite._util import (
     _rotation_matrix_from_euler,
+    _rotation_matrix_to_euler,
     _translation_matrix_from_coordinates,
 )
 

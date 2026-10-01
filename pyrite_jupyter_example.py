@@ -34,9 +34,7 @@ pyrite.Viewer(receptor, pocket).show()
 # Initial placement
 init_vars = ligand.place_in(pocket, n_positions=4000, n_conformations=20)
 viewer = pyrite.Viewer(receptor)
-viewer.add_v(
-    ligand, init_vars[:59], slider=False, options={"colorscheme": "magentaCarbon"}
-)
+viewer.add_v(ligand, init_vars[:59], slider=False, options={"colorscheme": "magentaCarbon"})
 
 viewer.show()
 # %%
@@ -61,13 +59,10 @@ searching_func = "pocket overlap"
 if searching_func == "Vina":
     scoring = (
         -0.035579 * pyrite.Gaussian(ligand, receptor, offset=0.0, width=0.5, k=400)
-        + -0.005156
-        * pyrite.scoring.Gaussian(ligand, receptor, offset=3.0, width=2.0, k=400)
+        + -0.005156 * pyrite.scoring.Gaussian(ligand, receptor, offset=3.0, width=2.0, k=400)
         + 0.840245 * pyrite.scoring.Repulsion(ligand, receptor, offset=0.0, k=400)
-        + -0.035069
-        * pyrite.scoring.Hydrophobic(ligand, receptor, good=0.5, bad=1.5, k=400)
-        + -0.587439
-        * pyrite.scoring.NonDirHBond(ligand, receptor, good=-0.7, bad=0.0, k=400)
+        + -0.035069 * pyrite.scoring.Hydrophobic(ligand, receptor, good=0.5, bad=1.5, k=400)
+        + -0.587439 * pyrite.scoring.NonDirHBond(ligand, receptor, good=-0.7, bad=0.0, k=400)
         + 1e-2 * pyrite.scoring.InternalEnergy(ligand)
     ) / (1 + ((0.1 * (1.923 + 1)) * (NumTors(ligand))) / 5)
 elif searching_func == "PLP":
@@ -129,21 +124,17 @@ print(df[["score", "RMSD"]])
 refining_func = "PLP"
 if refining_func == "Vina":
     scoring = (
-        -0.035579
-        * pyrite.scoring.Gaussian(ligand, receptor, offset=0.0, width=0.5, k=400)
-        + -0.005156
-        * pyrite.scoring.Gaussian(ligand, receptor, offset=3.0, width=2.0, k=400)
+        -0.035579 * pyrite.scoring.Gaussian(ligand, receptor, offset=0.0, width=0.5, k=400)
+        + -0.005156 * pyrite.scoring.Gaussian(ligand, receptor, offset=3.0, width=2.0, k=400)
         + 0.840245 * pyrite.scoring.Repulsion(ligand, receptor, offset=0.0, k=400)
-        + -0.035069
-        * pyrite.scoring.Hydrophobic(ligand, receptor, good=0.5, bad=1.5, k=400)
-        + -0.587439
-        * pyrite.scoring.NonDirHBond(ligand, receptor, good=-0.7, bad=0.0, k=400)
+        + -0.035069 * pyrite.scoring.Hydrophobic(ligand, receptor, good=0.5, bad=1.5, k=400)
+        + -0.587439 * pyrite.scoring.NonDirHBond(ligand, receptor, good=-0.7, bad=0.0, k=400)
         + 1e-2 * pyrite.scoring.InternalEnergy(ligand)
     ) / (1 + ((0.1 * (1.923 + 1)) * (NumTors(ligand))) / 5)
 else:
-    scoring = pyrite.scoring.PlantsPLP(
-        ligand, receptor
-    ) + 1e-2 * pyrite.scoring.InternalEnergy(ligand)
+    scoring = pyrite.scoring.PlantsPLP(ligand, receptor) + 1e-2 * pyrite.scoring.InternalEnergy(
+        ligand
+    )
 
 print(scoring.get_score())
 # %%

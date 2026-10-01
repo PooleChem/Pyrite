@@ -49,11 +49,11 @@ from abc import ABC, abstractmethod
 from collections import deque
 
 import numpy as np
-from numpy.typing import NDArray, ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from rdkit.Geometry import Point3D
 from scipy.spatial import KDTree
 
-from pyrite._common import _rotation_matrix_from_euler, Mol
+from pyrite._common import Mol, _rotation_matrix_from_euler
 
 
 class Bounds(ABC):
@@ -196,7 +196,6 @@ class Bounds(ABC):
     def is_within(self, p: tuple[float, float, float]) -> bool:
         """Checks if a given point lies within the bounding box of the object.
 
-
         Parameters
         ----------
         p : array_like
@@ -207,7 +206,6 @@ class Bounds(ABC):
         bool
 
         """
-
         p = self._world_to_bounds(p)
 
         return (
@@ -350,7 +348,6 @@ class Bounds(ABC):
             bounds.
 
         """
-
         rotation_grid = [np.linspace(0, 1, n)] * 3 if rotation_grid else [0.0] * 3
         translation_grid = [np.linspace(0, 1, n)] * 3
 
@@ -424,7 +421,6 @@ class Bounds(ABC):
 
 class RectangularBounds(Bounds):
     """Represents a rectangular bounding box in a 3D coordinate system.
-
 
     Parameters
     ----------
@@ -508,7 +504,6 @@ class RectangularBounds(Bounds):
 class SphericalBounds(Bounds):
     """Represents a spherical bounding 'box' in a 3D coordinate system.
 
-
     Parameters
     ----------
     r : float
@@ -566,7 +561,6 @@ class SphericalBounds(Bounds):
 
 class CylindricalBounds(Bounds):
     """Represents a cylindrical bounding 'box' in a 3D coordinate system.
-
 
     Parameters
     ----------
@@ -1055,7 +1049,7 @@ class Pocket(Bounds):
         radii = []
         charges = []
 
-        with open(pqr_file, "r", encoding="utf-8") as f:
+        with open(pqr_file, encoding="utf-8") as f:
             for line in f:
                 if line.startswith("ATOM"):
                     line = line.split()

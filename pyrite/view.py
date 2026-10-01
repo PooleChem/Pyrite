@@ -1,13 +1,11 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING
-from wsgiref.validate import bad_header_value_re
-
-from IPython.display import display, HTML
-from ipywidgets import IntSlider, interactive, widgets, VBox, Layout
-
 
 import html as _html
+from typing import TYPE_CHECKING
+
 import py3Dmol
+from IPython.display import display
+from ipywidgets import IntSlider, VBox, widgets
 from numpy.typing import NDArray
 from rdkit import Chem
 
@@ -149,7 +147,6 @@ class Viewer:
         Viewer
 
         """
-
         if options is None:
             options = {}
 

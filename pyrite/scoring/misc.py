@@ -1,11 +1,9 @@
-import copy
-
 import numpy as np
 from rdkit import Chem
 from scipy.spatial import cKDTree
 
+from .._common import AtomType, Mol
 from ._base import ScoringFunction
-from .._common import Mol, AtomType
 
 
 class RMSD(ScoringFunction):

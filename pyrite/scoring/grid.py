@@ -2,7 +2,7 @@ import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
 from pyrite.bounds import Bounds
-from pyrite.scoring import ScoringFunction, Clamp
+from pyrite.scoring import Clamp, ScoringFunction
 from pyrite.scoring._base import _CombinedScoringFunction, _ScaledScoringFunction
 from pyrite.scoring.dependencies import Dependency, KNNDependency
 

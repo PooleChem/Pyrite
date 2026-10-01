@@ -24,22 +24,23 @@ scoring/protein.py (via static / standalone calls):
 """
 
 import math
+
 import numpy as np
 import pytest
 
-from pyrite._common import (
-    Mol,
+from pyrite._common import Mol
+from pyrite._util import (
     _rotation_matrix_from_euler,
     _translation_matrix_from_coordinates,
 )
 from pyrite.scoring.protein import (
-    _SlopeStep,
+    LJ,
     Gaussian,
     Hydrophobic,
-    LJ,
     NonDirHBond,
     PlantsPLP,
     Repulsion,
+    _SlopeStep,
 )
 
 # ---------------------------------------------------------------------------

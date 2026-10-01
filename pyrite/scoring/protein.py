@@ -718,6 +718,7 @@ class NonDirHBond(_SlopeStep):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
+
     See Also
     --------
     NonDirHBondLJ
@@ -1016,6 +1017,7 @@ class VDW(LJ):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
+
     See Also
     --------
     LJ
@@ -1122,6 +1124,7 @@ class NonDirHBondLJ(LJ):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
+
     See Also
     --------
     NonDirHBond
@@ -1324,6 +1327,7 @@ class ElectroStatic(_ChargeScoringFunction):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
+
     References
     ----------
     .. [1] Gasteiger, Johann, and Mario Marsili.
@@ -1465,6 +1469,7 @@ class AD4Solvation(_ChargeScoringFunction):
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
     k : int, default 400
         The number of neighbors to consider.
+
     References
     ----------
     .. [1] Gasteiger, Johann, and Mario Marsili.
@@ -1700,7 +1705,6 @@ class _PLP(_KNNScoringFunction, ABC):
         numpy.ndarray
 
         """
-
         a, b, c, d, e, f = values
         return _four_piece_kernel(r, a, b, c, d, e, f)
 

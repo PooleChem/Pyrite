@@ -1,9 +1,8 @@
+import numpy as np
 from rdkit import Chem
 
-import numpy as np
-
-from ._base import ScoringFunction
 from .._common import Mol
+from ._base import ScoringFunction
 
 
 class InternalOverlap(ScoringFunction):

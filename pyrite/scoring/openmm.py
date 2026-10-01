@@ -2,25 +2,25 @@ import itertools
 
 import numpy as np
 import tqdm
-from openff.toolkit import Molecule, Topology, Quantity
+from openff.toolkit import Molecule, Quantity, Topology
 from openff.units.openmm import from_openmm
 from openmm import (
-    LangevinIntegrator,
+    CMMotionRemover,
+    CustomGBForce,
     HarmonicAngleForce,
     HarmonicBondForce,
-    PeriodicTorsionForce,
-    CMMotionRemover,
+    LangevinIntegrator,
     NonbondedForce,
-    CustomGBForce,
+    PeriodicTorsionForce,
+    Platform,
+    unit,
 )
-from openmm import Platform
 from openmm import app as openmm
-from openmm import unit
 from openmmforcefields.generators import SystemGenerator
 from rdkit import Chem
 
-from ._base import ScoringFunction
 from .._common import Ligand
+from ._base import ScoringFunction
 
 
 class OpenMMForceField(ScoringFunction):

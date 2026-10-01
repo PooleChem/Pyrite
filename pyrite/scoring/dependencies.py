@@ -50,7 +50,8 @@ To subclass ``Dependency``, the following methods should be implemented:
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray

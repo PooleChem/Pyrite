@@ -1,10 +1,9 @@
 import numpy as np
 
+from .._common import Mol
+from ..bounds import Bounds, Pocket
 from ._base import ScoringFunction
 from .dependencies import Dependency, KNNDependency
-from .._common import Mol
-from ..bounds import Pocket, Bounds
-
 
 # pylint: disable=too-few-public-methods
 
