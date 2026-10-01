@@ -3,6 +3,7 @@ from rdkit import Chem
 from scipy.spatial import cKDTree
 
 from .._common import AtomType, Mol
+from .._util import _symmetry_mappings
 from ._base import ScoringFunction
 
 
@@ -22,19 +23,27 @@ class RMSD(ScoringFunction):
     ref_mol : Mol, optional
         The stationary ligand to be used for the calculation. The conformation of this ligand
         should not change. If not provided, a copy of `ligand` will be used.
+    max_matches : int, default 1000
+        The maximum number of symmetry-equivalent atom mappings to consider. The symmetry of the
+        molecule is taken into account: the RMSD is the lowest over all mappings, so a pose with
+        a flipped phenyl ring is not far from the pose it is a flip of. A warning is issued when
+        the limit is reached, as the RMSD can then be overestimated.
 
     """
 
-    def __init__(self, probe_mol: Mol, ref_mol: Mol = None):
+    def __init__(self, probe_mol: Mol, ref_mol: Mol = None, max_matches: int = 1000):
         self.probe_mol = probe_mol
+        same_atom_order = ref_mol is None
         if ref_mol is None:
             self.ref_mol = type(probe_mol)(Chem.Mol(probe_mol))
         else:
             self.ref_mol = ref_mol
 
-        matches = self.probe_mol.GetSubstructMatches(self.ref_mol, uniquify=True, useChirality=True)
+        matches = _symmetry_mappings(
+            self.probe_mol, self.ref_mol, max_matches, include_identity=same_atom_order
+        )
         self._atom_map = [
-            list(zip(range(self.probe_mol.GetNumAtoms()), match)) for match in matches
+            [(probe_atom, ref_atom) for ref_atom, probe_atom in enumerate(m)] for m in matches
         ]
 
     def _score(self, conf_id, *args, **kwargs) -> float:
@@ -94,6 +103,8 @@ class Crowding(ScoringFunction):
         If `register_initial` is ``True``, the initial pose will be registered as well.
     divide : bool, default True
         If `divide` is ``True``, the score will be divided by the number of registered poses.
+    max_matches : int, default 1000
+        The maximum number of symmetry-equivalent atom mappings to consider, see :class:`RMSD`.
 
     """
 
@@ -103,6 +114,7 @@ class Crowding(ScoringFunction):
         offset: float = 4.0,
         register_initial: bool = False,
         divide: bool = True,
+        max_matches: int = 1000,
     ):
         self.mol = molecule
 
@@ -117,8 +129,10 @@ class Crowding(ScoringFunction):
         self._offset = offset
         self._divide = divide
 
-        matches = self.mol.GetSubstructMatches(self.mol, uniquify=True, useChirality=True)
-        self._atom_map = [list(zip(range(self.mol.GetNumAtoms()), match)) for match in matches]
+        matches = _symmetry_mappings(self.mol, self.mol, max_matches, include_identity=True)
+        self._atom_map = [
+            [(probe_atom, ref_atom) for ref_atom, probe_atom in enumerate(m)] for m in matches
+        ]
 
     def register_pose(self, v):
         """Register a new :class:`~pyrite.Mol` pose.

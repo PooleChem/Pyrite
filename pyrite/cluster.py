@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import warnings
-
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 from rdkit.ML.Cluster import Butina
 
 from pyrite._common import Mol, Poses
+from pyrite._util import _symmetry_mappings
 
 
 def _positions(mol: Mol, poses: Poses) -> NDArray:
@@ -49,7 +48,8 @@ def rmsd_matrix(
     max_matches : int, default 1000
         The maximum number of symmetry-equivalent atom mappings to consider. A molecule with many
         symmetric groups has exponentially many; a warning is issued when this limit is reached,
-        as the RMSD can then be overestimated.
+        as the RMSD can then be overestimated. The identity mapping is always included, so the
+        result is never larger than without symmetry.
 
     Returns
     -------
@@ -65,15 +65,7 @@ def rmsd_matrix(
         raise ValueError("The poses contain non-finite atom positions.")
 
     if symmetry:
-        matches = mol.GetSubstructMatches(
-            mol, uniquify=False, useChirality=True, maxMatches=max_matches
-        )
-        if len(matches) >= max_matches:
-            warnings.warn(
-                f"The molecule has at least {max_matches} symmetry-equivalent atom mappings, only "
-                "these were used: the RMSD can be overestimated. Raise `max_matches` to include more.",
-                stacklevel=2,
-            )
+        matches = _symmetry_mappings(mol, mol, max_matches, include_identity=True)
     else:
         matches = [tuple(range(n_atoms))]
 

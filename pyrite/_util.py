@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 from numba import njit
 from numpy.typing import NDArray
@@ -170,3 +172,38 @@ def _compose_delta_transform(
     out[:3, :3] = m
     out[:3, 3] = t
     return out
+
+
+def _symmetry_mappings(probe, ref, max_matches: int, include_identity: bool = False) -> list:
+    """Return the atom mappings of `ref` onto `probe` that preserve the molecular graph.
+
+    These are the symmetries of the molecule when `probe` and `ref` are (copies of) the same
+    molecule. ``mapping[k]`` is the atom of `probe` that atom ``k`` of `ref` is mapped onto, so
+    the pairs ``(mapping[k], k)`` are the ``(probe, ref)`` pairs RDKit's ``CalcRMS`` expects.
+
+    Parameters
+    ----------
+    probe, ref : rdkit.Chem.Mol
+        The molecules to map. `ref` is the query.
+    max_matches : int
+        The maximum number of mappings. A molecule with many symmetric groups has exponentially
+        many; a warning is issued when this limit is reached, as an RMSD over the mappings found
+        can then be overestimated.
+    include_identity : bool, default False
+        Whether to make sure the identity mapping is among the mappings. Only valid when `probe`
+        and `ref` have the same atom order. Without it, a truncated list may not contain it.
+    """
+    matches = list(
+        probe.GetSubstructMatches(ref, uniquify=False, useChirality=True, maxMatches=max_matches)
+    )
+    if len(matches) >= max_matches:
+        warnings.warn(
+            f"The molecule has at least {max_matches} symmetry-equivalent atom mappings, only "
+            "these were used: the RMSD can be overestimated. Raise `max_matches` to include more.",
+            stacklevel=3,
+        )
+    if include_identity:
+        identity = tuple(range(probe.GetNumAtoms()))
+        if identity not in matches:
+            matches.insert(0, identity)
+    return matches
