@@ -10,7 +10,7 @@ import pandas as pd
 # load data
 ligand = pyrite.Mol.from_sdf("examples/input_files/factor_x_ligand.sdf")
 
-print("Dihedral angles:", len(ligand.dihedral_angles))
+print("Torsion angles:", len(ligand.torsions))
 ligand.set_draw_options({"highlight": "center"})
 ligand.svg
 # %%
@@ -32,7 +32,7 @@ pyrite.Viewer(receptor, pocket).show()
 
 # %%
 # Initial placement
-init_vars = ligand.place_in(pocket, n_positions=4000, n_conformations=20)
+init_vars = pyrite.search.place_in(ligand, pocket, n_positions=4000, n_conformations=20)
 viewer = pyrite.Viewer(receptor)
 viewer.add_v(ligand, init_vars[:59], slider=False, options={"colorscheme": "magentaCarbon"})
 
@@ -87,7 +87,7 @@ for i in trange(n_poses):
 
     res = differential_evolution(
         func.step,
-        pocket.get_bounds(ligand),
+        pocket.get_bounds(ligand.layout),
         args={ligand},
         rng=42,
         init=init_vars_run,

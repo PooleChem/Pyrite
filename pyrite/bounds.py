@@ -53,7 +53,7 @@ from numpy.typing import ArrayLike, NDArray
 from rdkit.Geometry import Point3D
 from scipy.spatial import KDTree
 
-from pyrite._common import Mol, _rotation_matrix_from_euler
+from pyrite._common import Mol, PoseLayout, _rotation_matrix_from_euler
 
 
 class Bounds(ABC):
@@ -272,97 +272,50 @@ class Bounds(ABC):
             An array with a shape equal to `v` representing the transformed sample points.
         """
 
-    @staticmethod
-    def transform_sample_to_2pi(v: NDArray) -> NDArray:
-        """Transform the input array values to the range of [-π, π).
-
-        Parameters
-        ----------
-        v : numpy.ndarray
-            A vector of shape ``(3,)`` or ``(3,n)`` of values within [0,1) representing the sample
-            point(s) to transform.
-
-        Returns
-        -------
-        numpy.ndarray
-            An array with a shape equal to `v` representing the transformed sample points.
-
-        """
-        v_2d = np.atleast_2d(v)
-
-        v_2d[:, :] *= 2 * np.pi
-        v_2d[:, :] -= np.pi
-
-        if v.ndim < 2:
-            return v_2d[0, :]
-
-        return v_2d
-
     def _world_to_bounds(self, v: NDArray) -> NDArray:
         return np.matmul(np.array(v) - self._at, self.__inv_rotation_matrix)
 
     def _bounds_to_world(self, v: NDArray) -> NDArray:
         return np.matmul(np.array(v), self._rotation_matrix) + self._at
 
-    def place_random_uniform(self, n: int = 1) -> NDArray:
-        """Generates an array of random samples within specified bounds.
+    def place_random_uniform(self, n: int = 1, rng: np.random.Generator | None = None) -> NDArray:
+        """Sample `n` positions uniformly at random within the bounds.
 
         Parameters
         ----------
         n : int, default 1
-            Number of samples to generate.
-
+            Number of positions to generate.
+        rng : numpy.random.Generator, optional
+            The source of randomness. Defaults to a fresh generator.
 
         Returns
         -------
         numpy.ndarray
-            A NumPy array containing the generated random samples. The array has
-            a shape of ``(n, 6)``, where the first three columns represent rotation and the
-            last three columns represent translation.
+            An array of shape ``(n, 3)`` with the positions.
 
         """
-        s = np.random.rand(n, 3 + 3)
+        rng = np.random.default_rng() if rng is None else rng
+        return self.transform_sample_to_bounds(rng.random((n, 3)))
 
-        s[:, 0:3] = Bounds.transform_sample_to_2pi(s[:, 0:3])
-        s[:, 3:6] = self.transform_sample_to_bounds(s[:, 3:6])
-
-        return s
-
-    def place_grid(self, n: int = 1, rotation_grid: bool = False) -> NDArray:
-        """Generate a grid of `n` samples representing rotation and translation, and convert
-        them into the required bounds.
+    def place_grid(self, n: int = 1) -> NDArray:
+        """Generate a regular grid of positions within the bounds.
 
         Parameters
         ----------
         n : int
             Number of points to discretize each axis in the grid.
-        rotation_grid : bool, default False
-            Whether to create a discretized rotation grid (True),
-            or use random rotation values (default, False).
 
         Returns
         -------
         numpy.ndarray
-            A numpy array representing the grid of sampled transformations, with
-            rotation angles in radians and translations in their corresponding adjusted
-            bounds.
+            An array of shape ``(n ** 3, 3)`` with the positions.
 
         """
-        rotation_grid = [np.linspace(0, 1, n)] * 3 if rotation_grid else [0.0] * 3
-        translation_grid = [np.linspace(0, 1, n)] * 3
+        axes = [np.linspace(0, 1, n)] * 3
+        x, y, z = np.meshgrid(*axes, indexing="ij")
+        samples = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
 
-        axes = rotation_grid + translation_grid
-
-        roll, yaw, pitch, x, y, z = np.meshgrid(*axes, indexing="ij")
-        s = np.vstack([roll.ravel(), yaw.ravel(), pitch.ravel(), x.ravel(), y.ravel(), z.ravel()]).T
-
-        if not rotation_grid:
-            s[:, 0:3] = np.random.rand(s.shape[0], 3)
-
-        s[:, 0:3] = Bounds.transform_sample_to_2pi(s[:, 0:3])
-        s[:, 3:6] = self.transform_sample_to_bounds(s[:, 3:6])
-
-        return s
+        return self.transform_sample_to_bounds(samples)
 
     def _viewer_add_(self, viewer, c_m_id, options: dict = None):
         if options is None:
@@ -388,35 +341,40 @@ class Bounds(ABC):
 
     def get_bounds(
         self,
-        mol: Mol,  # TODO: remove
-        angle_bounds: tuple[float, float] = (-2 * np.pi, 2 * np.pi),
-        dihedral_bounds: tuple[float, float] = (-2 * np.pi, 2 * np.pi),
-    ):
-        """Returns the translation bounds of the ``Bounds`` object.
+        layout: PoseLayout,
+        rotation_bounds: tuple[float, float] | None = None,
+        torsion_bounds: tuple[float, float] = (-2 * np.pi, 2 * np.pi),
+    ) -> list[tuple[float, float]]:
+        """Return the bounds of every variable of a pose, as used by scipy optimizers.
 
-        This method determines the minimum and maximum coordinates for the translation
-        bounds within the bounding box, considering its current alignment and rotation.
+        The translation bounds are those of the ``Bounds`` object, see
+        :meth:`get_translation_bounds`.
 
         Parameters
         ----------
-        mol : Mol
-            The ligand to use to retrieve the dihedral bounds.
-        angle_bounds : tuple[float, float], default (-2 * np.pi, 2 * np.pi)
-            The bounds to use for the rotation angles.
-        dihedral_bounds : tuple[float, float], default (-2 * np.pi, 2 * np.pi)
-            The bounds to use for the dihedral angles.
+        layout : PoseLayout
+            The layout of the poses, e.g. ``mol.layout``.
+        rotation_bounds : tuple[float, float], optional
+            The bounds to use for every rotation variable. By default ``(-2π, 2π)`` for Euler
+            angles and ``(-1, 1)`` for quaternions.
+        torsion_bounds : tuple[float, float], default (-2π, 2π)
+            The bounds to use for the torsion angles.
 
         Returns
         -------
         list[tuple[float, float]]
-            A list of tuples where each tuple represents the minimum and
-            maximum bounds along a coordinate axis.
+            One ``(min, max)`` tuple for each of the ``layout.n_dims`` variables, in the order of
+            the layout.
 
         """
-        bounds = [angle_bounds] * 6 + [dihedral_bounds] * len(mol.dihedral_angles)
-        bounds[3:6] = self.get_translation_bounds()
+        if rotation_bounds is None:
+            rotation_bounds = (-1.0, 1.0) if layout.rot_type == "quat" else (-2 * np.pi, 2 * np.pi)
 
-        return bounds
+        return (
+            [rotation_bounds] * layout.rot_dim
+            + self.get_translation_bounds()
+            + [torsion_bounds] * layout.n_tors
+        )
 
 
 class RectangularBounds(Bounds):
@@ -1151,7 +1109,23 @@ class Pocket(Bounds):
 
         return self
 
-    def place_random_uniform(self, n: int = 1) -> NDArray:
+    def place_random_uniform(self, n: int = 1, rng: np.random.Generator | None = None) -> NDArray:
+        """Sample `n` positions uniformly at random within the pocket.
+
+        Parameters
+        ----------
+        n : int, default 1
+            Number of positions to generate.
+        rng : numpy.random.Generator, optional
+            The source of randomness. Defaults to a fresh generator.
+
+        Returns
+        -------
+        numpy.ndarray
+            An array of shape ``(n, 3)`` with the positions.
+
+        """
+        rng = np.random.default_rng() if rng is None else rng
         bounding_box = RectangularBounds(self._bounding_box_at_origin, self._at)
 
         tree = KDTree(self.centers)
@@ -1160,17 +1134,17 @@ class Pocket(Bounds):
 
         while len(results) < n:
             # Generate 4 * (n - len) samples
-            s = np.random.rand(max(40, 4 * (n - len(results))), 3 + 3)
-            s[:, 0:3] = Bounds.transform_sample_to_2pi(s[:, 0:3])
-            s[:, 3:6] = bounding_box.transform_sample_to_bounds(s[:, 3:6])
+            samples = bounding_box.transform_sample_to_bounds(
+                rng.random((max(40, 4 * (n - len(results))), 3))
+            )
 
             # Check if the points are inside the pocket
-            nearest_neighbor_distances = tree.query(s[:, 3:], k=1)[0]
+            nearest_neighbor_distances = tree.query(samples, k=1)[0]
             valid = (nearest_neighbor_distances - self.radii[0]) <= 0.0
 
-            results.extend(s[valid])
+            results.extend(samples[valid])
 
-        return np.array(results[:n])
+        return np.array(results[:n]).reshape(-1, 3)
 
     def _viewer_add_(self, viewer, c_m_id, options: dict = None):
         if options is None:

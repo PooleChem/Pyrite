@@ -215,7 +215,7 @@ class NumProteinAtomsWithinA(ScoringFunction):
 
 class NumTors(ScoringFunction):
     """
-     🚀 — Returns the number of torsions (dihedral angles) in the ligand.
+     🚀 — Returns the number of torsions (torsion angles) in the ligand.
 
     **Speed**: 🚀
 
@@ -229,7 +229,7 @@ class NumTors(ScoringFunction):
     def __init__(self, molecule: Mol):
         self.mol = molecule
 
-        self.result = len(self.mol.rotatable_dihedrals)
+        self.result = len(self.mol.rotatable_torsions)
 
     def _score(self, *args, **kwargs):
         return self.result

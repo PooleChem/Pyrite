@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import numpy as np
 import py3Dmol
@@ -20,10 +20,6 @@ from ._util import (
 )
 from .atom_consts import AtomType, vina_atom_consts
 from .view import Viewer
-
-if TYPE_CHECKING:
-    from pyrite.bounds import Bounds
-
 
 ROTATABLE_BOND_STRUCT = Chem.MolFromSmarts(
     "[!$(*#*)&!D1&!$(C(F)(F)F)&!$(C(Cl)(Cl)Cl)&!$(C(Br)(Br)Br)&!$(C([CH3])"
@@ -48,7 +44,7 @@ class Mol(Chem.Mol):
 
     The Mol class provides methods for initializing molecules from various sources,
     such as SMILES strings, PDB files, or objects. It also assigns atom
-    types, rotatable dihedrals, and the center point of the molecule. Furthermore, it allows for
+    types, rotatable torsions, and the center point of the molecule. Furthermore, it allows for
     easy manipulation of ligand position, rotation, and torsion angles.
 
     Parameters
@@ -82,13 +78,13 @@ class Mol(Chem.Mol):
         mol: Chem.Mol = None,
         hydrogens: Literal["keep", "add", "remove"] = "remove",
         flex_hydrogens: bool = False,
-        flexible: bool = False,  # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of dihedrals, or manual, or by resid.
+        flexible: bool = False,  # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of torsions, or manual, or by resid.
         center_atom: int = None,
         rotation_type: Literal["euler", "quat"] = "euler",
         ignore_non_polar_hydrogens: bool = True,
     ):
-        self.__rotatable_dihedrals = np.array([], dtype=object)
-        self.__dihedral_angles = np.array([])
+        self.__rotatable_torsions = np.array([], dtype=object)
+        self.__torsion_angles = np.array([])
 
         self._fix_mol_valence(sanitize=False)  # TODO: sanitize?
 
@@ -98,7 +94,7 @@ class Mol(Chem.Mol):
         elif hydrogens == "remove":
             mol = Chem.AllChem.RemoveHs(mol)
 
-        # TODO: this doesnt make sense for proteins. In a protein, all dihedrals should be oriented wrt the backbone, not the center atom.
+        # TODO: this doesnt make sense for proteins. In a protein, all torsions should be oriented wrt the backbone, not the center atom.
         self._center_atom = center_atom if center_atom is not None else self.__get_center_atom()
 
         if self.GetNumConformers() == 0:
@@ -107,10 +103,10 @@ class Mol(Chem.Mol):
             params.randomSeed = 0xC0FFEE
             Chem.AllChem.EmbedMolecule(self, params)  # TODO: cant do if not sanitized.
 
-        # TODO: make property. Setting it will then compute the dihedrals if needed. Perhaps bool | list ?
+        # TODO: make property. Setting it will then compute the torsions if needed. Perhaps bool | list ?
         self.is_flexible = flexible
         if self.is_flexible:
-            self.__compute_rotatable_dihedrals(flex_hydrogens)
+            self.__compute_rotatable_torsions(flex_hydrogens)
 
         self.__assign_atom_types()
 
@@ -128,7 +124,7 @@ class Mol(Chem.Mol):
         Chem.rdPartialCharges.ComputeGasteigerCharges(self)
 
         # Set the layout
-        self.layout: PoseLayout = PoseLayout(rotation_type, len(self.__rotatable_dihedrals))
+        self.layout: PoseLayout = PoseLayout(rotation_type, len(self.__rotatable_torsions))
 
         self.__cur_rotation_matrix = np.eye(3)
         self.__cur_rotation = np.zeros(self.layout.rot_dim)
@@ -348,7 +344,7 @@ class Mol(Chem.Mol):
         -------
         Mol
         variables : numpy.ndarray
-            The conformations in the SDF file, represented by a tuple of size ``(6 + n_dihedrals)``,
+            The conformations in the SDF file, represented by a tuple of size ``(6 + n_tors)``,
             as expected by e.g. :meth:`update`.
         """
         # RDLogger.DisableLog("rdApp.*")
@@ -377,10 +373,10 @@ class Mol(Chem.Mol):
                     raise ValueError("Molecules in SDF file are not equal.")
                 # TODO: dont create whole ligand every time.
                 pose_lig = cls(pose, **kwargs)
-                pose_dihedrals = pose_lig.dihedral_angles
+                pose_torsions = pose_lig.torsions
 
-                # Set dihedrals equal for alignment
-                pose_lig.set_dihedral_angles(lig.dihedral_angles)
+                # Set torsions equal for alignment
+                pose_lig.set_torsions(lig.torsions)
 
                 # Align molecule
                 rmsd, transform = Chem.rdMolAlign.GetAlignmentTransform(
@@ -392,7 +388,7 @@ class Mol(Chem.Mol):
                 pos = pose_lig.position
                 roll, pitch, yaw = _rotation_matrix_to_euler(transform[:3, :3])
 
-                v.append((roll, pitch, yaw, *pos, *pose_dihedrals))
+                v.append((roll, pitch, yaw, *pos, *pose_torsions))
 
         # RDLogger.EnableLog("rdApp.*")
 
@@ -489,11 +485,11 @@ class Mol(Chem.Mol):
 
         return closest_i
 
-    def __compute_rotatable_dihedrals(self, flex_hydrogens: bool = False):
+    def __compute_rotatable_torsions(self, flex_hydrogens: bool = False):
         """
-        Calculates the rotatable dihedral angles and stores them along with their
-        indices defining the dihedral in the molecule. This includes identifying
-        rotatable bonds, constructing dihedral definitions, and determining dihedral
+        Calculates the rotatable torsion angles and stores them along with their
+        indices defining the torsion in the molecule. This includes identifying
+        rotatable bonds, constructing torsion definitions, and determining torsion
         angles for each rotatable bond in the molecule. The results are stored as
         attributes for later use.
 
@@ -502,10 +498,10 @@ class Mol(Chem.Mol):
         #     self, strict=True
         # )
 
-        # self.__rotatable_dihedrals = np.empty(num_rotatable_bonds, dtype=object)
-        # self.__dihedral_angles = np.zeros(num_rotatable_bonds)
-        rotatable_dihedrals = []
-        dihedral_angles = []
+        # self.__rotatable_torsions = np.empty(num_rotatable_bonds, dtype=object)
+        # self.__torsion_angles = np.zeros(num_rotatable_bonds)
+        rotatable_torsions = []
+        torsion_angles = []
 
         rotatable_bonds = self.GetSubstructMatches(ROTATABLE_BOND_STRUCT)
 
@@ -539,7 +535,7 @@ class Mol(Chem.Mol):
             ix_atom_1_neighbors = [a.GetIdx() for a in atom_1_neighbors if a.GetIdx() != i_atom_2]
             ix_atom_2_neighbors = [a.GetIdx() for a in atom_2_neighbors if a.GetIdx() != i_atom_1]
 
-            dihedral = (
+            torsion = (
                 min(ix_atom_1_neighbors),
                 i_atom_1,
                 i_atom_2,
@@ -548,19 +544,19 @@ class Mol(Chem.Mol):
 
             # (a, b, c, d)  |    o (center atom)
             # Als center_atom dichter bij b -> draait niet.
-            # Als center_atom dichter bij c -> draait wel -> invert dihedral.
-            # print(distance_matrix[dihedral[1]], distance_matrix[dihedral[2]])
-            if distance_matrix[dihedral[2]] < distance_matrix[dihedral[1]]:
-                dihedral = dihedral[::-1]
+            # Als center_atom dichter bij c -> draait wel -> invert torsion.
+            # print(distance_matrix[torsion[1]], distance_matrix[torsion[2]])
+            if distance_matrix[torsion[2]] < distance_matrix[torsion[1]]:
+                torsion = torsion[::-1]
 
-            rotatable_dihedrals.append(dihedral)
+            rotatable_torsions.append(torsion)
             # Dont care about:?
-            dihedral_angles.append(
-                Chem.rdMolTransforms.GetDihedralRad(self.GetConformer(), *dihedral)
+            torsion_angles.append(
+                Chem.rdMolTransforms.GetDihedralRad(self.GetConformer(), *torsion)
             )
 
-        self.__rotatable_dihedrals = rotatable_dihedrals
-        self.__dihedral_angles = dihedral_angles
+        self.__rotatable_torsions = rotatable_torsions
+        self.__torsion_angles = torsion_angles
 
     @property
     def atom_types(self):
@@ -601,81 +597,81 @@ class Mol(Chem.Mol):
         return self.GetConformer(conf_id).GetPositions()
 
     @property
-    def rotatable_dihedrals(self):
-        """The rotatable dihedrals of the molecule.
+    def rotatable_torsions(self):
+        """The rotatable torsions of the molecule.
 
         Returns
         -------
         list
-            A list containing all rotatable dihedrals in the molecule,
+            A list containing all rotatable torsions in the molecule,
             indicated by four atom indices. An entry looks like
             ``[i, j, k, l]``, where the rotated bond is between
             ``j`` and ``k``, and all atoms attached to ``k`` are moved.
 
         """
-        return self.__rotatable_dihedrals
+        return self.__rotatable_torsions
 
     @property
-    def dihedral_angles(self) -> NDArray[np.float32]:
-        """The dihedral angles of the rotatable dihedrals in the molecule.
+    def torsions(self) -> NDArray[np.float32]:
+        """The torsion angles of the rotatable torsions in the molecule.
 
         Returns
         -------
         list
-            A list containing all dihedral angles in the molecule, in radians.
+            A list containing all torsion angles in the molecule, in radians.
 
         """
-        if not len(self.__rotatable_dihedrals) > 0:
-            self.__compute_rotatable_dihedrals()
-        for i, dihedral in enumerate(self.__rotatable_dihedrals):
-            self.__dihedral_angles[i] = Chem.rdMolTransforms.GetDihedralRad(
-                self.GetConformer(), *dihedral
+        if not len(self.__rotatable_torsions) > 0:
+            self.__compute_rotatable_torsions()
+        for i, torsion in enumerate(self.__rotatable_torsions):
+            self.__torsion_angles[i] = Chem.rdMolTransforms.GetDihedralRad(
+                self.GetConformer(), *torsion
             )
-        return self.__dihedral_angles
+        return self.__torsion_angles
 
     @property
     def n_tors(self):
         """The number of torsions in the molecule."""
         return self.layout.n_tors
 
-    def set_dihedral_angle(self, i_dihedral: int, angle_rad: float, conf_id: int = -1) -> None:
-        """Set the dihedral angle of a molecule :class:`~rdkit.Chem.rdchem.Conformer` for a
-        specific dihedral.
+    def set_torsion(self, i_torsion: int, angle_rad: float, conf_id: int = -1) -> None:
+        """Set the torsion angle of a molecule :class:`~rdkit.Chem.rdchem.Conformer` for a
+        specific torsion.
 
         Parameters
         ----------
-        i_dihedral : int
-            The index of the rotatable dihedral bond.
+        i_torsion : int
+            The index of the rotatable torsion bond.
         angle_rad : float
-            The dihedral angle in radians.
+            The torsion angle in radians.
         conf_id : int, default -1
-            The conformer id to set the dihedral to. By default selects the global conformer.
+            The conformer id to set the torsion to. By default selects the global conformer.
         """
         Chem.rdMolTransforms.SetDihedralRad(
             self.GetConformer(conf_id),
-            *self.__rotatable_dihedrals[i_dihedral],
+            *self.__rotatable_torsions[i_torsion],
             angle_rad,
         )
 
-    def set_dihedral_angles(self, angles_rad: list[float], conf_id: int = -1) -> None:
-        """Sets the dihedral angles for a molecule.
+    def set_torsions(self, angles_rad: list[float], conf_id: int = -1) -> None:
+        """Sets the torsion angles for a molecule.
 
         Parameters
         ----------
         angles_rad : array_like
-            A list of float values representing dihedral angles in radians.
+            A list of float values representing torsion angles in radians.
         conf_id : int, default -1
-            The conformer id to set the dihedrals to. By default selects the global conformer.
+            The conformer id to set the torsions to. By default selects the global conformer.
         """
-        if len(angles_rad) > 0 and len(self.__rotatable_dihedrals) == 0:
+        if len(angles_rad) > 0 and len(self.__rotatable_torsions) == 0:
             warnings.warn(
-                "set_dihedral_angles called with angles but this Mol has no rotatable dihedrals. "
+                "set_torsions called with angles but this Mol has no rotatable torsions. "
                 "Did you forget flexible=True when constructing the Mol?",
                 UserWarning,
                 stacklevel=2,
             )
         for i, angle in enumerate(angles_rad):
-            self.set_dihedral_angle(i, angle, conf_id)
+            self.set_torsion(i, angle, conf_id)
 
     def transform(
         self,
@@ -739,7 +735,7 @@ class Mol(Chem.Mol):
     def update(self, pose: Pose | NDArray, new_conf: bool = False) -> int:
         """Update the molecule with the new variables.
 
-        Input should be shaped like ``(6 + n_dihedrals,)``.
+        Input should be shaped like ``(6 + n_tors,)``.
 
         This method can act either on the default :class:`~rdkit.Chem.rdchem.Conformer`,
         or can create a new conformer, apply the update and return the new conformers id.
@@ -753,7 +749,7 @@ class Mol(Chem.Mol):
         ----------
         new_vars : array_like
             Array containing the new variables in the order of
-            ``(roll, pitch, yaw, x, y, z, *dihedrals)``.
+            ``(roll, pitch, yaw, x, y, z, *torsions)``.
 
         new_conf : bool, default False
             Whether to create a new conformer to apply the update to.
@@ -778,7 +774,7 @@ class Mol(Chem.Mol):
             conf_id = self.AddConformer(self.GetConformer(), assignId=True)
 
         self.transform(pose.rotation, pose.translation, conf_id=conf_id)
-        self.set_dihedral_angles(pose.torsions, conf_id=conf_id)
+        self.set_torsions(pose.torsions, conf_id=conf_id)
 
         return conf_id
 
@@ -827,75 +823,34 @@ class Mol(Chem.Mol):
 
     # endregion
 
-    # region Search-space sampling / placement
+    # region Conformers
 
-    def place_in(
-        self,
-        binding_site: Bounds,
-        n_positions: int,
-        n_conformations: int,
-        placement: str = "random",
-        conformations: str = "conformer",
-        combine: str = "random",
-    ) -> Poses:
-        """Deprecated: use :func:`pyrite.search.place_in`, ``place_in(mol, binding_site, ...)``."""
-        warnings.warn(
-            "Mol.place_in is deprecated, use pyrite.search.place_in(mol, binding_site, ...) instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        from pyrite.search.placement import place_in
+    def get_n_conformer_torsion_configurations(self, n: int, seed: int = 0xC0FFEE) -> NDArray:
+        """Retrieve the torsions of `n` conformers of the molecule.
 
-        return place_in(
-            self,
-            binding_site,
-            n_positions,
-            n_conformations,
-            placement,
-            conformations,
-            combine,
-        )
-
-    def get_n_random_dihedral_configurations(self, n: int) -> NDArray:
-        """Retrieve a list of `n` random dihedral configurations for the molecule.
-
-        .. warning::
-            This returns lists of truly random dihedral configurations, and may thus result
-            in physically impossible configurations.
-
-        Parameters
-        ----------
-        n : int
-            The number of configurations to generate.
-
-
-        Returns
-        -------
-        numpy.ndarray
-            An array of shape ``(n_dihedrals, n)`` containing `n` dihedral configurations.
-        """
-        return np.random.rand(n, len(self.__rotatable_dihedrals)) * 2 * np.pi - np.pi
-
-    def get_n_conformer_dihedral_configurations(self, n: int) -> NDArray:
-        """Retrieve a list of `n` conformation-based dihedral configurations for the molecule.
+        The conformers are generated with RDKit's ETKDG, so they are physically realistic. For
+        independent random torsions, which can be physically impossible, see
+        :meth:`PoseLayout.sample_random_torsions`.
 
         .. note::
-            This method does not necessarily result in unique configurations.
-
+            This method does not necessarily result in unique configurations, and RDKit can
+            return fewer than `n` conformers.
 
         Parameters
         ----------
         n : int
-            The number of configurations to generate.
-
+            The number of conformers to generate.
+        seed : int, default 0xC0FFEE
+            The random seed of the conformer generation.
 
         Returns
         -------
         numpy.ndarray
-            An array of shape ``(n_dihedrals, n)`` containing `n` dihedral configurations.
+            An array of shape ``(n_conformers, n_tors)`` with the torsion angles of every
+            conformer, in radians.
         """
         params = Chem.AllChem.ETKDGv3()
-        params.randomSeed = 0xC0FFEE
+        params.randomSeed = seed
 
         new_mol = Chem.Mol(self)
 
@@ -905,14 +860,14 @@ class Mol(Chem.Mol):
             raise ValueError("RDKit could not embed any conformers of the molecule.")
 
         # EmbedMultipleConfs can return fewer than `n` conformers.
-        configurations = np.empty((len(cids), len(self.__rotatable_dihedrals)))
+        configurations = np.empty((len(cids), len(self.__rotatable_torsions)))
         for i, cid in enumerate(cids):
-            dihedral_angles = np.zeros(len(self.__rotatable_dihedrals))
-            for j, dihedral in enumerate(self.__rotatable_dihedrals):
-                dihedral_angles[j] = Chem.rdMolTransforms.GetDihedralRad(
-                    new_mol.GetConformer(cid), *dihedral
+            torsion_angles = np.zeros(len(self.__rotatable_torsions))
+            for j, torsion in enumerate(self.__rotatable_torsions):
+                torsion_angles[j] = Chem.rdMolTransforms.GetDihedralRad(
+                    new_mol.GetConformer(cid), *torsion
                 )
-            configurations[i] = dihedral_angles
+            configurations[i] = torsion_angles
 
         return configurations
 
@@ -954,7 +909,7 @@ class Mol(Chem.Mol):
         file : str
             The path to the file to create.
         v : array_like
-            An array of shape ``(6 + n_dihedrals, n)``, containing molecular positions to write.
+            An array of shape ``(6 + n_tors, n)``, containing molecular positions to write.
 
         """
         writer = Chem.SDWriter(file)
@@ -1242,12 +1197,66 @@ class PoseLayout:
         current = Rotation.from_quat(rotation[..., [1, 2, 3, 0]])
         return (d_r * current).as_quat()[..., [3, 0, 1, 2]]
 
+    def sample_random_rotations(self, n: int, rng: np.random.Generator | None = None) -> NDArray:
+        """Sample `n` rotations uniformly at random, in this layout's representation.
+
+        The rotations are uniform on SO(3) (the Haar measure): every orientation is equally
+        likely. Note that this is *not* the same as drawing every Euler angle uniformly, which
+        over-samples the orientations near the poles (pitch of ±90°).
+
+        Parameters
+        ----------
+        n : int
+            The number of rotations.
+        rng : numpy.random.Generator, optional
+            The source of randomness. Defaults to a fresh generator.
+
+        Returns
+        -------
+        numpy.ndarray
+            An array of shape ``(n, rot_dim)``.
+        """
+        rng = np.random.default_rng() if rng is None else rng
+        # A unit quaternion uniform on the 3-sphere is a uniform rotation; its normalised
+        # Gaussian components are uniform on the sphere. Layout order is (w, x, y, z).
+        quat = rng.normal(size=(n, 4))
+        quat /= np.linalg.norm(quat, axis=1, keepdims=True)
+        if self.rot_type == "quat":
+            return quat
+        return Rotation.from_quat(quat[:, [1, 2, 3, 0]]).as_euler("ZYX")[:, ::-1]
+
+    def sample_random_torsions(self, n: int, rng: np.random.Generator | None = None) -> NDArray:
+        """Sample `n` sets of independent, uniformly random torsion angles.
+
+        .. warning::
+            Independent random torsions can be physically impossible (atoms on top of each
+            other). For realistic torsions, see :meth:`Mol.get_n_conformer_torsion_configurations`.
+
+        Parameters
+        ----------
+        n : int
+            The number of sets.
+        rng : numpy.random.Generator, optional
+            The source of randomness. Defaults to a fresh generator.
+
+        Returns
+        -------
+        numpy.ndarray
+            An array of shape ``(n, n_tors)`` with angles in ``[-π, π)``.
+        """
+        rng = np.random.default_rng() if rng is None else rng
+        return rng.uniform(-np.pi, np.pi, size=(n, self.n_tors))
+
 
 class Pose:
     __slots__ = ("_v", "layout", "rotation", "translation", "torsions")
 
     def __init__(self, v: NDArray, layout: PoseLayout):
         self._v = np.asarray(v)
+        if self._v.shape != (layout.n_dims,):
+            raise ValueError(
+                f"A pose in {layout} has shape ({layout.n_dims},), got {self._v.shape}."
+            )
         self.layout = layout
         self.rotation = self._v[self.layout.rot_slice]
         self.translation = self._v[self.layout.trans_slice]
@@ -1280,6 +1289,10 @@ class Poses:
 
     def __init__(self, vs: NDArray, layout: PoseLayout):
         self._vs = np.asarray(vs)
+        if self._vs.ndim != 2 or self._vs.shape[1] != layout.n_dims:
+            raise ValueError(
+                f"Poses in {layout} have shape (n, {layout.n_dims}), got {self._vs.shape}."
+            )
         self.layout = layout
         self.rotation = self._vs[:, layout.rot_slice]
         self.translation = self._vs[:, layout.trans_slice]
@@ -1313,6 +1326,29 @@ class Poses:
     @classmethod
     def from_array(cls, vs: NDArray, layout: PoseLayout):
         return cls(np.asarray(vs).copy(), layout)
+
+    @classmethod
+    def from_parts(
+        cls, layout: PoseLayout, rotation: NDArray, translation: NDArray, torsions: NDArray
+    ):
+        """Assemble poses from their rotations, translations and torsions.
+
+        Parameters
+        ----------
+        layout : PoseLayout
+            The layout of the poses.
+        rotation : array_like
+            Shape ``(n, rot_dim)``, in the representation of the layout.
+        translation : array_like
+            Shape ``(n, 3)``.
+        torsions : array_like
+            Shape ``(n, n_tors)``.
+        """
+        vs = np.empty((len(translation), layout.n_dims))
+        vs[:, layout.rot_slice] = rotation
+        vs[:, layout.trans_slice] = translation
+        vs[:, layout.tors_slice] = torsions
+        return cls(vs, layout)
 
     @classmethod
     def from_poses(cls, poses: list[Pose], layout: PoseLayout | None = None):

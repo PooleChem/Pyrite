@@ -53,7 +53,7 @@ class ScoringFunction(ABC):
         ----------
         x : ndarray
             The variables describing the molecule pose. The shape should be
-            ``(6 + n_dihedrals,)``, like ``[roll, pitch, yaw, x, y, z, *dihedrals]``.
+            ``(6 + n_tors,)``, like ``[roll, pitch, yaw, x, y, z, *torsions]``.
 
         mol : Mol
             The molecule for which the pose will be evaluated.
