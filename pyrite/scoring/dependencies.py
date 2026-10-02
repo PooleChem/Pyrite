@@ -330,18 +330,22 @@ class KNNDependency(Dependency):
 
         Returns
         -------
-        r : float, NDArray
-            The distances to the nearest neighbors.
-        idx : int, NDArray
-            The indices of the nearest neighbors.
+        r : NDArray
+            The distances to the nearest neighbors, shape ``(n_points, k)``.
+        idx : NDArray
+            The indices of the nearest neighbors, shape ``(n_points, k)``.
         mask : NDArray
-            A boolean mask indicating which neighbors are valid.
+            A boolean mask indicating which neighbors are valid, shape ``(n_points, k)``.
         """
         r, idx = self.tree.query(
             self.querying(conf_id),
             k=self.k,
             distance_upper_bound=self.distance_upper_bound,
         )
+        if self.k == 1:
+            # SciPy squeezes the neighbour axis for k == 1. Keep it, as compute_batch does, so
+            # that the last axis is always the neighbours (and `narrow` slices the right axis).
+            r, idx = r[..., None], idx[..., None]
         return r, idx, (idx != self.tree.n)
 
     def compute_batch(

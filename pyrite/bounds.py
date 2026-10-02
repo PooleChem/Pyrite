@@ -272,11 +272,13 @@ class Bounds(ABC):
             An array with a shape equal to `v` representing the transformed sample points.
         """
 
+    # einsum instead of matmul: these are 3x3 rotations, for which a BLAS matrix product gains
+    # nothing, and some BLAS builds (Apple's Accelerate) raise spurious floating-point warnings.
     def _world_to_bounds(self, v: NDArray) -> NDArray:
-        return np.matmul(np.array(v) - self._at, self.__inv_rotation_matrix)
+        return np.einsum("...j,jk->...k", np.array(v) - self._at, self.__inv_rotation_matrix)
 
     def _bounds_to_world(self, v: NDArray) -> NDArray:
-        return np.matmul(np.array(v), self._rotation_matrix) + self._at
+        return np.einsum("...j,jk->...k", np.array(v), self._rotation_matrix) + self._at
 
     def place_random_uniform(self, n: int = 1, rng: np.random.Generator | None = None) -> NDArray:
         """Sample `n` positions uniformly at random within the bounds.
@@ -483,7 +485,7 @@ class SphericalBounds(Bounds):
         if rotation is None:
             rotation = [0, 0, 0]
 
-        super().__init__([r / 2, r / 2, r / 2], at, rotation)
+        super().__init__([r, r, r], at, rotation)
         self.r = r
         self.__r2 = r * r
 
@@ -543,7 +545,7 @@ class CylindricalBounds(Bounds):
         if rotation is None:
             rotation = [0, 0, 0]
 
-        super().__init__([r / 2, h / 2, r / 2], at, rotation)
+        super().__init__([r, h / 2, r], at, rotation)
         self.r = r
         self.__r2 = r * r
 
@@ -554,12 +556,12 @@ class CylindricalBounds(Bounds):
         return np.sum(np.square(self._world_to_bounds(p)[[0, 2]]))
 
     def squared_distance(self, p):
-        p = np.subtract(p, self._at)
+        local = self._world_to_bounds(p)
 
-        dh = max(0.0, abs(p[1]) - self._bounding_box_at_origin[1])
-        dr = max(0.0, self._squared_distance_to_axis(p) - self.__r2)
+        dh = max(0.0, abs(local[1]) - self._bounding_box_at_origin[1])
+        dr = max(0.0, np.sqrt(local[0] ** 2 + local[2] ** 2) - self.r)
 
-        return max(0.0, dh**2 + dr**2)
+        return dh**2 + dr**2
 
     def transform_sample_to_bounds(self, v: NDArray):
         v_2d = np.atleast_2d(v)
@@ -571,8 +573,10 @@ class CylindricalBounds(Bounds):
         r_ = self.r * np.sqrt(u)
 
         v_2d[:, 0] = r_ * np.cos(phi)
-        v_2d[:, 1] = h * self._bounding_box_at_origin[1] - self._bounding_box_at_origin[1] / 2
+        v_2d[:, 1] = (2 * h - 1) * self._bounding_box_at_origin[1]
         v_2d[:, 2] = r_ * -np.sin(phi)
+
+        v_2d = self._bounds_to_world(v_2d)
 
         if v.ndim < 2:
             return v_2d[0, :]

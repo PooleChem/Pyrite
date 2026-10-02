@@ -69,9 +69,7 @@ class DistanceToPocket(ScoringFunction):
 
     def _score(self, conf_id, computed) -> float:
         r, _, mask = computed[self._nn_dep]
-
-        if r.ndim == 2:
-            r = r[:, 0]
+        r, mask = r[..., 0], mask[..., 0]
 
         s = np.maximum(r - self.pocket.radii[0], 0.0)
         s[~mask] = self.cutoff
@@ -204,10 +202,10 @@ class OutOfBoundsPenalty(ScoringFunction):
         self.bounds = bounds
 
     def _score(self, conf_id, *args, **kwargs) -> float:
-        conf = self.ligand.GetConformer(conf_id)
+        conf = self.mol.GetConformer(conf_id)
 
         score = 0.0
-        for atom in self.ligand.GetAtoms():
+        for atom in self.mol.GetAtoms():
             a_i = atom.GetIdx()
             pos = tuple(conf.GetAtomPosition(a_i))
             score += self.bounds.squared_distance(pos)
