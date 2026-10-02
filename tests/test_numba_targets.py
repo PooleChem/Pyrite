@@ -27,12 +27,14 @@ import math
 
 import numpy as np
 import pytest
+from helpers import loaded_pose
 
 from pyrite._common import Mol
 from pyrite._util import (
     _rotation_matrix_from_euler,
     _translation_matrix_from_coordinates,
 )
+from pyrite.scoring.dependencies import Realization
 from pyrite.scoring.protein import (
     LJ,
     Gaussian,
@@ -63,7 +65,7 @@ def computed_knn(mol_pair):
     ligand, receptor = mol_pair
     sf = Gaussian(ligand, receptor, offset=0.0, width=0.5, k=400)
     dep = sf.nn_dep
-    return dep, {dep: dep.compute(-1)}
+    return dep, {dep: dep.compute(Realization(loaded_pose(ligand), batched=False))}
 
 
 # ---------------------------------------------------------------------------
@@ -256,21 +258,21 @@ class TestGaussianScore:
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = Gaussian(ligand, receptor, offset=0.0, width=0.5, k=400)
-        score = sf._score(-1, computed)
+        score = sf._score(None, computed)
         assert np.isfinite(score)
 
     def test_score_is_non_negative(self, mol_pair, computed_knn):
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = Gaussian(ligand, receptor, offset=0.0, width=0.5, k=400)
-        assert sf._score(-1, computed) >= 0.0
+        assert sf._score(None, computed) >= 0.0
 
     def test_score_reproducible(self, mol_pair, computed_knn):
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = Gaussian(ligand, receptor, offset=0.0, width=0.5, k=400)
-        s1 = sf._score(-1, computed)
-        s2 = sf._score(-1, computed)
+        s1 = sf._score(None, computed)
+        s2 = sf._score(None, computed)
         assert np.isclose(s1, s2)
 
     def test_wider_gaussian_increases_score(self, mol_pair, computed_knn):
@@ -278,7 +280,7 @@ class TestGaussianScore:
         dep, computed = computed_knn
         sf_narrow = Gaussian(ligand, receptor, offset=0.0, width=0.5, k=400)
         sf_wide = Gaussian(ligand, receptor, offset=0.0, width=2.0, k=400)
-        assert sf_wide._score(-1, computed) >= sf_narrow._score(-1, computed)
+        assert sf_wide._score(None, computed) >= sf_narrow._score(None, computed)
 
 
 class TestRepulsionScore:
@@ -286,19 +288,19 @@ class TestRepulsionScore:
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = Repulsion(ligand, receptor, offset=0.0, k=400)
-        assert np.isfinite(sf._score(-1, computed))
+        assert np.isfinite(sf._score(None, computed))
 
     def test_score_is_non_negative(self, mol_pair, computed_knn):
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = Repulsion(ligand, receptor, offset=0.0, k=400)
-        assert sf._score(-1, computed) >= 0.0
+        assert sf._score(None, computed) >= 0.0
 
     def test_score_reproducible(self, mol_pair, computed_knn):
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = Repulsion(ligand, receptor, offset=0.0, k=400)
-        assert np.isclose(sf._score(-1, computed), sf._score(-1, computed))
+        assert np.isclose(sf._score(None, computed), sf._score(None, computed))
 
     def test_positive_offset_increases_repulsion(self, mol_pair):
         # Larger offset → larger optimal distance → more atoms inside repulsion zone.
@@ -306,7 +308,8 @@ class TestRepulsionScore:
         ligand, receptor = mol_pair
         sf0 = Repulsion(ligand, receptor, offset=0.0, k=400)
         sf_pos = Repulsion(ligand, receptor, offset=1.0, k=400)
-        assert sf_pos.get_score() >= sf0.get_score()
+        pose = loaded_pose(ligand)
+        assert sf_pos.get_score(pose) >= sf0.get_score(pose)
 
 
 class TestHydrophobicScore:
@@ -314,19 +317,19 @@ class TestHydrophobicScore:
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = Hydrophobic(ligand, receptor, good=0.5, bad=1.5, k=400)
-        assert np.isfinite(sf._score(-1, computed))
+        assert np.isfinite(sf._score(None, computed))
 
     def test_score_is_non_negative(self, mol_pair, computed_knn):
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = Hydrophobic(ligand, receptor, good=0.5, bad=1.5, k=400)
-        assert sf._score(-1, computed) >= 0.0
+        assert sf._score(None, computed) >= 0.0
 
     def test_score_reproducible(self, mol_pair, computed_knn):
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = Hydrophobic(ligand, receptor, good=0.5, bad=1.5, k=400)
-        assert np.isclose(sf._score(-1, computed), sf._score(-1, computed))
+        assert np.isclose(sf._score(None, computed), sf._score(None, computed))
 
 
 class TestNonDirHBondScore:
@@ -334,13 +337,13 @@ class TestNonDirHBondScore:
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = NonDirHBond(ligand, receptor, good=-0.7, bad=0.0, k=400)
-        assert np.isfinite(sf._score(-1, computed))
+        assert np.isfinite(sf._score(None, computed))
 
     def test_score_reproducible(self, mol_pair, computed_knn):
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = NonDirHBond(ligand, receptor, good=-0.7, bad=0.0, k=400)
-        assert np.isclose(sf._score(-1, computed), sf._score(-1, computed))
+        assert np.isclose(sf._score(None, computed), sf._score(None, computed))
 
 
 class TestLJScore:
@@ -348,13 +351,13 @@ class TestLJScore:
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = LJ(ligand, receptor, k=400)
-        assert np.isfinite(sf._score(-1, computed))
+        assert np.isfinite(sf._score(None, computed))
 
     def test_score_reproducible(self, mol_pair, computed_knn):
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = LJ(ligand, receptor, k=400)
-        assert np.isclose(sf._score(-1, computed), sf._score(-1, computed))
+        assert np.isclose(sf._score(None, computed), sf._score(None, computed))
 
 
 class TestPlantsPLPScore:
@@ -362,10 +365,10 @@ class TestPlantsPLPScore:
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = PlantsPLP(ligand, receptor, k=400)
-        assert np.isfinite(sf._score(-1, computed))
+        assert np.isfinite(sf._score(None, computed))
 
     def test_score_reproducible(self, mol_pair, computed_knn):
         ligand, receptor = mol_pair
         dep, computed = computed_knn
         sf = PlantsPLP(ligand, receptor, k=400)
-        assert np.isclose(sf._score(-1, computed), sf._score(-1, computed))
+        assert np.isclose(sf._score(None, computed), sf._score(None, computed))

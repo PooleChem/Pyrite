@@ -6,8 +6,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from .._common import Mol
-from .dependencies import Dependency, _NarrowingComputed
+from .._common import Mol, Pose, Poses
+from .dependencies import Dependency, RDKitDependency, Realization, _NarrowingComputed
 
 # speed grade:
 """
@@ -40,106 +40,86 @@ class ScoringFunction(ABC):
     ):
         pass
 
-    # TODO: should this take one mol? Multiple?
-    def step(self, x: NDArray, mol: Mol) -> float:
-        """The step function.
-
-        This function updates the `mol` pose based on the supplied parameters `x` and returns
-        the score associated with the update pose. The :class:`~pyrite.Mol` is modified using
-        :meth:`~pyrite.Mol.update`, using a new conformer.
-        The `mol` global conformer thus remains unchanged.
-
-        Parameters
-        ----------
-        x : ndarray
-            The variables describing the molecule pose. The shape should be
-            ``(6 + n_tors,)``, like ``[roll, pitch, yaw, x, y, z, *torsions]``.
-
-        mol : Mol
-            The molecule for which the pose will be evaluated.
-
-        Returns
-        -------
-        score : float
-            The score associated with the input pose.
+    def _resolved_dependencies(self) -> list[Dependency]:
+        """The merged dependencies, in the order they are computed. Cached: this only depends on
+        the (fixed) composition of the scoring function.
         """
-        conf_id = mol.update(x, new_conf=True)
-        score = self.get_score(conf_id)
-        mol.RemoveConformer(conf_id)
-        return score
+        opt_deps = getattr(self, "_opt_deps_cache", None)
+        if opt_deps is None:
+            merged = Dependency.merge_all(self.get_dependencies())
+            # RDKit conformers first, so the rest can read positions off them
+            opt_deps = sorted(merged, key=lambda dep: dep.priority)
+            self._opt_deps_cache = opt_deps
+        return opt_deps
 
     def get_score(
-        self, conf_id: int = -1, subscores: dict[ScoringFunction, float] | None = None
+        self, pose: Pose | NDArray, subscores: dict[ScoringFunction, float] | None = None
     ) -> float:
-        """Retrieves the score.
+        """Retrieves the score of a pose.
 
         This method first retrieves all dependencies of this ``ScoringFunction`` instance, merges
-        them, and then resolves them. It then calls the ``_score`` function, which calculates
-        the score using the computed dependencies.
+        them, and then resolves them for the pose. It then calls the ``_score`` function, which
+        calculates the score using the computed dependencies.
+
+        Nothing is done to the :class:`~pyrite.Mol`: the atom positions are computed from the pose
+        directly, and a temporary RDKit conformer is made (and removed again) only if a term
+        needs one.
 
         .. note::
             The dependency set and its merge are cached on the instance after the first call,
             since they only depend on the (fixed) composition of the scoring function, not on
-            `conf_id`. Only ``Dependency.compute`` re-runs on every call.
+            `pose`. Only ``Dependency.compute`` re-runs on every call.
 
         Parameters
         ----------
-        conf_id : int, default -1
-            The conformer id for which to calculate the score. Uses the global conformer by
-            default.
+        pose : Pose, ndarray
+            The pose to score, or its raw values, like ``[roll, pitch, yaw, x, y, z, *torsions]``.
+        subscores : dict[ScoringFunction, float], optional
+            If given, filled with the score of every part of a composite scoring function.
 
         Returns
         -------
         score : float
-            The score associated with the conformer.
+            The score associated with the pose.
         """
-        opt_deps = getattr(self, "_opt_deps_cache", None)
-        if opt_deps is None:
-            raw_deps = self.get_dependencies()
-            opt_deps = Dependency.merge_all(raw_deps)
-            self._opt_deps_cache = opt_deps
-        # _NarrowingComputed, not a plain dict: opt_deps holds one representative
-        # per merged group, but different dependencies sharing that group (e.g.
-        # different k/cutoff) still need their own narrowed view back — see
-        # Dependency.narrow()'s docstring for why that can't be a plain dict.
-        computed = _NarrowingComputed({dep: dep.compute(conf_id) for dep in opt_deps})
+        with Realization(pose, batched=False) as realized:
+            # _NarrowingComputed, not a plain dict: opt_deps holds one representative
+            # per merged group, but different dependencies sharing that group (e.g.
+            # different k/cutoff) still need their own narrowed view back — see
+            # Dependency.narrow()'s docstring for why that can't be a plain dict.
+            computed = _NarrowingComputed(
+                {dep: dep.compute(realized) for dep in self._resolved_dependencies()}
+            )
 
-        if subscores is not None:
-            return self._score_and_store(conf_id, computed, subscores)
-        return self._score(conf_id, computed=computed)
+            if subscores is not None:
+                return self._score_and_store(pose, computed, subscores)
+            return self._score(pose, computed=computed)
 
-    def batch_scores(self, conf_ids) -> NDArray[np.float64]:
-        """Score many conformers at once.
+    def batch_scores(self, poses: Poses | NDArray) -> NDArray[np.float64]:
+        """Score many poses at once.
 
         Mirrors ``get_score`` — resolves and merges dependencies once for the whole
         call, then calls ``_batch_scores``. The default implementation is just a loop
         over ``get_score`` (correct for every scoring function, no speedup); subclasses
         that can do better override ``_batch_scores``, not this method.
 
-        .. note::
-            Every id in `conf_ids` must already be a real conformer (e.g. created via
-            ``mol.update(pose, new_conf=True)``) — this does not create conformers itself.
-
         Parameters
         ----------
-        conf_ids : array_like[int]
-            The conformer ids to score.
+        poses : Poses, ndarray
+            The poses to score, or their raw values, shape ``(n_poses, n_dims)``.
 
         Returns
         -------
         NDArray
-            One score per conformer id, same order as `conf_ids`.
+            One score per pose, same order as `poses`.
         """
-        opt_deps = getattr(self, "_opt_deps_cache", None)
-        if opt_deps is None:
-            raw_deps = self.get_dependencies()
-            opt_deps = Dependency.merge_all(raw_deps)
-            self._opt_deps_cache = opt_deps
-        computed_batch = _NarrowingComputed({dep: dep.compute_batch(conf_ids) for dep in opt_deps})
+        with Realization(poses, batched=True) as realized:
+            computed_batch = _NarrowingComputed(
+                {dep: dep.compute(realized) for dep in self._resolved_dependencies()}
+            )
+            return self._batch_scores(poses, computed_batch)
 
-        return self._batch_scores(conf_ids, computed_batch)
-
-    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+    def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
         """The batched score function.
 
         .. note::
@@ -149,18 +129,20 @@ class ScoringFunction(ABC):
 
         Parameters
         ----------
-        conf_ids : array_like[int]
-            The conformer ids to score.
+        poses : Poses, ndarray
+            The poses to score.
         computed_batch : dict[Dependency, Any]
             The batched equivalent of ``_score``'s `computed` — supplied by
-            ``batch_scores``. The default implementation below ignores it; it exists
-            for subclasses that override this method to do better than one-at-a-time.
+            ``batch_scores``, with a leading ``n_poses`` axis on everything. The default
+            implementation calls ``_score`` for every pose on its own entry of it
+            (``computed_batch.row(i)``), so the dependencies are still computed once for the
+            whole batch; subclasses override this method to do better than one-at-a-time.
 
         Returns
         -------
         NDArray
         """
-        return np.array([self.get_score(conf_id) for conf_id in conf_ids])
+        return np.array([self._score(pose, computed_batch.row(i)) for i, pose in enumerate(poses)])
 
     def clamp(
         self,
@@ -187,19 +169,19 @@ class ScoringFunction(ABC):
 
     def _score_and_store(
         self,
-        conf_id: int,
+        pose: Pose,
         computed: dict[Dependency, Any],
         subscores: dict[ScoringFunction, float],
     ):
-        score = self._score(conf_id, computed=computed)
+        score = self._score(pose, computed=computed)
         subscores[self] = score
         return score
 
     @abstractmethod
-    def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
+    def _score(self, pose: Pose, computed: dict[Dependency, Any] | None) -> float:
         """The score function.
 
-        This function takes the conformer id and the computed dependencies as input and returns
+        This function takes the pose and the computed dependencies as input and returns
         the associated score.
 
         .. note::
@@ -209,8 +191,8 @@ class ScoringFunction(ABC):
 
         Parameters
         ----------
-        conf_id : int
-            The conformer id for which to calculate the score.
+        pose : Pose, ndarray
+            The pose for which to calculate the score.
         computed : dict[Dependency, Any]
             A dictionary containing the computed dependencies. This is supplied by ``get_score``.
 
@@ -342,17 +324,17 @@ class _CombinedScoringFunction(ScoringFunction):  # pylint: disable=too-few-publ
             deps.extend(func.get_dependencies())
         return deps
 
-    def _score(self, conf_id, computed) -> float:
+    def _score(self, pose, computed) -> float:
         total = 0.0
         func: ScoringFunction
         for func in self.funcs:
             # pylint: disable=protected-access
-            total += func._score(conf_id, computed=computed)
+            total += func._score(pose, computed=computed)
         return total
 
     def _score_and_store(
         self,
-        conf_id: int,
+        pose: Pose,
         computed: dict[Dependency, Any],
         subscores: dict[ScoringFunction, float],
     ):
@@ -360,7 +342,7 @@ class _CombinedScoringFunction(ScoringFunction):  # pylint: disable=too-few-publ
         func: ScoringFunction
         for func in self.funcs:
             # pylint: disable=protected-access
-            total += func._score_and_store(conf_id, computed=computed, subscores=subscores)
+            total += func._score_and_store(pose, computed=computed, subscores=subscores)
         subscores[self] = total
         return total
 
@@ -371,11 +353,11 @@ class _CombinedScoringFunction(ScoringFunction):  # pylint: disable=too-few-publ
             total = total + func._score_field(r, idx, atom_type)
         return total
 
-    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+    def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
         # pylint: disable=protected-access
-        total = np.zeros(len(conf_ids))
+        total = np.zeros(len(poses))
         for func in self.funcs:
-            total = total + func._batch_scores(conf_ids, computed_batch)
+            total = total + func._batch_scores(poses, computed_batch)
         return total
 
     def __repr__(self):
@@ -429,15 +411,15 @@ class _ScaledScoringFunction(ScoringFunction):
             deps.extend(self.right.get_dependencies())
         return deps
 
-    def _score(self, conf_id, computed) -> float:
+    def _score(self, pose, computed) -> float:
         # pylint: disable=protected-access
 
         left_val = self.left
         right_val = self.right
         if isinstance(self.left, ScoringFunction):
-            left_val = self.left._score(conf_id, computed=computed)
+            left_val = self.left._score(pose, computed=computed)
         if isinstance(self.right, ScoringFunction):
-            right_val = self.right._score(conf_id, computed=computed)
+            right_val = self.right._score(pose, computed=computed)
 
         match self.operator:
             case "*":
@@ -449,15 +431,15 @@ class _ScaledScoringFunction(ScoringFunction):
             case _:
                 raise TypeError(f"Unsupported operator for scaling: '{self.operator}'")
 
-    def _score_and_store(self, conf_id, computed, subscores) -> float:
+    def _score_and_store(self, pose, computed, subscores) -> float:
         # pylint: disable=protected-access
 
         left_val = self.left
         right_val = self.right
         if isinstance(self.left, ScoringFunction):
-            left_val = self.left._score_and_store(conf_id, computed=computed, subscores=subscores)
+            left_val = self.left._score_and_store(pose, computed=computed, subscores=subscores)
         if isinstance(self.right, ScoringFunction):
-            right_val = self.right._score_and_store(conf_id, computed=computed, subscores=subscores)
+            right_val = self.right._score_and_store(pose, computed=computed, subscores=subscores)
 
         score = 0
         match self.operator:
@@ -493,15 +475,15 @@ class _ScaledScoringFunction(ScoringFunction):
             case _:
                 raise TypeError(f"Unsupported operator for scaling: '{self.operator}'")
 
-    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+    def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
         # pylint: disable=protected-access
 
         left_val = self.left
         right_val = self.right
         if isinstance(self.left, ScoringFunction):
-            left_val = self.left._batch_scores(conf_ids, computed_batch)
+            left_val = self.left._batch_scores(poses, computed_batch)
         if isinstance(self.right, ScoringFunction):
-            right_val = self.right._batch_scores(conf_ids, computed_batch)
+            right_val = self.right._batch_scores(poses, computed_batch)
 
         match self.operator:
             case "*":
@@ -567,9 +549,9 @@ class Clamp(ScoringFunction):
             self.max_score,
         )
 
-    def _score_and_store(self, conf_id, computed, subscores) -> float:
+    def _score_and_store(self, pose, computed, subscores) -> float:
         score = np.clip(
-            self.scoring_function._score_and_store(conf_id, computed=computed, subscores=subscores),
+            self.scoring_function._score_and_store(pose, computed=computed, subscores=subscores),
             self.min_score,
             self.max_score,
         )
@@ -584,10 +566,10 @@ class Clamp(ScoringFunction):
             self.max_score,
         )
 
-    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+    def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
         # pylint: disable=protected-access
         return np.clip(
-            self.scoring_function._batch_scores(conf_ids, computed_batch),
+            self.scoring_function._batch_scores(poses, computed_batch),
             self.min_score,
             self.max_score,
         )
@@ -620,5 +602,27 @@ class ConstantTerm(ScoringFunction):
     def _score_field(self, r, idx, atom_type):
         return np.full(len(r), self.constant)
 
-    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
-        return np.full(len(conf_ids), self.constant)
+    def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
+        return np.full(len(poses), self.constant)
+
+
+class _RDKitScoringFunction(ScoringFunction, ABC):
+    """Base class for scoring functions that need a real RDKit conformer of the molecule.
+
+    Implement ``_score(pose, computed)`` as for any scoring function, and read the conformer id
+    with ``computed[self.rdkit_dep]``. The conformer is made by a shared
+    :class:`~pyrite.scoring.dependencies.RDKitDependency`, so any number of these terms in one
+    composite make one conformer per pose, and it is removed after scoring.
+
+    Parameters
+    ----------
+    mol : Mol
+        The molecule to make a conformer of.
+    """
+
+    def __init__(self, mol: Mol):
+        self.mol = mol
+        self.rdkit_dep = RDKitDependency(mol)
+
+    def get_dependencies(self) -> list[Dependency]:
+        return [self.rdkit_dep]

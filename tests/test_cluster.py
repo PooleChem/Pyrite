@@ -39,7 +39,7 @@ def _calc_rms_matrix(mol: Mol, poses: Poses) -> np.ndarray:
     work = Chem.Mol(mol)
     work.RemoveAllConformers()
     for pose in poses:
-        conf_id = mol.update(pose, new_conf=True)
+        conf_id = mol.pose_to_conformer(pose, new_conf=True)
         work.AddConformer(Chem.Conformer(mol.GetConformer(conf_id)), assignId=True)
         mol.RemoveConformer(conf_id)
     n_atoms = work.GetNumAtoms()

@@ -24,6 +24,10 @@ Classes
 
    Dependency
    KNNDependency
+   PositionDependency
+   RDKitDependency
+   Realization
+   PositionQuery
    KDTreeCache
 
 
@@ -36,8 +40,12 @@ Notes
 -----
 To subclass ``Dependency``, the following methods should be implemented:
 
-:meth:`~Dependency.compute(conf_id)`
-    In this method the expensive operation should be executed.
+:meth:`~Dependency.compute(realized)`
+    In this method the expensive operation should be executed. `realized` is a
+    :class:`Realization` of the pose (or batch of poses) being scored, which hands out the atom
+    positions (:meth:`Realization.positions`) or an RDKit conformer
+    (:meth:`Realization.conformers`) of any :class:`~pyrite.Mol`, computed at most once per
+    scoring call.
 :meth:`~Dependency.group_key(dep)`
     This method should map a group of dependencies to the same key, i.e., all dependencies that
     return the same `group_key` are combined by :meth:`~Dependency.merge_group`.
@@ -48,6 +56,8 @@ To subclass ``Dependency``, the following methods should be implemented:
 
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable
@@ -56,6 +66,8 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 from scipy.spatial import KDTree
+
+from .._common import Mol
 
 
 class Dependency(ABC):
@@ -78,14 +90,21 @@ class Dependency(ABC):
 
     """
 
+    #: Dependencies with a lower value are computed first. :class:`RDKitDependency` goes first, so
+    #: that everything after it can read positions off the conformer it made instead of computing
+    #: them a second time.
+    priority: int = 0
+
     @abstractmethod
-    def compute(self, conf_id: int) -> Any:
-        """Compute ``self`` based on the supplied `conf_id`.
+    def compute(self, realized: Realization) -> Any:
+        """Compute ``self`` for the pose, or batch of poses, in `realized`.
+
+        Written to work for both: a batch simply has a leading ``n_poses`` axis on everything.
 
         Parameters
         ----------
-        conf_id : int
-            The conformer id to use in computation.
+        realized : Realization
+            The pose (or poses) being scored.
 
         Returns
         -------
@@ -127,6 +146,28 @@ class Dependency(ABC):
         Any
         """
         return computed
+
+    def row(self, computed: Any, i: int) -> Any:
+        """The result for pose `i` of a batch, as ``compute`` would have given it for that pose.
+
+        ``compute`` puts a leading ``n_poses`` axis on everything for a batch, so the default
+        takes entry `i` of it (of every part of a tuple). Override it only for a dependency whose
+        batched result is not laid out like that.
+
+        Parameters
+        ----------
+        computed : Any
+            The result of ``compute`` for a batch.
+        i : int
+            The index of the pose.
+
+        Returns
+        -------
+        Any
+        """
+        if isinstance(computed, tuple):
+            return tuple(part[i] for part in computed)
+        return computed[i]
 
     @classmethod
     @abstractmethod
@@ -224,6 +265,176 @@ class _NarrowingComputed:
     def __getitem__(self, dep: Dependency):
         return dep.narrow(self._raw[dep])
 
+    def row(self, i: int) -> _NarrowingComputed:
+        """The computed dependencies of pose `i` of a batch, as ``get_score`` would see them."""
+        return _NarrowingComputed({dep: dep.row(value, i) for dep, value in self._raw.items()})
+
+
+class Realization:
+    """One pose, or a batch of poses, being scored — realised lazily per molecule.
+
+    Created by :meth:`~pyrite.scoring.ScoringFunction.get_score` and ``batch_scores`` and handed
+    to :meth:`Dependency.compute`. It is the only place where a pose turns into something
+    concrete, and does so at most once per :class:`~pyrite.Mol`, however many dependencies ask:
+
+    - :meth:`positions`: the atom positions, computed in numpy by
+      :meth:`~pyrite.Mol.pose_to_positions`. No RDKit conformer is made.
+    - :meth:`conformers`: a real RDKit conformer, for terms that need RDKit itself. If it was
+      asked for, :meth:`positions` reads from it instead of computing the positions again.
+
+    Conformers made here are removed again by :meth:`close` (or leaving the ``with`` block).
+
+    Parameters
+    ----------
+    poses : Pose, Poses, ndarray
+        The pose(s) to realise.
+    batched : bool
+        Whether `poses` is a batch (``Poses``, or a 2D array), rather than one pose.
+    """
+
+    def __init__(self, poses, batched: bool):
+        self.poses = poses
+        self.batched = batched
+        self._positions: dict[Mol, NDArray] = {}
+        self._conformers: dict[Mol, int | list[int]] = {}
+
+    def positions(self, mol: Mol) -> NDArray:
+        """The atom positions of `mol` for the pose(s).
+
+        Returns
+        -------
+        NDArray
+            Shape ``(n_atoms, 3)``, or ``(n_poses, n_atoms, 3)`` for a batch.
+        """
+        if mol not in self._positions:
+            if mol in self._conformers:
+                conformers = self._conformers[mol]
+                if self.batched:
+                    value = np.stack([mol.get_positions(c) for c in conformers])
+                else:
+                    value = mol.get_positions(conformers)
+            else:
+                value = mol.pose_to_positions(self.poses)
+            self._positions[mol] = value
+        return self._positions[mol]
+
+    def conformers(self, mol: Mol) -> int | list[int]:
+        """An RDKit conformer of `mol` for the pose(s): its id, or a list of ids for a batch."""
+        if mol not in self._conformers:
+            if self.batched:
+                self._conformers[mol] = [
+                    mol.pose_to_conformer(p, new_conf=True) for p in self.poses
+                ]
+            else:
+                self._conformers[mol] = mol.pose_to_conformer(self.poses, new_conf=True)
+        return self._conformers[mol]
+
+    def close(self) -> None:
+        """Remove every conformer that was made."""
+        for mol, ids in self._conformers.items():
+            for conf_id in ids if self.batched else [ids]:
+                mol.RemoveConformer(conf_id)
+        self._conformers.clear()
+
+    def __enter__(self) -> Realization:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+class PositionQuery:
+    """A callable ``Realization -> positions`` of (some of the atoms of) a molecule.
+
+    This is what :class:`KNNDependency` queries with. Two queries are equal when they ask the same
+    molecule (by identity) for the same atoms, which is what lets dependencies that query the same
+    atoms share one search. The molecule is kept alive by the query, so the identity cannot be
+    reused while the query exists.
+
+    Parameters
+    ----------
+    mol : Mol
+        The molecule to get the positions of.
+    mask : array_like[bool], optional
+        Only the atoms where this is true. All atoms by default.
+    """
+
+    def __init__(self, mol: Mol, mask=None):
+        self.mol = mol
+        self.mask = None if mask is None else np.asarray(mask, dtype=bool)
+        self._mask_key = None if self.mask is None else self.mask.tobytes()
+
+    def __call__(self, realized: Realization) -> NDArray:
+        positions = realized.positions(self.mol)
+        return positions if self.mask is None else positions[..., self.mask, :]
+
+    def __hash__(self):
+        return hash((self.mol, self._mask_key))
+
+    def __eq__(self, other):
+        return (
+            isinstance(other, PositionQuery)
+            and other.mol is self.mol
+            and other._mask_key == self._mask_key
+        )
+
+
+class PositionDependency(Dependency):
+    """The atom positions of a molecule, for scoring functions that need them directly.
+
+    Computed in numpy from the pose, or read from the RDKit conformer if some other term already
+    made one. Shape ``(n_atoms, 3)``, or ``(n_poses, n_atoms, 3)`` for a batch.
+
+    Parameters
+    ----------
+    mol : Mol
+        The molecule to get the positions of.
+    """
+
+    def __init__(self, mol: Mol):
+        self.mol = mol
+
+    def compute(self, realized: Realization) -> NDArray:
+        return realized.positions(self.mol)
+
+    @classmethod
+    def group_key(cls, dep):
+        return dep.mol
+
+    @classmethod
+    def merge_group(cls, deps):
+        return deps[0]
+
+
+class RDKitDependency(Dependency):
+    """An RDKit conformer of a molecule, for scoring functions that need RDKit itself.
+
+    The conformer id (``int``, or ``list[int]`` for a batch) is shared by every term that depends
+    on the same molecule, so a composite of several RDKit-based terms makes one conformer per pose.
+    The conformer is removed after scoring.
+
+    Parameters
+    ----------
+    mol : Mol
+        The molecule to make a conformer of.
+    """
+
+    priority = -1
+
+    def __init__(self, mol: Mol):
+        self.mol = mol
+
+    def compute(self, realized: Realization) -> int | list[int]:
+        return realized.conformers(self.mol)
+
+    @classmethod
+    def group_key(cls, dep):
+        return dep.mol
+
+    @classmethod
+    def merge_group(cls, deps):
+        return deps[0]
+
 
 class KDTreeCache:  # pylint: disable=too-few-public-methods
     """
@@ -283,9 +494,11 @@ class KNNDependency(Dependency):
         combined with the `query_f` to create the ``group_key``.
     point_cloud : NDArray
         The point cloud used to build the ``KDTree``.
-    query_f : Callable[[int], NDArray]
-        A callable function that is used to get the points to query on the ``KDTree``. This is
-        combined with the `tree_id` to create the `group_key`.
+    query_f : Callable[[Realization], NDArray]
+        A callable that gets the points to query on the ``KDTree`` from a :class:`Realization`,
+        with shape ``(..., n_points, 3)``. Use :class:`PositionQuery` for the positions of a
+        molecule. This is combined with the point cloud to create the `group_key`, so it should
+        compare equal for queries that can share a search.
     k : int
         The number of neighbors to retrieve.
     distance_upper_bound : float
@@ -297,7 +510,7 @@ class KNNDependency(Dependency):
     def __init__(
         self,
         point_cloud: NDArray,
-        query_f: Callable[[int], NDArray],
+        query_f: Callable[[Realization], NDArray],
         k: int,
         distance_upper_bound: float,
     ):  # pylint: disable=too-many-arguments
@@ -315,75 +528,38 @@ class KNNDependency(Dependency):
         self.tree = KDTreeCache.get_tree(self.tree_hash, self.point_cloud)
 
     def compute(
-        self, conf_id
-    ) -> tuple[
-        float | NDArray,
-        int | NDArray,
-        bool | NDArray,
-    ]:
-        """Execute the nearest neighbor search.
-
-        Parameters
-        ----------
-        conf_id :
-            The conformer_id from which to retrieve the points to query on.
-
-        Returns
-        -------
-        r : NDArray
-            The distances to the nearest neighbors, shape ``(n_points, k)``.
-        idx : NDArray
-            The indices of the nearest neighbors, shape ``(n_points, k)``.
-        mask : NDArray
-            A boolean mask indicating which neighbors are valid, shape ``(n_points, k)``.
-        """
-        r, idx = self.tree.query(
-            self.querying(conf_id),
-            k=self.k,
-            distance_upper_bound=self.distance_upper_bound,
-        )
-        if self.k == 1:
-            # SciPy squeezes the neighbour axis for k == 1. Keep it, as compute_batch does, so
-            # that the last axis is always the neighbours (and `narrow` slices the right axis).
-            r, idx = r[..., None], idx[..., None]
-        return r, idx, (idx != self.tree.n)
-
-    def compute_batch(
-        self, conf_ids
+        self, realized: Realization
     ) -> tuple[
         NDArray,
         NDArray,
         NDArray,
     ]:
-        """Execute the nearest neighbor search for many conformers at once.
-
-        Batched equivalent of ``compute`` — queries the tree once for all
-        `conf_ids` instead of once per conformer.
+        """Execute the nearest neighbor search, for one pose or for a batch at once.
 
         Parameters
         ----------
-        conf_ids : array_like[int]
-            The conformer ids from which to retrieve the points to query on.
+        realized : Realization
+            The pose(s) to query the positions of.
 
         Returns
         -------
         r : NDArray
-            Shape ``(n_conf_ids, n_points, k)``.
+            The distances to the nearest neighbors, shape ``(..., n_points, k)``, where ``...``
+            is ``n_poses`` for a batch and nothing for one pose.
         idx : NDArray
-            Shape ``(n_conf_ids, n_points, k)``.
+            The indices of the nearest neighbors, same shape.
         mask : NDArray
-            Shape ``(n_conf_ids, n_points, k)``.
+            A boolean mask indicating which neighbors are valid, same shape.
         """
-        positions = np.stack([self.querying(conf_id) for conf_id in conf_ids])
-        n_conf_ids, n_points, _ = positions.shape
-
+        positions = self.querying(realized)
         r, idx = self.tree.query(
             positions.reshape(-1, 3),
             k=self.k,
             distance_upper_bound=self.distance_upper_bound,
         )
-        r = r.reshape(n_conf_ids, n_points, self.k)
-        idx = idx.reshape(n_conf_ids, n_points, self.k)
+        # SciPy squeezes the neighbour axis for k == 1; always keep it as the last axis
+        shape = (*positions.shape[:-1], self.k)
+        r, idx = r.reshape(shape), idx.reshape(shape)
         return r, idx, (idx != self.tree.n)
 
     def narrow(self, computed):

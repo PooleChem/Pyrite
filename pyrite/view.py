@@ -104,7 +104,7 @@ class Viewer:
         self.view.removeModel(self._v_m_id)
         vn = self._vs[v_id]
 
-        conf_id = self._ligand.update(vn, new_conf=True)
+        conf_id = self._ligand.pose_to_conformer(vn, new_conf=True)
         mblock_n = Chem.MolToMolBlock(self._ligand, confId=conf_id)
         self._ligand.RemoveConformer(conf_id)
         self.view.addModel(mblock_n, "mol")
@@ -159,7 +159,7 @@ class Viewer:
             # Update to first v
             vn = self._vs[0]
 
-            conf_id = self._ligand.update(vn, new_conf=True)
+            conf_id = self._ligand.pose_to_conformer(vn, new_conf=True)
             mblock = Chem.MolToMolBlock(self._ligand, confId=conf_id)
             self._ligand.RemoveConformer(conf_id)
 
@@ -199,7 +199,7 @@ class Viewer:
 
         else:
             for var in self._vs:
-                conf_id = mol.update(var, new_conf=True)
+                conf_id = mol.pose_to_conformer(var, new_conf=True)
                 mblock = Chem.MolToMolBlock(mol, confId=conf_id)
                 mol.RemoveConformer(conf_id)
                 self.view.addModel(mblock, "mol")

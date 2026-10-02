@@ -213,3 +213,112 @@ def _symmetry_mappings(probe, ref, max_matches: int, include_identity: bool = Fa
         if identity not in matches:
             matches.insert(0, identity)
     return matches
+
+
+def _atoms_beyond(adjacency: list, start: int, blocked: int) -> NDArray:
+    """Return the atoms reachable from `start` without passing the bond `start`-`blocked`.
+
+    For a torsion about the bond ``b-c`` these are the atoms that move when ``c`` is the start.
+    The bond must not be in a ring (a rotatable bond never is).
+    """
+    seen, stack = {start}, [start]
+    while stack:
+        i = stack.pop()
+        for j in adjacency[i]:
+            if j not in seen and not (i == start and j == blocked):
+                seen.add(j)
+                stack.append(j)
+    if blocked in seen:
+        raise ValueError(f"The bond {start}-{blocked} is in a ring and cannot be rotated.")
+    return np.array(sorted(seen), dtype=np.intp)
+
+
+def _pack_torsions(quads: list, moving: list) -> tuple[NDArray, NDArray, NDArray]:
+    """Pack the torsions of a molecule into the arrays `_apply_torsions` works on.
+
+    Parameters
+    ----------
+    quads : list of 4-tuples
+        The atoms ``(a, b, c, d)`` of every torsion.
+    moving : list of ndarray
+        For every torsion, the indices of the atoms it moves.
+
+    Returns
+    -------
+    quads : ndarray
+        Shape ``(n_torsions, 4)``.
+    moving : ndarray
+        Shape ``(n_torsions, width)``: the moved atoms of each torsion, padded with zeros.
+    n_moving : ndarray
+        Shape ``(n_torsions,)``: how many entries of every row of `moving` are real.
+    """
+    n_moving = np.array([len(m) for m in moving], dtype=np.int64)
+    padded = np.zeros((len(moving), max(int(n_moving.max(initial=0)), 1)), dtype=np.int64)
+    for t, indices in enumerate(moving):
+        padded[t, : len(indices)] = indices
+    return np.array(quads, dtype=np.int64).reshape(-1, 4), padded, n_moving
+
+
+@njit
+def _apply_torsions_kernel(positions, quads, moving, n_moving, torsions):
+    """Set the torsions of every conformer in `positions`, in place. See `_apply_torsions`."""
+    for i in range(positions.shape[0]):
+        pos = positions[i]
+        for t in range(quads.shape[0]):
+            a, b, c, d = quads[t, 0], quads[t, 1], quads[t, 2], quads[t, 3]
+            # the current dihedral, with RDKit's sign convention
+            b0 = pos[a] - pos[b]
+            axis = pos[c] - pos[b]
+            axis = axis / np.sqrt(np.sum(axis * axis))
+            b2 = pos[d] - pos[c]
+            v = b0 - np.sum(b0 * axis) * axis
+            w = b2 - np.sum(b2 * axis) * axis
+            cross = np.array(
+                [
+                    axis[1] * v[2] - axis[2] * v[1],
+                    axis[2] * v[0] - axis[0] * v[2],
+                    axis[0] * v[1] - axis[1] * v[0],
+                ]
+            )
+            angle = torsions[i, t] - np.arctan2(np.sum(cross * w), np.sum(v * w))
+            cos, sin = np.cos(angle), np.sin(angle)
+            # rotate the atoms beyond c about the axis through b (Rodrigues)
+            origin = pos[b].copy()
+            for m in range(n_moving[t]):
+                p = pos[moving[t, m]] - origin
+                k_cross_p = np.array(
+                    [
+                        axis[1] * p[2] - axis[2] * p[1],
+                        axis[2] * p[0] - axis[0] * p[2],
+                        axis[0] * p[1] - axis[1] * p[0],
+                    ]
+                )
+                along = np.sum(axis * p)
+                pos[moving[t, m]] = origin + p * cos + k_cross_p * sin + axis * along * (1.0 - cos)
+
+
+def _apply_torsions(positions: NDArray, packed: tuple, torsions: NDArray) -> NDArray:
+    """Set the torsion angles of a batch of conformers.
+
+    Equivalent to RDKit's ``SetDihedralRad`` for every torsion in turn: the current dihedral of
+    ``(a, b, c, d)`` is measured, and the atoms beyond ``c`` are rotated about the bond ``b-c`` by
+    the difference to the target. The torsions are absolute, and rotating about one never changes
+    another's dihedral, so the result does not depend on the order.
+
+    Parameters
+    ----------
+    positions : ndarray
+        Shape ``(n, n_atoms, 3)``. Not modified.
+    packed : tuple
+        The torsions of the molecule, from `_pack_torsions`.
+    torsions : ndarray
+        Shape ``(n, n_torsions)``, the target angles in radians.
+
+    Returns
+    -------
+    ndarray
+        The new positions, shape ``(n, n_atoms, 3)``.
+    """
+    out = np.array(positions, dtype=np.float64, order="C")
+    _apply_torsions_kernel(out, *packed, np.ascontiguousarray(torsions, dtype=np.float64))
+    return out

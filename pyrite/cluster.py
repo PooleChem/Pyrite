@@ -10,16 +10,6 @@ from pyrite._common import Mol, Poses
 from pyrite._util import _symmetry_mappings
 
 
-def _positions(mol: Mol, poses: Poses) -> NDArray:
-    """Return the atom positions of every pose, shape ``(n_poses, n_atoms, 3)``."""
-    out = np.empty((len(poses), mol.GetNumAtoms(), 3))
-    for i, pose in enumerate(poses):
-        conf_id = mol.update(pose, new_conf=True)
-        out[i] = mol.get_positions(conf_id)
-        mol.RemoveConformer(conf_id)
-    return out
-
-
 def rmsd_matrix(
     mol: Mol,
     poses: Poses,
@@ -57,7 +47,7 @@ def rmsd_matrix(
         A symmetric array of shape ``(n_poses, n_poses)`` with the RMSD in Angstrom, and zeros on
         the diagonal.
     """
-    positions = _positions(mol, poses)
+    positions = mol.pose_to_positions(poses)
     n, n_atoms, _ = positions.shape
     if n == 0:
         return np.zeros((0, 0))

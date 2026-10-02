@@ -66,7 +66,7 @@ def test_place_in_works_for_every_layout(site, rot_type):
         assert np.allclose(np.linalg.norm(poses.rotation, axis=1), 1.0)
     # The translation is the position of the center atom, so a pose really is in the site.
     for pose in list(poses)[:3]:
-        conf_id = mol.update(pose, new_conf=True)
+        conf_id = mol.pose_to_conformer(pose, new_conf=True)
         assert np.allclose(mol.get_positions(conf_id)[mol._center_atom], pose.translation)
         mol.RemoveConformer(conf_id)
 

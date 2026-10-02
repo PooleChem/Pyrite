@@ -2,10 +2,12 @@
 
 import numpy as np
 import pytest
+from helpers import loaded_pose
 from scipy.spatial import cKDTree
 
 from pyrite.bounds import SphericalBounds
 from pyrite.scoring import DistanceToPocket, KNNDependency, OutOfBoundsPenalty
+from pyrite.scoring.dependencies import PositionQuery, Realization
 
 
 def test_distance_to_pocket_equals_an_independent_computation(ctx):
@@ -14,14 +16,12 @@ def test_distance_to_pocket_equals_an_independent_computation(ctx):
     tree = cKDTree(pocket.centers)
 
     for pose in ctx.poses:
-        conf_id = ligand.update(pose, new_conf=True)
-        distance = tree.query(ligand.get_positions(conf_id))[0]
+        distance = tree.query(ligand.pose_to_positions(pose))[0]
         expected = np.maximum(distance - pocket.radii[0], 0.0)
         expected[distance > scoring.cutoff] = scoring.cutoff
         expected[~scoring._mask] = 0.0
-        ligand.RemoveConformer(conf_id)
 
-        assert scoring.step(pose, ligand) == pytest.approx(expected.sum(), abs=1e-9)
+        assert scoring.get_score(pose) == pytest.approx(expected.sum(), abs=1e-9)
 
 
 def test_distance_to_pocket_uses_every_atom(ctx):
@@ -30,8 +30,7 @@ def test_distance_to_pocket_uses_every_atom(ctx):
     scoring = DistanceToPocket(ligand, pocket)
     pose = ctx.poses[0]
 
-    r, idx, mask = scoring._nn_dep.compute(ligand.update(pose, new_conf=True))
-    ligand.RemoveConformer(ligand.GetNumConformers() - 1)
+    r, idx, mask = scoring._nn_dep.compute(Realization(pose, batched=False))
 
     assert r.shape == idx.shape == mask.shape == (ligand.GetNumAtoms(), 1)
     assert r.shape == scoring._nn_dep.narrow((r, idx, mask))[0].shape
@@ -42,9 +41,11 @@ def test_knn_dependency_keeps_the_neighbour_axis_for_every_k(ctx):
     points = receptor.positions
 
     for k in (1, 2, 5):
-        dependency = KNNDependency(points, ligand.get_positions, k, 8.0)
-        r, idx, mask = dependency.compute(-1)
-        batch = dependency.compute_batch([-1, -1])[0]
+        dependency = KNNDependency(points, PositionQuery(ligand), k, 8.0)
+        with Realization(ctx.poses[0], batched=False) as one:
+            r, idx, mask = dependency.compute(one)
+        with Realization(ctx.poses[:2], batched=True) as two:
+            batch = dependency.compute(two)[0]
 
         assert r.shape == idx.shape == mask.shape == (ligand.GetNumAtoms(), k)
         assert batch.shape == (2, ligand.GetNumAtoms(), k)
@@ -59,5 +60,5 @@ def test_out_of_bounds_penalty_is_zero_inside_and_grows_outside(ctx):
     small = OutOfBoundsPenalty(ligand, SphericalBounds(1.0, at=centre))
     smaller = OutOfBoundsPenalty(ligand, SphericalBounds(0.5, at=centre))
 
-    assert everything.get_score(-1) == 0.0
-    assert 0.0 < small.get_score(-1) < smaller.get_score(-1)
+    assert everything.get_score(loaded_pose(ligand)) == 0.0
+    assert 0.0 < small.get_score(loaded_pose(ligand)) < smaller.get_score(loaded_pose(ligand))

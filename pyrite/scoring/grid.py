@@ -4,7 +4,7 @@ from scipy.interpolate import RegularGridInterpolator
 from pyrite.bounds import Bounds
 from pyrite.scoring import Clamp, ScoringFunction
 from pyrite.scoring._base import _CombinedScoringFunction, _ScaledScoringFunction
-from pyrite.scoring.dependencies import Dependency, KNNDependency
+from pyrite.scoring.dependencies import Dependency, KNNDependency, PositionDependency
 
 
 class GridScore(ScoringFunction):
@@ -74,6 +74,7 @@ class GridScore(ScoringFunction):
         reference = leaves[0]
         self._probe_mol = reference.probe_mol
         self._probe_mask = reference.probe_mask
+        self._position_dep = PositionDependency(self._probe_mol)
 
         merged = Dependency.merge_all(scoring_function.get_dependencies())
         knn_dep = next(iter(merged))
@@ -86,11 +87,11 @@ class GridScore(ScoringFunction):
         # point_cloud -> same tree_hash -> KDTreeCache hit).
         grid_dep = KNNDependency(
             knn_dep.point_cloud,
-            lambda conf_id: grid_points,
+            lambda _: grid_points,
             knn_dep.k,
             knn_dep.distance_upper_bound,
         )
-        r_grid, idx_grid, _ = grid_dep.compute(conf_id=None)
+        r_grid, idx_grid, _ = grid_dep.compute(None)
 
         atom_types = sorted(set(self._probe_mol.atom_types[self._probe_mask].tolist()))
         self._interpolators = {}
@@ -136,10 +137,11 @@ class GridScore(ScoringFunction):
         return [sf]
 
     def get_dependencies(self) -> list[Dependency]:
-        return []  # the grid itself replaces the need for a live KNN query at score time
+        # only the positions: the grid replaces the need for a live KNN query at score time
+        return [self._position_dep]
 
-    def _score(self, conf_id, computed) -> float:
-        positions = self._probe_mol.get_positions(conf_id)[self._probe_mask]
+    def _score(self, pose, computed) -> float:
+        positions = computed[self._position_dep][self._probe_mask]
         types = self._probe_mol.atom_types[self._probe_mask]
 
         total = 0.0
@@ -149,17 +151,13 @@ class GridScore(ScoringFunction):
                 total += interpolator(positions[m]).sum()
         return total
 
-    def _batch_scores(self, conf_ids, computed_batch) -> np.ndarray:
-        # positions still needs a per-conf_id RDKit read (no numpy-native pose
-        # pipeline yet — see POSE_NATIVE_SCORING_PLAN.md), but the interpolator
-        # calls below — the actual thing this batches — run once per atom type
+    def _batch_scores(self, poses, computed_batch) -> np.ndarray:
+        # the interpolator calls below — the actual thing this batches — run once per atom type
         # across every pose at once, not once per atom type *per pose*.
-        positions = np.stack(
-            [self._probe_mol.get_positions(conf_id)[self._probe_mask] for conf_id in conf_ids]
-        )  # (n_poses, n_atoms, 3)
+        positions = computed_batch[self._position_dep][:, self._probe_mask]  # (n_poses, n_atoms, 3)
         types = self._probe_mol.atom_types[self._probe_mask]  # (n_atoms,) — same every pose
 
-        total = np.zeros(len(conf_ids))
+        total = np.zeros(len(poses))
         for atom_type, interpolator in self._interpolators.items():
             m = types == atom_type
             if not m.any():

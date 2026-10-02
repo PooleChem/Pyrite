@@ -9,7 +9,7 @@ from numpy._typing import NDArray
 from .._common import Mol
 from ..atom_consts import AtomType, vina_atom_consts
 from ._base import ScoringFunction
-from .dependencies import Dependency, KNNDependency
+from .dependencies import Dependency, KNNDependency, PositionQuery
 
 
 @njit
@@ -140,7 +140,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
 
         self.nn_dep = KNNDependency(
             self.fixed_mol.positions[self.fixed_mask],
-            self.probe_mol.get_positions,
+            PositionQuery(self.probe_mol),
             self.k,
             self.cutoff,
         )
@@ -184,7 +184,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
     def _mask_field(self, idx, mask, atom_type):
         return mask
 
-    def _score(self, conf_id, computed) -> float:
+    def _score(self, pose, computed) -> float:
         r, idx, mask = computed[self.nn_dep]
         r = r[self.probe_mask]
         idx = idx[self.probe_mask]
@@ -217,7 +217,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         s[~self._mask_field(idx, mask, atom_type)] = 0.0
         return s.sum(axis=-1)
 
-    def _batch_scores(self, conf_ids, computed_batch) -> NDArray[np.float64]:
+    def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
         r, idx, mask = computed_batch[self.nn_dep]
         r = r[:, self.probe_mask]
         idx = idx[:, self.probe_mask]
@@ -893,7 +893,7 @@ class LJ(_KNNScoringFunction):
         self._cap = cap
         self._depth = depth
 
-    def _score(self, conf_id, computed) -> float:
+    def _score(self, pose, computed) -> float:
         r, idx, neighbor_mask = computed[self.nn_dep]
         r = r[self.probe_mask]
         idx = idx[self.probe_mask]
@@ -1357,7 +1357,7 @@ class ElectroStatic(_ChargeScoringFunction):
         self._power = power
         self._cap = cap
 
-    def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
+    def _score(self, pose, computed: dict[Dependency, Any] | None) -> float:
         r, idx, mask = computed[self.nn_dep]
         r = r[self.probe_mask]
         idx = idx[self.probe_mask]
@@ -1517,7 +1517,7 @@ class AD4Solvation(_ChargeScoringFunction):
 
         self.probe_mol_volume = self.ad_volume[self.probe_mol.atom_types[self.probe_mask]]
 
-    def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
+    def _score(self, pose, computed: dict[Dependency, Any] | None) -> float:
         r, idx, mask = computed[self.nn_dep]
         r = r[self.probe_mask]
         idx = idx[self.probe_mask]
@@ -1981,7 +1981,7 @@ class PlantsPLP(_PLP):
 
         self.interaction_types = lut
 
-    def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
+    def _score(self, pose, computed: dict[Dependency, Any] | None) -> float:
         r, idx, mask = computed[self.nn_dep]
         r = r[self.probe_mask]
         idx = idx[self.probe_mask]

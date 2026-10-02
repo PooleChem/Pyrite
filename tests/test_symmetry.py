@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from helpers import loaded_pose
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolAlign
 
@@ -44,7 +45,7 @@ def test_rmsd_is_zero_for_a_symmetric_relabelling(biphenyl):
     identity = [[(i, i) for i in range(biphenyl.GetNumAtoms())]]
 
     assert rdMolAlign.CalcRMS(biphenyl, relabelled, map=identity) > 1.0
-    assert RMSD(biphenyl, relabelled).get_score() < 1e-6
+    assert RMSD(biphenyl, relabelled).get_score(loaded_pose(biphenyl)) < 1e-6
 
 
 def test_rmsd_does_not_depend_on_the_atom_order_of_the_reference():
@@ -52,13 +53,13 @@ def test_rmsd_does_not_depend_on_the_atom_order_of_the_reference():
     order = [int(i) for i in np.random.default_rng(0).permutation(mol.GetNumAtoms())]
     renumbered = Mol(Chem.RenumberAtoms(mol, order))
 
-    assert RMSD(mol, renumbered).get_score() < 1e-6
+    assert RMSD(mol, renumbered).get_score(loaded_pose(mol)) < 1e-6
 
 
 def test_rmsd_equals_rdkit_for_different_conformers(biphenyl):
     other = _mol("c1ccccc1-c1ccccc1", seed=7)
 
-    assert RMSD(biphenyl, other).get_score() == pytest.approx(
+    assert RMSD(biphenyl, other).get_score(loaded_pose(biphenyl)) == pytest.approx(
         rdMolAlign.CalcRMS(biphenyl, other), abs=1e-6
     )
 
@@ -69,7 +70,7 @@ def test_crowding_recognises_a_symmetric_duplicate(biphenyl):
     conf_id = crowding._ref_mol.AddConformer(relabelled.GetConformer(), assignId=True)
     crowding.register_pose(int(conf_id))
 
-    assert crowding.get_score() == pytest.approx(4**4.0, rel=1e-6)
+    assert crowding.get_score(loaded_pose(biphenyl)) == pytest.approx(4**4.0, rel=1e-6)
 
 
 def _poses(mol: Mol, n: int) -> Poses:
@@ -86,9 +87,8 @@ def test_rmsd_matrix_agrees_with_the_rmsd_scoring_function(biphenyl):
     probe, ref = Mol(Chem.Mol(biphenyl), flexible=True), Mol(Chem.Mol(biphenyl), flexible=True)
 
     for i, j in [(0, 1), (2, 5), (3, 4)]:
-        ref.update(poses[i])
-        probe.update(poses[j])
-        assert RMSD(probe, ref).get_score() == pytest.approx(matrix[i, j], abs=1e-6)
+        ref.pose_to_conformer(poses[i])
+        assert RMSD(probe, ref).get_score(poses[j]) == pytest.approx(matrix[i, j], abs=1e-6)
 
 
 def test_rmsd_matrix_symmetry_never_exceeds_the_plain_rmsd(biphenyl):
@@ -111,7 +111,7 @@ def test_cluster_and_select_merges_symmetric_duplicates(biphenyl):
     from unittest import mock
 
     stack = np.stack([positions, positions[list(sigma)]])
-    with mock.patch("pyrite.cluster._positions", lambda mol, poses: stack):
+    with mock.patch.object(Mol, "pose_to_positions", lambda mol, poses: stack):
         assert list(cluster_and_select(biphenyl, poses, scores, cutoff=0.5)) == [0]
         assert sorted(cluster_and_select(biphenyl, poses, scores, cutoff=0.5, symmetry=False)) == [
             0,

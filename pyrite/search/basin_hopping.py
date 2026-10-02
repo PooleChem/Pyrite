@@ -142,7 +142,7 @@ class BasinHopping:
     ----------
     func : callable
         The objective, ``func(pose) -> float``, taking a :class:`~pyrite._common.Pose`. Lower
-        is better. For example ``lambda pose: scoring_function.step(pose, ligand)``.
+        is better. For example ``scoring_function.get_score``.
     hop : callable
         The hop, ``hop(pose, rng, stepsize) -> pose_new``. It must return a new pose rather than
         modifying `pose`, and should draw all its randomness from `rng`. A hop without a notion
@@ -168,7 +168,7 @@ class BasinHopping:
     --------
     >>> hop = random_hop(binding_site.get_translation_bounds())
     >>> bh = BasinHopping(
-    ...     lambda pose: scoring.step(pose, ligand),
+    ...     scoring.get_score,
     ...     hop,
     ...     T=geometric_annealing(2.0, 0.1),
     ...     stepsize=0.5,

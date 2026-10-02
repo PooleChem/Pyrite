@@ -13,7 +13,10 @@ from rdkit.Chem import Draw, SDWriter
 from scipy.spatial.transform import Rotation
 
 from ._util import (
+    _apply_torsions,
+    _atoms_beyond,
     _compose_delta_transform,
+    _pack_torsions,
     _rotation_matrix_from_euler,
     _rotation_matrix_from_quat,
     _rotation_matrix_to_euler,
@@ -85,6 +88,8 @@ class Mol(Chem.Mol):
     ):
         self.__rotatable_torsions = np.array([], dtype=object)
         self.__torsion_angles = np.array([])
+        self.__torsion_moving = []
+        self.__packed_torsions = _pack_torsions([], [])
 
         self._fix_mol_valence(sanitize=False)  # TODO: sanitize?
 
@@ -105,6 +110,10 @@ class Mol(Chem.Mol):
 
         # TODO: this doesnt make sense for proteins. In a protein, all torsions should be oriented wrt the backbone, not the center atom.
         self._center_atom = center_atom if center_atom is not None else self.__get_center_atom()
+        # The geometry (bond lengths and angles) that poses are applied to, see `pose_to_positions`.
+        # Torsions are absolute and the rotation is relative to this orientation, so the global
+        # conformer can be moved afterwards without changing what a pose means.
+        self._reference_positions = np.array(self.GetConformer().GetPositions(), dtype=float)
 
         # TODO: make property. Setting it will then compute the torsions if needed. Perhaps bool | list ?
         self.is_flexible = flexible
@@ -348,7 +357,7 @@ class Mol(Chem.Mol):
         Mol
         variables : numpy.ndarray
             The conformations in the SDF file, represented by a tuple of size ``(6 + n_tors)``,
-            as expected by e.g. :meth:`update`.
+            as expected by e.g. :meth:`pose_to_conformer`.
         """
         # RDLogger.DisableLog("rdApp.*")
         mol = Chem.MolFromMolFile(
@@ -561,6 +570,12 @@ class Mol(Chem.Mol):
         self.__rotatable_torsions = rotatable_torsions
         self.__torsion_angles = torsion_angles
 
+        adjacency = [[n.GetIdx() for n in atom.GetNeighbors()] for atom in self.GetAtoms()]
+        self.__torsion_moving = [
+            _atoms_beyond(adjacency, c, b) for (_, b, c, _) in rotatable_torsions
+        ]
+        self.__packed_torsions = _pack_torsions(rotatable_torsions, self.__torsion_moving)
+
     @property
     def atom_types(self):
         """The atom types of all atoms in the ligand.
@@ -598,6 +613,52 @@ class Mol(Chem.Mol):
         list
         """
         return self.GetConformer(conf_id).GetPositions()
+
+    def pose_to_positions(self, poses) -> NDArray:
+        """Compute the atom positions of poses, in numpy, without any RDKit conformer.
+
+        This is exactly what :meth:`pose_to_conformer` does to a conformer, but it returns the positions
+        directly, for one pose or a whole batch at once. The rotation is applied about the center
+        atom, the center atom is placed at the translation, and then the torsions are set (as
+        ``pose_to_conformer`` does, in that order).
+
+        Parameters
+        ----------
+        poses : Pose or Poses or array_like
+            The poses, in the layout of this molecule. A raw array is a single pose of shape
+            ``(n_dims,)`` or a batch of shape ``(n, n_dims)``.
+
+        Returns
+        -------
+        numpy.ndarray
+            Shape ``(n_atoms, 3)`` for a single pose, or ``(n, n_atoms, 3)`` for a batch.
+        """
+        if isinstance(poses, Pose | Poses):
+            assert poses.layout == self.layout, "Pose and molecule layout do not match."
+            values = np.asarray(poses)
+        else:
+            values = np.asarray(poses, dtype=float)
+        single = values.ndim == 1
+        values = np.atleast_2d(values)
+        if values.shape[-1] != self.layout.n_dims:
+            raise ValueError(
+                f"Poses for this molecule have {self.layout.n_dims} variables, got {values.shape[-1]}."
+            )
+        layout = self.layout
+        if len(values) == 0:  # SciPy cannot build an empty set of rotations
+            return np.empty((0, *self._reference_positions.shape))
+
+        reference = self._reference_positions
+        centered = reference - reference[self._center_atom]
+        positions = np.einsum(
+            "nij,aj->nai", layout.rotation_matrix(values[:, layout.rot_slice]), centered
+        )
+        positions += values[:, None, layout.trans_slice]
+        if self.n_tors:
+            positions = _apply_torsions(
+                positions, self.__packed_torsions, values[:, layout.tors_slice]
+            )
+        return positions[0] if single else positions
 
     @property
     def rotatable_torsions(self):
@@ -735,7 +796,7 @@ class Mol(Chem.Mol):
 
         Chem.rdMolTransforms.TransformConformer(conf, transformation_matrix)
 
-    def update(self, pose: Pose | NDArray, new_conf: bool = False) -> int:
+    def pose_to_conformer(self, pose: Pose | NDArray, new_conf: bool = False) -> int:
         """Update the molecule with the new variables.
 
         Input should be shaped like ``(6 + n_tors,)``.
@@ -918,7 +979,7 @@ class Mol(Chem.Mol):
         writer = Chem.SDWriter(file)
 
         for pose in poses:
-            conf_id = self.update(pose, new_conf=True)
+            conf_id = self.pose_to_conformer(pose, new_conf=True)
             self.to_sdf(writer, conf_id=conf_id)
             self.RemoveConformer(conf_id)
         writer.close()
@@ -1138,6 +1199,15 @@ class Mol(Chem.Mol):
     # endregion
 
 
+def _as_array(values: NDArray, dtype, copy) -> NDArray:
+    """The ``__array__`` protocol of NumPy 2: the owned array itself unless a copy is needed."""
+    if dtype is not None and np.dtype(dtype) != values.dtype:
+        if copy is False:
+            raise ValueError("A copy is required to convert the dtype, but copy=False was given.")
+        return values.astype(dtype)
+    return values.copy() if copy else values
+
+
 @dataclass(frozen=True)
 class PoseLayout:
     rot_type: Literal["euler", "quat"]  # 'euler' | 'quat'
@@ -1199,6 +1269,24 @@ class PoseLayout:
         # Layout order is (w, x, y, z); scipy is (x, y, z, w).
         current = Rotation.from_quat(rotation[..., [1, 2, 3, 0]])
         return (d_r * current).as_quat()[..., [3, 0, 1, 2]]
+
+    def rotation_matrix(self, rotation: NDArray) -> NDArray:
+        """Return the rotation matrix of a rotation in this layout's representation.
+
+        Parameters
+        ----------
+        rotation : ndarray
+            Shape ``(rot_dim,)`` or ``(n, rot_dim)``.
+
+        Returns
+        -------
+        ndarray
+            Shape ``(3, 3)`` or ``(n, 3, 3)``. It acts on column vectors: ``x' = R @ x``.
+        """
+        rotation = np.asarray(rotation)
+        if self.rot_type == "euler":
+            return Rotation.from_euler("ZYX", rotation[..., ::-1]).as_matrix()
+        return Rotation.from_quat(rotation[..., [1, 2, 3, 0]]).as_matrix()
 
     def sample_random_rotations(self, n: int, rng: np.random.Generator | None = None) -> NDArray:
         """Sample `n` rotations uniformly at random, in this layout's representation.
@@ -1265,8 +1353,8 @@ class Pose:
         self.translation = self._v[self.layout.trans_slice]
         self.torsions = self._v[self.layout.tors_slice]
 
-    def __array__(self, dtype=None):
-        return self._v if dtype is None else self._v.astype(dtype)
+    def __array__(self, dtype=None, copy=None):
+        return _as_array(self._v, dtype, copy)
 
     def __eq__(self, other):
         return bool(np.array_equal(self._v, other._v)) and self.layout == other.layout
@@ -1314,8 +1402,8 @@ class Poses:
     def __len__(self):
         return len(self._vs)
 
-    def __array__(self, dtype=None):
-        return self._vs if dtype is None else self._vs.astype(dtype)
+    def __array__(self, dtype=None, copy=None):
+        return _as_array(self._vs, dtype, copy)
 
     def __getitem__(self, idx):
         if isinstance(idx, (int, np.integer)):
@@ -1354,5 +1442,5 @@ class Poses:
         return cls(vs, layout)
 
     @classmethod
-    def from_poses(cls, poses: list[Pose], layout: PoseLayout | None = None):
+    def from_list(cls, poses: list[Pose], layout: PoseLayout | None = None):
         return cls(np.stack([np.asarray(p) for p in poses]), layout or poses[0].layout)

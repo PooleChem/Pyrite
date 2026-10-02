@@ -13,6 +13,7 @@ implementation could reasonably violate (for example "scores are non-negative").
 
 from __future__ import annotations
 
+import contextlib
 import numbers
 
 import numpy as np
@@ -63,15 +64,32 @@ def _close(got, expected) -> bool:
     return bool(np.allclose(got, expected, rtol=RTOL, atol=ATOL))
 
 
-def _conformers(mol, poses) -> list[int]:
-    """The conformers to score: the loaded one (-1), and one new conformer for every pose."""
-    return [-1] + [mol.update(pose, new_conf=True) for pose in poses]
+@contextlib.contextmanager
+def _positions_through_rdkit(mol):
+    """Compute the positions of poses of `mol` with RDKit (``Mol.pose_to_conformer``) instead of numpy.
 
+    The reference the numpy pipeline must agree with, for whatever a scoring function does with
+    those positions.
+    """
+    cls = type(mol)
+    original = cls.pose_to_positions
 
-def _remove(mol, conf_ids) -> None:
-    for conf_id in conf_ids:
-        if conf_id != -1:
-            mol.RemoveConformer(conf_id)
+    def through_rdkit(self, poses):
+        if self is not mol:
+            return original(self, poses)
+        values = np.asarray(poses, dtype=float)
+        out = []
+        for row in np.atleast_2d(values):
+            conf_id = self.pose_to_conformer(row, new_conf=True)
+            out.append(self.get_positions(conf_id))
+            self.RemoveConformer(conf_id)
+        return np.stack(out) if values.ndim == 2 else out[0]
+
+    cls.pose_to_positions = through_rdkit
+    try:
+        yield
+    finally:
+        cls.pose_to_positions = original
 
 
 # ---------------------------------------------------------------------------
@@ -82,11 +100,12 @@ def _remove(mol, conf_ids) -> None:
 def check_scoring_function(sf: ScoringFunction, mol, poses) -> None:
     """Check the contract of a :class:`~pyrite.scoring.ScoringFunction`.
 
-    - ``get_score(conf_id)`` returns a finite real number, and the same one when called again.
-    - ``batch_scores(conf_ids)`` returns one score per conformer, equal to calling ``get_score``
-      for each (in any order).
-    - ``step(pose, mol)`` equals the score of that pose, and leaves `mol` without extra
-      conformers.
+    - ``get_score(pose)`` returns a finite real number, and the same one when called again, also
+      for the raw values of the pose.
+    - ``batch_scores(poses)`` returns one score per pose, equal to calling ``get_score`` for each
+      (in any order, and for raw values).
+    - The score does not depend on how the positions of the pose were computed (numpy, or RDKit).
+    - Scoring leaves `mol` as it was: no extra conformers, the loaded one unmoved.
     - ``get_dependencies()`` returns a list of :class:`~pyrite.scoring.Dependency`, which are
       hashable and equal to themselves.
 
@@ -100,27 +119,32 @@ def check_scoring_function(sf: ScoringFunction, mol, poses) -> None:
         A few poses of `mol`, in its layout.
     """
     assert isinstance(sf, ScoringFunction), f"{type(sf).__name__} is not a ScoringFunction"
-    n_conformers = mol.GetNumConformers()
-    conf_ids = _conformers(mol, poses)
-    try:
-        scores = np.array([sf.get_score(conf_id) for conf_id in conf_ids])
-        assert all(isinstance(s, numbers.Real) for s in scores), "get_score must return a float"
-        assert np.isfinite(scores).all(), f"non-finite scores: {scores}"
-        assert _close([sf.get_score(c) for c in conf_ids], scores), "get_score is not deterministic"
+    n_conformers, loaded = mol.GetNumConformers(), mol.get_positions().copy()
 
-        batch = np.asarray(sf.batch_scores(conf_ids))
-        assert batch.shape == (len(conf_ids),), f"batch_scores returned shape {batch.shape}"
-        assert _close(batch, scores), f"batch_scores {batch} differs from get_score {scores}"
-        reversed_ = np.asarray(sf.batch_scores(conf_ids[::-1]))
-        assert _close(reversed_, scores[::-1]), (
-            "batch_scores depends on the order of the conformers"
+    scores = np.array([sf.get_score(pose) for pose in poses])
+    assert all(isinstance(s, numbers.Real) for s in scores), "get_score must return a float"
+    assert np.isfinite(scores).all(), f"non-finite scores: {scores}"
+    assert _close([sf.get_score(p) for p in poses], scores), "get_score is not deterministic"
+    raw = np.asarray(poses)
+    assert _close([sf.get_score(row) for row in raw], scores), "raw values score differently"
+
+    batch = np.asarray(sf.batch_scores(poses))
+    assert batch.shape == (len(poses),), f"batch_scores returned shape {batch.shape}"
+    assert _close(batch, scores), f"batch_scores {batch} differs from get_score {scores}"
+    reversed_ = np.asarray(sf.batch_scores(poses[::-1]))
+    assert _close(reversed_, scores[::-1]), "batch_scores depends on the order of the poses"
+    assert _close(sf.batch_scores(raw), scores), "batch_scores of raw values differs"
+
+    with _positions_through_rdkit(mol):
+        assert _close([sf.get_score(p) for p in poses], scores), (
+            "get_score depends on how the positions are computed"
+        )
+        assert _close(sf.batch_scores(poses), scores), (
+            "batch_scores depends on how the positions are computed"
         )
 
-        for pose, expected in zip(poses, scores[1:], strict=True):
-            assert _close(sf.step(pose, mol), expected), "step() differs from the score of the pose"
-    finally:
-        _remove(mol, conf_ids)
     assert mol.GetNumConformers() == n_conformers, "scoring left conformers on the molecule"
+    assert np.array_equal(mol.get_positions(), loaded), "scoring moved the molecule"
 
     dependencies = sf.get_dependencies()
     assert isinstance(dependencies, list), (
@@ -153,38 +177,34 @@ def check_composition(sf: ScoringFunction, partner: ScoringFunction, mol, poses)
     poses : Poses
         A few poses of `mol`.
     """
-    conf_ids = _conformers(mol, poses)
-    try:
-        a = np.array([sf.get_score(c) for c in conf_ids])
-        b = np.array([partner.get_score(c) for c in conf_ids])
-        lo, hi = np.quantile(a, 0.25), np.quantile(a, 0.75)
-        if lo == hi:
-            lo, hi = lo - 1.0, hi + 1.0
+    a = np.array([sf.get_score(p) for p in poses])
+    b = np.array([partner.get_score(p) for p in poses])
+    lo, hi = np.quantile(a, 0.25), np.quantile(a, 0.75)
+    if lo == hi:
+        lo, hi = lo - 1.0, hi + 1.0
 
-        cases = {
-            "a + b": (sf + partner, a + b),
-            "a - b": (sf - partner, a - b),
-            "a * b": (sf * partner, a * b),
-            "-a": (-sf, -a),
-            "2.5 * a": (2.5 * sf, 2.5 * a),
-            "a * 2.5": (sf * 2.5, a * 2.5),
-            "a / 4": (sf / 4.0, a / 4.0),
-            "a + 1.5": (sf + 1.5, a + 1.5),
-            "1.5 + a": (1.5 + sf, a + 1.5),
-            "1.5 - a": (1.5 - sf, 1.5 - a),
-            "a ** 2": (sf**2, a**2),
-            "a + b + a": (sf + partner + sf, 2 * a + b),
-            "(a + b) * (a - b)": ((sf + partner) * (sf - partner), (a + b) * (a - b)),
-            "clamp(a)": (sf.clamp(lo, hi), np.clip(a, lo, hi)),
-            "clamp(a + b)": ((sf + partner).clamp(max_score=hi), np.minimum(a + b, hi)),
-        }
-        for name, (composite, expected) in cases.items():
-            got = np.array([composite.get_score(c) for c in conf_ids])
-            assert _close(got, expected), f"{name}: get_score {got} != {expected}"
-            batch = np.asarray(composite.batch_scores(conf_ids))
-            assert _close(batch, expected), f"{name}: batch_scores {batch} != {expected}"
-    finally:
-        _remove(mol, conf_ids)
+    cases = {
+        "a + b": (sf + partner, a + b),
+        "a - b": (sf - partner, a - b),
+        "a * b": (sf * partner, a * b),
+        "-a": (-sf, -a),
+        "2.5 * a": (2.5 * sf, 2.5 * a),
+        "a * 2.5": (sf * 2.5, a * 2.5),
+        "a / 4": (sf / 4.0, a / 4.0),
+        "a + 1.5": (sf + 1.5, a + 1.5),
+        "1.5 + a": (1.5 + sf, a + 1.5),
+        "1.5 - a": (1.5 - sf, 1.5 - a),
+        "a ** 2": (sf**2, a**2),
+        "a + b + a": (sf + partner + sf, 2 * a + b),
+        "(a + b) * (a - b)": ((sf + partner) * (sf - partner), (a + b) * (a - b)),
+        "clamp(a)": (sf.clamp(lo, hi), np.clip(a, lo, hi)),
+        "clamp(a + b)": ((sf + partner).clamp(max_score=hi), np.minimum(a + b, hi)),
+    }
+    for name, (composite, expected) in cases.items():
+        got = np.array([composite.get_score(p) for p in poses])
+        assert _close(got, expected), f"{name}: get_score {got} != {expected}"
+        batch = np.asarray(composite.batch_scores(poses))
+        assert _close(batch, expected), f"{name}: batch_scores {batch} != {expected}"
 
 
 # ---------------------------------------------------------------------------

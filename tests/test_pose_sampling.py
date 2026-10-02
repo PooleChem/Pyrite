@@ -65,8 +65,8 @@ def test_euler_and_quat_layouts_describe_the_same_rotation():
     translation, torsion = np.array([1.0, -2.0, 3.0]), np.array([0.3])
 
     for q, e in zip(quaternions, eulers, strict=True):
-        a = quat.update(np.concatenate([q, translation, torsion]), new_conf=True)
-        b = euler.update(np.concatenate([e, translation, torsion]), new_conf=True)
+        a = quat.pose_to_conformer(np.concatenate([q, translation, torsion]), new_conf=True)
+        b = euler.pose_to_conformer(np.concatenate([e, translation, torsion]), new_conf=True)
         assert np.allclose(quat.get_positions(a), euler.get_positions(b), atol=1e-9)
 
 
@@ -120,3 +120,33 @@ def test_from_parts_round_trip():
     assert np.array_equal(poses.rotation, rotation)
     assert np.array_equal(poses.translation, translation)
     assert np.array_equal(poses.torsions, torsions)
+
+
+def test_poses_follow_the_numpy_array_protocol():
+    # NumPy 2 passes `copy`; the owned array is returned as is (no allocation) unless a copy is asked.
+    layout = PoseLayout("euler", 2)
+    poses = Poses(np.zeros((3, layout.n_dims)), layout)
+    pose = poses[0]
+
+    assert np.asarray(poses) is poses._vs
+    assert np.asarray(pose) is pose._v
+    assert np.array(poses) is not poses._vs and np.array(pose) is not pose._v
+    assert np.asarray(poses, dtype=np.float32).dtype == np.float32
+    with pytest.raises(ValueError):
+        np.array(poses, dtype=np.float32, copy=False)
+
+
+def test_poses_from_list_stacks_poses_and_keeps_the_layout():
+    layout = PoseLayout("quat", 2)
+    rng = np.random.default_rng(0)
+    poses = [Pose(rng.normal(size=layout.n_dims), layout) for _ in range(4)]
+
+    stacked = Poses.from_list(poses)
+
+    assert stacked.layout == layout and len(stacked) == 4
+    assert np.array_equal(np.asarray(stacked), np.stack([np.asarray(p) for p in poses]))
+    assert Poses.from_list(poses, layout) == stacked
+    with pytest.raises((ValueError, AssertionError)):
+        Poses.from_list(
+            [poses[0], Pose(np.zeros(PoseLayout("euler", 2).n_dims), PoseLayout("euler", 2))]
+        )

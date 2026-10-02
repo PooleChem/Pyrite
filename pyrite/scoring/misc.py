@@ -4,10 +4,11 @@ from scipy.spatial import cKDTree
 
 from .._common import AtomType, Mol
 from .._util import _symmetry_mappings
-from ._base import ScoringFunction
+from ._base import ScoringFunction, _RDKitScoringFunction
+from .dependencies import Dependency, PositionDependency
 
 
-class RMSD(ScoringFunction):
+class RMSD(_RDKitScoringFunction):
     """
     🚗 — Used to calculate the RMSD between two poses.
 
@@ -32,6 +33,7 @@ class RMSD(ScoringFunction):
     """
 
     def __init__(self, probe_mol: Mol, ref_mol: Mol = None, max_matches: int = 1000):
+        super().__init__(probe_mol)
         self.probe_mol = probe_mol
         same_atom_order = ref_mol is None
         if ref_mol is None:
@@ -46,17 +48,17 @@ class RMSD(ScoringFunction):
             [(probe_atom, ref_atom) for ref_atom, probe_atom in enumerate(m)] for m in matches
         ]
 
-    def _score(self, conf_id, *args, **kwargs) -> float:
+    def _score(self, pose, computed) -> float:
         score = Chem.rdMolAlign.CalcRMS(
             self.probe_mol,
             self.ref_mol,
-            prbId=conf_id,
+            prbId=computed[self.rdkit_dep],
             map=self._atom_map,
         )
         return score
 
 
-class Crowding(ScoringFunction):
+class Crowding(_RDKitScoringFunction):
     r"""
     🚲 — Used to determine the similarity of a pose to a set of poses.
 
@@ -116,7 +118,7 @@ class Crowding(ScoringFunction):
         divide: bool = True,
         max_matches: int = 1000,
     ):
-        self.mol = molecule
+        super().__init__(molecule)
 
         self._ref_mol = Mol(
             Chem.Mol(molecule), flexible=True
@@ -141,16 +143,17 @@ class Crowding(ScoringFunction):
         ----------
         v : array_like, int
             Either a list containing the variables used to create the new pose using
-            :meth:`~pyrite.Mol.update`, or a `conf_id`.
+            :meth:`~pyrite.Mol.pose_to_conformer`, or a `conf_id`.
 
         """
         if not isinstance(v, int):
-            conf_id = self._ref_mol.update(v, new_conf=True)
+            conf_id = self._ref_mol.pose_to_conformer(v, new_conf=True)
         else:
             conf_id = v
         self._registered_conf.append(conf_id)
 
-    def _score(self, conf_id, *args, **kwargs) -> float:
+    def _score(self, pose, computed) -> float:
+        conf_id = computed[self.rdkit_dep]
         score = 0
 
         for i in self._registered_conf:
@@ -206,9 +209,13 @@ class NumProteinAtomsWithinA(ScoringFunction):
         self.ref_mol = ref_mol
         self.a = a
         self.tree = cKDTree(self.ref_mol.positions)
+        self._position_dep = PositionDependency(self.probe_mol)
 
-    def _score(self, conf_id, computed) -> float:
-        conf_pos = self.probe_mol.GetConformer(conf_id).GetPositions()
+    def get_dependencies(self) -> list[Dependency]:
+        return [self._position_dep]
+
+    def _score(self, pose, computed) -> float:
+        conf_pos = computed[self._position_dep]
 
         return sum(self.tree.query_ball_point(conf_pos[self._mask], self.a, return_length=True))
 

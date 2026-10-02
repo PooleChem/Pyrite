@@ -2,10 +2,10 @@ import numpy as np
 from rdkit import Chem
 
 from .._common import Mol
-from ._base import ScoringFunction
+from ._base import _RDKitScoringFunction
 
 
-class InternalOverlap(ScoringFunction):
+class InternalOverlap(_RDKitScoringFunction):
     """
     ✈️ — Calculates the overlap between atoms in a ligand.
 
@@ -36,7 +36,7 @@ class InternalOverlap(ScoringFunction):
     """
 
     def __init__(self, molecule: Mol, ignore_hs: bool = False, vdw_scale: float = 1.0):
-        self.mol = molecule
+        super().__init__(molecule)
 
         # Set up
         pt = Chem.GetPeriodicTable()
@@ -54,8 +54,8 @@ class InternalOverlap(ScoringFunction):
         if ignore_hs:
             self._mask &= (a_nums[:, None] > 1) & (a_nums[None, :] > 1)
 
-    def _score(self, conf_id, *args, **kwargs) -> float:
-        distance_matrix = Chem.Get3DDistanceMatrix(self.mol, conf_id)
+    def _score(self, pose, computed) -> float:
+        distance_matrix = Chem.Get3DDistanceMatrix(self.mol, computed[self.rdkit_dep])
 
         dists = distance_matrix[self._mask]
         r_sums = self._sum_of_radii[self._mask]
@@ -64,7 +64,7 @@ class InternalOverlap(ScoringFunction):
         return float(overlaps.sum())
 
 
-class InternalEnergy(ScoringFunction):
+class InternalEnergy(_RDKitScoringFunction):
     """
     🚗 — Calculates the MMFF internal energy of a molecule.
 
@@ -86,7 +86,7 @@ class InternalEnergy(ScoringFunction):
     """
 
     def __init__(self, molecule: Mol):
-        self.mol = molecule
+        super().__init__(molecule)
 
         mmff_props = Chem.AllChem.MMFFGetMoleculeProperties(self.mol)
         self._mmff_ff = Chem.AllChem.MMFFGetMoleculeForceField(self.mol, mmff_props)
@@ -106,10 +106,10 @@ class InternalEnergy(ScoringFunction):
         if self._mmff_ff is not None:
             self._mmff_ff.Initialize()
 
-    def _score(self, conf_id, *args, **kwargs) -> float:
+    def _score(self, pose, computed) -> float:
         if self._mmff_ff is None:
             return 0.0
-        pos = self.mol.GetConformer(conf_id).GetPositions()
+        pos = self.mol.GetConformer(computed[self.rdkit_dep]).GetPositions()
         self._mmff_ff.Initialize()
         flat_pos = pos.reshape(-1).tolist()
         return self._mmff_ff.CalcEnergy(flat_pos)  # kcal/mol

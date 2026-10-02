@@ -3,7 +3,7 @@ import numpy as np
 from .._common import Mol
 from ..bounds import Bounds, Pocket
 from ._base import ScoringFunction
-from .dependencies import Dependency, KNNDependency
+from .dependencies import Dependency, KNNDependency, PositionDependency, PositionQuery
 
 # pylint: disable=too-few-public-methods
 
@@ -58,8 +58,7 @@ class DistanceToPocket(ScoringFunction):
 
         self._nn_dep = KNNDependency(
             pocket.centers,
-            # lambda i: self.ligand.get_positions(i)[self._mask],
-            self.mol.get_positions,
+            PositionQuery(self.mol),
             1,
             self.cutoff,
         )
@@ -67,7 +66,7 @@ class DistanceToPocket(ScoringFunction):
     def get_dependencies(self) -> list[Dependency]:
         return [self._nn_dep]
 
-    def _score(self, conf_id, computed) -> float:
+    def _score(self, pose, computed) -> float:
         r, _, mask = computed[self._nn_dep]
         r, mask = r[..., 0], mask[..., 0]
 
@@ -128,10 +127,9 @@ class WeightedBoundsOverlap(ScoringFunction):
             [include_hs or atom.GetAtomicNum() > 1 for atom in self.mol.GetAtoms()]
         )
 
-        print(len(pocket.centers))
         self.nn_dep = KNNDependency(
             pocket.centers,
-            lambda i: self.mol.get_positions(i)[self.mask],
+            PositionQuery(self.mol, self.mask),
             1,
             4,
         )
@@ -143,15 +141,9 @@ class WeightedBoundsOverlap(ScoringFunction):
     def get_dependencies(self) -> list[Dependency]:
         return [self.nn_dep]
 
-    def _score(self, conf_id, computed) -> float:
+    def _score(self, pose, computed) -> float:
         r, idx, safe_mask = computed[self.nn_dep]
-
-        if r.ndim == 2:
-            r = r[:, 0]
-        if idx.ndim == 2:
-            idx = idx[:, 0]
-        if safe_mask.ndim == 2:
-            safe_mask = safe_mask[:, 0]
+        r, idx, safe_mask = r[..., 0], idx[..., 0], safe_mask[..., 0]
 
         safe_idx = np.where(safe_mask, idx, 0)
 
@@ -200,14 +192,14 @@ class OutOfBoundsPenalty(ScoringFunction):
     def __init__(self, molecule: Mol, bounds: Bounds):
         self.mol = molecule
         self.bounds = bounds
+        self._position_dep = PositionDependency(molecule)
 
-    def _score(self, conf_id, *args, **kwargs) -> float:
-        conf = self.mol.GetConformer(conf_id)
+    def get_dependencies(self) -> list[Dependency]:
+        return [self._position_dep]
 
+    def _score(self, pose, computed) -> float:
         score = 0.0
-        for atom in self.mol.GetAtoms():
-            a_i = atom.GetIdx()
-            pos = tuple(conf.GetAtomPosition(a_i))
-            score += self.bounds.squared_distance(pos)
+        for position in computed[self._position_dep]:
+            score += self.bounds.squared_distance(tuple(position))
 
         return score

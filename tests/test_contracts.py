@@ -6,7 +6,7 @@ The implementations come from the registries in ``conftest.py``; the checks are 
 
 import numpy as np
 import pytest
-from conftest import LAYOUTS
+from conftest import EXAMPLES, LAYOUTS
 from contracts import (
     check_bounds,
     check_composition,
@@ -19,7 +19,7 @@ from contracts import (
 
 import pyrite.bounds
 import pyrite.scoring
-from pyrite._common import Pose
+from pyrite._common import Mol, Pose
 from pyrite.bounds import Bounds
 from pyrite.scoring import ScoringFunction
 
@@ -95,19 +95,19 @@ def test_stepsize_rule_contract(stepsize_rule_name, ctx):
 
 
 class _Constant(ScoringFunction):
-    def _score(self, conf_id, computed):
+    def _score(self, pose, computed):
         return 1.0
 
 
 class _NotFinite(_Constant):
-    def _score(self, conf_id, computed):
+    def _score(self, pose, computed):
         return float("nan")
 
 
 class _NotDeterministic(_Constant):
     calls = 0
 
-    def _score(self, conf_id, computed):
+    def _score(self, pose, computed):
         type(self).calls += 1
         return float(type(self).calls)
 
@@ -118,26 +118,47 @@ class _DependenciesAsSet(_Constant):
 
 
 class _WrongBatch(_Constant):
-    def _batch_scores(self, conf_ids, computed_batch):
-        return np.zeros(len(conf_ids))
+    def _batch_scores(self, poses, computed_batch):
+        return np.zeros(len(poses))
 
 
 class _LeaksConformers(_Constant):
-    def step(self, x, mol):
-        mol.update(x, new_conf=True)
+    def __init__(self, mol):
+        self.mol = mol
+
+    def _score(self, pose, computed):
+        self.mol.pose_to_conformer(pose, new_conf=True)
+        return 1.0
+
+
+class _MovesTheMolecule(_Constant):
+    def __init__(self, mol):
+        self.mol = mol
+
+    def _score(self, pose, computed):
+        self.mol.pose_to_conformer(pose)  # moves the loaded conformer
         return 1.0
 
 
 @pytest.mark.parametrize(
-    "broken",
-    [_NotFinite, _NotDeterministic, _DependenciesAsSet, _WrongBatch, _LeaksConformers],
+    "build",
+    [
+        lambda mol: _NotFinite(),
+        lambda mol: _NotDeterministic(),
+        lambda mol: _DependenciesAsSet(),
+        lambda mol: _WrongBatch(),
+        _LeaksConformers,
+        _MovesTheMolecule,
+    ],
+    ids=["nan", "nondeterministic", "set", "wrong-batch", "leaks-conformers", "moves-molecule"],
 )
-def test_the_scoring_function_check_rejects_a_broken_implementation(broken, ctx):
+def test_the_scoring_function_check_rejects_a_broken_implementation(build, ctx):
     # The well-behaved baseline passes ...
     check_scoring_function(_Constant(), ctx.ligand, ctx.poses)
-    # ... and each deliberate violation is caught.
+    # ... and each deliberate violation is caught (on a copy, as some of them damage the molecule).
+    ligand = Mol.from_sdf(str(EXAMPLES / "factor_x_ligand.sdf"), flexible=True)
     with pytest.raises(AssertionError):
-        check_scoring_function(broken(), ctx.ligand, ctx.poses)
+        check_scoring_function(build(ligand), ligand, ctx.poses)
 
 
 def test_the_composition_check_rejects_a_composite_that_changes_scores(ctx):
