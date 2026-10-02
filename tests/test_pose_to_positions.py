@@ -276,3 +276,29 @@ def test_the_pose_does_not_depend_on_how_the_conformer_got_there():
 
     assert np.array_equal(mol.get_positions(), mol.pose_to_positions(poses[-1]))
     assert np.abs(mol.get_positions() - rdkit_positions(mol, poses[-1])).max() < 1e-9
+
+
+def test_torsions_are_a_fresh_float_array_of_the_current_torsions():
+    mol = MOLECULES["branched"]("euler")
+    pose = _random_poses(mol, 1, seed=2)[0]
+    mol.pose_to_conformer(pose)
+
+    torsions = mol.torsions
+
+    assert isinstance(torsions, np.ndarray) and torsions.dtype == float
+    assert torsions.shape == (mol.n_tors,)
+    assert np.allclose(np.angle(np.exp(1j * (torsions - pose.torsions))), 0, atol=1e-9)
+    torsions[:] = 0.0  # a copy: changing it does not change what the molecule reports
+    assert not np.allclose(mol.torsions, 0.0)
+
+
+def test_torsions_of_a_molecule_without_torsions_are_empty_and_change_nothing():
+    for flexible in (False, True):
+        mol = Mol(_from_smiles("c1ccccc1O").rdkit, flexible=flexible)  # nothing rotates
+        assert mol.torsions.shape == (0,) and len(mol.rotatable_torsions) == 0
+    # A molecule that is not flexible has no torsions even if it has rotatable bonds: asking for
+    # them used to compute them silently, leaving it with torsions its layout does not have.
+    rigid = Mol(MOLECULES["factor_x"]("euler").rdkit, flexible=False)
+
+    assert rigid.torsions.shape == (0,)
+    assert len(rigid.rotatable_torsions) == 0 and rigid.n_tors == 0

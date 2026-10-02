@@ -109,7 +109,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     See Also
@@ -124,7 +124,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         probe_mol: Mol,
         fixed_mol: Mol,
         cutoff: float = 8.0,
-        k: int = 400,
+        k: int = 100,
     ):
         self.probe_mol = probe_mol
         self.fixed_mol = fixed_mol
@@ -279,7 +279,7 @@ class Gaussian(_KNNScoringFunction):
         The width of the Gaussian.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider. It is necessary to increase this number if a wider or
         higher offset Gaussian is used.
 
@@ -292,7 +292,7 @@ class Gaussian(_KNNScoringFunction):
         offset: float = 0.0,
         width: float = 0.5,
         cutoff: float = None,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(
             probe_mol,
@@ -353,7 +353,7 @@ class Repulsion(_KNNScoringFunction):
         The offset that is added to `optimal_distance`.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
     """
 
@@ -363,7 +363,7 @@ class Repulsion(_KNNScoringFunction):
         fixed_mol: Mol,
         offset: float = 0.0,
         cutoff: float = None,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(probe_mol, fixed_mol, cutoff or 4 + offset, k)
         self.offset = offset
@@ -422,7 +422,7 @@ class _SlopeStep(_KNNScoringFunction):
         The `bad` distance. Distance values higher than this value are scored :math:`0`.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     See Also
@@ -439,7 +439,7 @@ class _SlopeStep(_KNNScoringFunction):
         good: float = 0.5,
         bad: float = 1.5,
         cutoff: float = None,
-        k: int = 400,
+        k: int = 100,
     ):
         assert good < bad, "Bad distance <= good distance not implemented."
         # `bad` is an offset from optimal_distance (~4 Å for a typical atom pair),
@@ -518,7 +518,7 @@ class Hydrophobic(_SlopeStep):
         The end of the `slope-step`.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     See Also
@@ -535,7 +535,7 @@ class Hydrophobic(_SlopeStep):
         good: float = 0.5,
         bad: float = 1.5,
         cutoff: float = None,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(probe_mol, fixed_mol, good, bad, cutoff, k)
 
@@ -629,7 +629,7 @@ class NonHydrophobic(Hydrophobic):
         The end of the `slope-step`.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     See Also
@@ -716,7 +716,7 @@ class NonDirHBond(_SlopeStep):
         The end of the `slope-step`.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     See Also
@@ -733,7 +733,7 @@ class NonDirHBond(_SlopeStep):
         good: float = -0.7,
         bad: float = 0,
         cutoff: float = None,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(probe_mol, fixed_mol, good, bad, cutoff, k)
 
@@ -861,7 +861,7 @@ class LJ(_KNNScoringFunction):
         The depth of the LJ-potential minimum.
     cutoff : float, default 8.0
         Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     """
@@ -877,7 +877,7 @@ class LJ(_KNNScoringFunction):
         cap: float = 100.0,
         depth: float = 1.0,
         cutoff: float = None,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(
             probe_mol,
@@ -1015,7 +1015,7 @@ class VDW(LJ):
         The maximum score for a single atom-atom interaction.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     See Also
@@ -1034,7 +1034,7 @@ class VDW(LJ):
         smoothing: float = 0,
         cap: float = 100.0,
         cutoff: float = None,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(
             probe_mol,
@@ -1122,7 +1122,7 @@ class NonDirHBondLJ(LJ):
         The maximum score for a single atom-atom interaction.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     See Also
@@ -1139,7 +1139,7 @@ class NonDirHBondLJ(LJ):
         offset: float = -0.7,
         cap: float = 100.0,
         cutoff: float = None,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(
             probe_mol,
@@ -1205,7 +1205,7 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
         The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     See Also
@@ -1229,7 +1229,7 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
         probe_mol: Mol,
         fixed_mol: Mol,
         cutoff: float = 8.0,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(
             probe_mol,
@@ -1325,7 +1325,7 @@ class ElectroStatic(_ChargeScoringFunction):
         The maximum score for a single atom-atom interaction.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     References
@@ -1345,7 +1345,7 @@ class ElectroStatic(_ChargeScoringFunction):
         power: int = 1,
         cap: float = 100.0,
         cutoff: float = 8.0,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(
             probe_mol,
@@ -1467,7 +1467,7 @@ class AD4Solvation(_ChargeScoringFunction):
         Describes how charge-dependent the score is.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     References
@@ -1486,7 +1486,7 @@ class AD4Solvation(_ChargeScoringFunction):
         d_sigma: float = 3.6,
         s_q: float = 0.01097,
         cutoff: float = 8.0,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(
             probe_mol,
@@ -1615,7 +1615,7 @@ class _PLP(_KNNScoringFunction, ABC):
         The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     See Also
@@ -1630,7 +1630,7 @@ class _PLP(_KNNScoringFunction, ABC):
         probe_mol: Mol,
         fixed_mol: Mol,
         cutoff: float = 8.0,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(
             probe_mol,
@@ -1848,7 +1848,7 @@ class PlantsPLP(_PLP):
         A tuple or list containing the weights for each interaction type.
     cutoff : float, default 8.0
         NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    k : int, default 100
         The number of neighbors to consider.
 
     References
@@ -1866,7 +1866,7 @@ class PlantsPLP(_PLP):
         fixed_mol: Mol,
         weights: tuple[float, float, float, float, float] | None = None,
         cutoff: float = 8.0,
-        k: int = 400,
+        k: int = 100,
     ):
         super().__init__(
             probe_mol,

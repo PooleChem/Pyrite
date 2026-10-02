@@ -159,8 +159,6 @@ from .misc import (
     NumProteinAtomsWithinA,
     NumTors,
 )
-
-# from .openmm import *
 from .protein import (
     LJ,
     VDW,

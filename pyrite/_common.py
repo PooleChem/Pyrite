@@ -17,7 +17,6 @@ from ._util import (
     _apply_torsions,
     _atoms_beyond,
     _pack_torsions,
-    _rotation_matrix_to_euler,
 )
 from .atom_consts import AtomType, vina_atom_consts
 from .view import Viewer
@@ -88,7 +87,6 @@ class Mol:
             )
         self._rdkit = Chem.Mol(mol)  # a private copy: the caller's molecule is never modified
         self.__rotatable_torsions = np.array([], dtype=object)
-        self.__torsion_angles = np.array([])
         self.__torsion_moving = []
         self.__packed_torsions = _pack_torsions([], [])
 
@@ -326,95 +324,6 @@ class Mol:
         RDLogger.EnableLog("rdApp.*")
         return cls(mol, hydrogens=hydrogens, **kwargs)
 
-    @classmethod
-    def v_from_sdf(
-        cls,
-        mol_file: str,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
-        rmsd_delta: float = 0.5,
-        **kwargs,
-    ):
-        """Creates a :class:`Mol` from an SDF file, and also returns a list of variables
-        representing the conformations in the SDF file.
-
-        Parameters
-        ----------
-        mol_file : str
-            Path to the SDF file containing the molecule, with multiple conformations.
-            All molecules in the SDF file should be equal.
-        hydrogens : {'keep', 'add', 'remove'}, default 'remove'
-            Whether to keep hydrogens as is, add additional hydrogens, or remove all hydrogens.
-        rmsd_delta : float, default 0.5
-            The maximum RMSD between the conformations in the SDF file after alignment. This is
-            needed when, for example, the SDF file is generated with a program that modifies bond
-            angles and -lengths, such that they are different between conformations. These
-            properties are currently not considered as variables, and will thus be lost. The
-            molecules will be aligned as closely as possible, with a maximum RMSD of `rmsd_delta`.
-
-        Raises
-        ------
-        ValueError
-            When the molecules in the SDF file are not equal, or can't be aligned within an error of
-            `rmsd_delta`.
-
-
-        Returns
-        -------
-        Mol
-        variables : numpy.ndarray
-            The conformations in the SDF file, represented by a tuple of size ``(6 + n_tors)``,
-            as expected by e.g. :meth:`pose_to_conformer`.
-        """
-        # RDLogger.DisableLog("rdApp.*")
-        mol = Chem.MolFromMolFile(
-            mol_file,
-            removeHs=(hydrogens == "remove"),
-            strictParsing=False,
-            sanitize=False,
-        )
-        # mol = _fix_mol_valence(mol)
-        # mol = Chem.AllChem.AddHs(mol, addCoords=True)
-        lig = cls(mol, **kwargs)
-
-        canon_smiles = Chem.CanonSmiles(Chem.MolToSmiles(mol))
-
-        # Alignment atom map
-        matches = lig.rdkit.GetSubstructMatches(lig.rdkit, uniquify=True, useChirality=True)
-        atom_map = [list(zip(range(lig.n_atoms), match)) for match in matches]
-
-        atom_map = [t for sub in atom_map for t in sub]  # Flatten
-
-        v = []
-        with Chem.SDMolSupplier(mol_file, removeHs=(hydrogens == "remove"), sanitize=False) as supl:
-            for pose in supl:
-                if Chem.CanonSmiles(Chem.MolToSmiles(pose)) != canon_smiles:
-                    raise ValueError("Molecules in SDF file are not equal.")
-                # TODO: dont create whole ligand every time.
-                # the same center atom as `lig`, or the translation is the position of another atom
-                pose_lig = cls(pose, **{**kwargs, "center_atom": lig.center_atom})
-                pose_torsions = pose_lig.torsions
-
-                # Set torsions equal for alignment
-                pose_lig.pose_to_conformer(
-                    np.concatenate([lig.layout.identity_rotation, pose_lig.position, lig.torsions])
-                )
-
-                # Align molecule
-                rmsd, transform = Chem.rdMolAlign.GetAlignmentTransform(
-                    lig.rdkit, pose_lig.rdkit, atomMap=atom_map
-                )
-                if rmsd > rmsd_delta:
-                    raise ValueError("Molecules in SDF file could not be aligned.")
-
-                pos = pose_lig.position
-                roll, pitch, yaw = _rotation_matrix_to_euler(transform[:3, :3])
-
-                v.append((roll, pitch, yaw, *pos, *pose_torsions))
-
-        # RDLogger.EnableLog("rdApp.*")
-
-        return lig, v
-
     def _fix_mol_valence(self, sanitize=True):
         Chem.SanitizeMol(
             self._rdkit,
@@ -561,14 +470,7 @@ class Mol:
         attributes for later use.
 
         """
-        # num_rotatable_bonds = Chem.rdMolDescriptors.CalcNumRotatableBonds(
-        #     self, strict=True
-        # )
-
-        # self.__rotatable_torsions = np.empty(num_rotatable_bonds, dtype=object)
-        # self.__torsion_angles = np.zeros(num_rotatable_bonds)
         rotatable_torsions = []
-        torsion_angles = []
         rotatable_bonds = self.__find_rotatable_bonds(flex_hydrogens)
 
         distance_matrix = np.array(Chem.GetDistanceMatrix(self._rdkit))[self._center_atom, :]
@@ -595,13 +497,8 @@ class Mol:
                 torsion = torsion[::-1]
 
             rotatable_torsions.append(torsion)
-            # Dont care about:?
-            torsion_angles.append(
-                Chem.rdMolTransforms.GetDihedralRad(self._rdkit.GetConformer(), *torsion)
-            )
 
         self.__rotatable_torsions = rotatable_torsions
-        self.__torsion_angles = torsion_angles
 
         adjacency = [[n.GetIdx() for n in atom.GetNeighbors()] for atom in self._rdkit.GetAtoms()]
         self.__torsion_moving = [
@@ -746,22 +643,25 @@ class Mol:
         return self.__rotatable_torsions
 
     @property
-    def torsions(self) -> NDArray[np.float32]:
-        """The torsion angles of the rotatable torsions in the molecule.
+    def torsions(self) -> NDArray[np.float64]:
+        """The current torsion angles of the global conformer, one per rotatable torsion.
+
+        A new array on every call, in the order of :attr:`rotatable_torsions`, and empty for a
+        molecule that is not ``flexible``.
 
         Returns
         -------
-        list
-            A list containing all torsion angles in the molecule, in radians.
-
+        numpy.ndarray
+            Shape ``(n_tors,)``, the angles in radians.
         """
-        if not len(self.__rotatable_torsions) > 0:
-            self.__compute_rotatable_torsions()
-        for i, torsion in enumerate(self.__rotatable_torsions):
-            self.__torsion_angles[i] = Chem.rdMolTransforms.GetDihedralRad(
-                self._rdkit.GetConformer(), *torsion
-            )
-        return self.__torsion_angles
+        conformer = self._rdkit.GetConformer()
+        return np.array(
+            [
+                Chem.rdMolTransforms.GetDihedralRad(conformer, *torsion)
+                for torsion in self.__rotatable_torsions
+            ],
+            dtype=float,
+        )
 
     @property
     def n_tors(self):
@@ -919,18 +819,34 @@ class Mol:
 
     # region Export
 
-    def to_sdf(self, file: str | SDWriter, conf_id: int = -1):
-        """Write the current molecule to an SDF file.
+    def to_sdf(
+        self,
+        file: str | SDWriter,
+        poses: Pose | Poses | None = None,
+        conf_id: int = -1,
+    ) -> None:
+        """Write the molecule to an SDF file: one record for a pose, one per pose of ``Poses``.
+
+        Writing poses does not touch the molecule.
 
         Parameters
         ----------
         file : str, ~rdkit.Chem.rdmolfiles.SDWriter
             Either a filename of a file to create, or an open
-            :class:`~rdkit.Chem.rdmolfiles.SDWriter` object to write to.
-        conf_id : int, optional
-            The conformer id to write.
+            :class:`~rdkit.Chem.rdmolfiles.SDWriter` object to write to (which is left open).
+        poses : Pose or Poses, optional
+            The pose(s) to write. By default the conformer `conf_id` of the molecule is written.
+        conf_id : int, default -1
+            The conformer id to write when no `poses` are given. By default the global conformer.
 
+        Raises
+        ------
+        ValueError
+            When both `poses` and a `conf_id` are given.
         """
+        if poses is not None and conf_id != -1:
+            raise ValueError("Give either `poses` or a `conf_id`, not both.")
+
         close_writer = False
         if isinstance(file, str):
             writer = SDWriter(file)
@@ -940,29 +856,112 @@ class Mol:
         else:
             raise ValueError("file must be either filename str or SDWriter")
 
-        writer.write(self._rdkit, confId=conf_id)
+        if poses is None:
+            writer.write(self._rdkit, confId=conf_id)
+        else:
+            positions = self.pose_to_positions(poses)
+            if positions.ndim == 2:  # a single pose
+                positions = positions[None]
+            # a private copy with only the global conformer, so the molecule is left as it is
+            work = Chem.Mol(self._rdkit, False, self._rdkit.GetConformer().GetId())
+            for pose_positions in positions:
+                work.GetConformer().SetPositions(pose_positions)
+                writer.write(work)
 
         if close_writer:
             writer.close()
 
-    def v_to_sdf(self, file: str, poses: Poses):
-        """Write the current molecule with positions `v` to an SDF file.
+    def poses_from_sdf(self, file: str, rmsd_delta: float = 0.5) -> Poses:
+        """Read the conformers in an SDF file as poses of this molecule.
+
+        The torsions of every conformer are measured, and the rotation and translation are the
+        rigid fit of this molecule's reference geometry (with those torsions) onto it. The
+        conformers must be of this molecule, with the same atoms in the same order.
 
         Parameters
         ----------
         file : str
-            The path to the file to create.
-        v : array_like
-            An array of shape ``(6 + n_tors, n)``, containing molecular positions to write.
+            Path to an SDF file with one or more conformations of this molecule, for example
+            written by :meth:`to_sdf`, or by a docking program.
+        rmsd_delta : float, default 0.5
+            The largest RMSD (in Angstrom) allowed between a conformer and the pose that is made
+            of it. Bond lengths and angles are not part of a pose, so a program that changes them
+            gives conformers that a pose cannot reproduce exactly; this is how much is accepted.
 
+        Returns
+        -------
+        Poses
+            In the layout of this molecule, one pose per record, in file order.
+
+        Raises
+        ------
+        ValueError
+            When a record is not this molecule (other atoms, bonds or order), or cannot be
+            reproduced within `rmsd_delta`.
+        OSError
+            When the file is missing or empty (RDKit's own error).
         """
-        writer = Chem.SDWriter(file)
+        layout = self.layout
+        template = self._rdkit
+        bonds = {frozenset((b.GetBeginAtomIdx(), b.GetEndAtomIdx())) for b in template.GetBonds()}
+        elements = [a.GetAtomicNum() for a in template.GetAtoms()]
 
-        for pose in poses:
-            conf_id = self.pose_to_conformer(pose, new_conf=True)
-            self.to_sdf(writer, conf_id=conf_id)
-            self._rdkit.RemoveConformer(conf_id)
-        writer.close()
+        values = []
+        work = Chem.Mol(template, False, template.GetConformer().GetId())
+        for record in self.__read_sdf_records(file):
+            same_molecule = [a.GetAtomicNum() for a in record.GetAtoms()] == elements and {
+                frozenset((b.GetBeginAtomIdx(), b.GetEndAtomIdx())) for b in record.GetBonds()
+            } == bonds
+            if not same_molecule:
+                raise ValueError(
+                    f"Record {len(values)} of {file} is not this molecule (or its atoms are in a "
+                    "different order)."
+                )
+            observed = record.GetConformer().GetPositions()
+
+            work.GetConformer().SetPositions(observed)
+            torsions = np.array(
+                [
+                    Chem.rdMolTransforms.GetDihedralRad(work.GetConformer(), *torsion)
+                    for torsion in self.__rotatable_torsions
+                ]
+            )
+            # the reference geometry with these torsions, the center atom at the origin
+            identity = np.concatenate([layout.identity_rotation, np.zeros(3), torsions])
+            shape = self.pose_to_positions(identity)
+
+            # the rigid motion that takes it onto the conformer (Kabsch)
+            shape_mean, observed_mean = shape.mean(axis=0), observed.mean(axis=0)
+            u, _, vt = np.linalg.svd((shape - shape_mean).T @ (observed - observed_mean))
+            reflection = np.sign(np.linalg.det(vt.T @ u.T))
+            rotation = vt.T @ np.diag([1.0, 1.0, reflection]) @ u.T
+            translation = observed_mean - rotation @ shape_mean
+
+            rmsd = np.sqrt(np.mean(np.sum((shape @ rotation.T + translation - observed) ** 2, 1)))
+            if rmsd > rmsd_delta:
+                raise ValueError(
+                    f"Record {len(values)} of {file} cannot be reproduced as a pose: RMSD "
+                    f"{rmsd:.2f} > rmsd_delta {rmsd_delta}."
+                )
+            values.append(
+                np.concatenate([layout.rotation_from_matrix(rotation), translation, torsions])
+            )
+
+        if not values:
+            raise ValueError(f"No molecules found in {file}.")
+        return Poses(np.array(values), layout)
+
+    def __read_sdf_records(self, file: str) -> list[Chem.Mol]:
+        """The records of an SDF file, with or without hydrogens, as many as this molecule has."""
+        for remove_hs in (False, True):
+            records = [
+                m
+                for m in Chem.SDMolSupplier(file, removeHs=remove_hs, sanitize=False)
+                if m is not None
+            ]
+            if records and records[0].GetNumAtoms() == self.n_atoms:
+                return records
+        raise ValueError(f"The molecules in {file} do not have {self.n_atoms} atoms.")
 
     # endregion
 
@@ -1300,6 +1299,28 @@ class PoseLayout:
         if self.rot_type == "euler":
             return Rotation.from_euler("ZYX", rotation[..., ::-1]).as_matrix()
         return Rotation.from_quat(rotation[..., [1, 2, 3, 0]]).as_matrix()
+
+    def rotation_from_matrix(self, matrix: NDArray) -> NDArray:
+        """Return the rotation(s) in this layout's representation of rotation matrices.
+
+        The inverse of :meth:`rotation_matrix`. A quaternion is returned with ``w >= 0`` (``q`` and
+        ``-q`` are the same rotation).
+
+        Parameters
+        ----------
+        matrix : ndarray
+            Shape ``(3, 3)`` or ``(n, 3, 3)``, acting on column vectors.
+
+        Returns
+        -------
+        ndarray
+            Shape ``(rot_dim,)`` or ``(n, rot_dim)``.
+        """
+        rotation = Rotation.from_matrix(np.asarray(matrix))
+        if self.rot_type == "euler":
+            return rotation.as_euler("ZYX")[..., ::-1]
+        quaternion = rotation.as_quat()[..., [3, 0, 1, 2]]
+        return np.where(quaternion[..., :1] < 0, -quaternion, quaternion)
 
     def sample_random_rotations(self, n: int, rng: np.random.Generator | None = None) -> NDArray:
         """Sample `n` rotations uniformly at random, in this layout's representation.

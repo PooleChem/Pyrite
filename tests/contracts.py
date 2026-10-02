@@ -24,9 +24,6 @@ from pyrite.scoring import Dependency, ScoringFunction
 
 RTOL, ATOL = 1e-7, 1e-8
 
-# Modules that cannot be imported and are not part of the public API (dead code).
-KNOWN_BROKEN_MODULES = {"pyrite.scoring.openmm"}
-
 
 def discover_subclasses(base: type, package) -> list[type]:
     """Find the public, concrete subclasses of `base` defined in `package`.
@@ -40,8 +37,7 @@ def discover_subclasses(base: type, package) -> list[type]:
     import pkgutil
 
     for info in pkgutil.walk_packages(getattr(package, "__path__", []), package.__name__ + "."):
-        if info.name not in KNOWN_BROKEN_MODULES:
-            importlib.import_module(info.name)
+        importlib.import_module(info.name)
 
     found, stack = {}, list(base.__subclasses__())
     while stack:
