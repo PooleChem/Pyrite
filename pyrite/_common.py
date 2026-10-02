@@ -61,6 +61,16 @@ class Mol:
         graph so that no torsion moves a large part of the molecule (the largest moved fragment is
         minimal, ties are broken by centrality), independent of the loaded conformer. Without
         torsions it is the heavy atom closest to the centroid of the loaded conformer.
+    hydrogens : {'keep', 'add', 'remove'}, default 'remove'
+        What to do with the explicit hydrogens of `mol`: keep them as they are, add the missing
+        ones (with coordinates), or remove all of them.
+    flex_hydrogens : bool, default False
+        Whether bonds to a terminal heavy atom (a methyl group, a hydroxyl hydrogen) are
+        rotatable torsions too.
+    flexible : bool, default False
+        Whether the rotatable bonds of the molecule are torsions of its poses.
+    rotation_type : {'euler', 'quat'}, default 'euler'
+        How the rotation of a pose is represented.
     ignore_non_polar_hydrogens : bool, default True
         Whether non-polar hydrogens are excluded from `scoring_mask` — the mask every
         scoring function built on this molecule uses to decide which atoms count.
@@ -92,22 +102,18 @@ class Mol:
 
         self._fix_mol_valence(sanitize=False)  # TODO: sanitize?
 
-        # TODO: does this even do anything?
         if hydrogens == "add":
-            mol = Chem.AllChem.AddHs(mol, addCoords=True)
+            self._rdkit = Chem.AddHs(self._rdkit, addCoords=True)
         elif hydrogens == "remove":
-            mol = Chem.AllChem.RemoveHs(mol)
+            self._rdkit = Chem.RemoveHs(self._rdkit, sanitize=False)
+        elif hydrogens != "keep":
+            raise ValueError(f"hydrogens must be 'keep', 'add' or 'remove', not {hydrogens!r}.")
+        self._fix_mol_valence(sanitize=False)  # also the ring information of the new molecule
 
         # The center atom is chosen from the conformer, so a molecule without one (e.g. from a
         # SMILES string) needs it embedded first.
         if self._rdkit.GetNumConformers() == 0:
-            Chem.SanitizeMol(self._rdkit)
-            params = Chem.AllChem.ETKDGv3()
-            params.randomSeed = 0xC0FFEE
-            if (
-                Chem.AllChem.EmbedMolecule(self._rdkit, params) == -1
-            ):  # TODO: cant do if not sanitized.
-                raise ValueError("RDKit could not embed a 3D conformer of the molecule.")
+            self.__embed()
 
         # TODO: this doesnt make sense for proteins. In a protein, all torsions should be oriented wrt the backbone, not the center atom.
         rotatable_bonds = self.__find_rotatable_bonds(flex_hydrogens) if flexible else []
@@ -276,9 +282,6 @@ class Mol:
                 edit.RemoveAtom(idx)
             mol = edit.GetMol()
 
-        if hydrogens == "add":
-            mol = Chem.AllChem.AddHs(mol)
-
         if template_smiles or template_sdf:
             if template_smiles:
                 template_mol = Chem.MolFromSmiles(template_smiles)
@@ -290,8 +293,7 @@ class Mol:
             Chem.AssignStereochemistryFrom3D(mol)
             Chem.SanitizeMol(mol)
 
-        h_for_init = "keep" if hydrogens == "add" else hydrogens
-        return cls(mol, hydrogens=h_for_init, **kwargs)
+        return cls(mol, hydrogens=hydrogens, **kwargs)
 
     @classmethod
     def from_sdf(
@@ -323,6 +325,26 @@ class Mol:
         )
         RDLogger.EnableLog("rdApp.*")
         return cls(mol, hydrogens=hydrogens, **kwargs)
+
+    def __embed(self) -> None:
+        """Give the molecule a 3D conformer.
+
+        RDKit embeds a molecule far better with its hydrogens, so a molecule without explicit
+        hydrogens (``hydrogens='keep'`` or ``'remove'`` of a SMILES string) is embedded with
+        temporary ones, and only the coordinates of its own atoms are kept.
+        """
+        Chem.SanitizeMol(self._rdkit)
+        n_atoms = self._rdkit.GetNumAtoms()
+        embedded = Chem.AddHs(self._rdkit)  # the added hydrogens come after the atoms already there
+        params = Chem.AllChem.ETKDGv3()
+        params.randomSeed = 0xC0FFEE
+        if Chem.AllChem.EmbedMolecule(embedded, params) == -1:
+            raise ValueError("RDKit could not embed a 3D conformer of the molecule.")
+
+        conformer = Chem.Conformer(n_atoms)
+        conformer.SetPositions(embedded.GetConformer().GetPositions()[:n_atoms])
+        conformer.Set3D(True)
+        self._rdkit.AddConformer(conformer, assignId=True)
 
     def _fix_mol_valence(self, sanitize=True):
         Chem.SanitizeMol(
