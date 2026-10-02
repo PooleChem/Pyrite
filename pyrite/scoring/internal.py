@@ -40,10 +40,10 @@ class InternalOverlap(_RDKitScoringFunction):
 
         # Set up
         pt = Chem.GetPeriodicTable()
-        a_nums = [atom.GetAtomicNum() for atom in self.mol.GetAtoms()]
+        a_nums = [atom.GetAtomicNum() for atom in self.mol.atoms]
         rvdw = np.array([pt.GetRvdw(z) * vdw_scale for z in a_nums], dtype=float)
 
-        top_distance_matrix = Chem.GetDistanceMatrix(self.mol)
+        top_distance_matrix = Chem.GetDistanceMatrix(self.mol.rdkit)
 
         self._sum_of_radii = rvdw[:, None] + rvdw[None, :]
 
@@ -55,7 +55,7 @@ class InternalOverlap(_RDKitScoringFunction):
             self._mask &= (a_nums[:, None] > 1) & (a_nums[None, :] > 1)
 
     def _score(self, pose, computed) -> float:
-        distance_matrix = Chem.Get3DDistanceMatrix(self.mol, computed[self.rdkit_dep])
+        distance_matrix = Chem.Get3DDistanceMatrix(computed[self.rdkit_dep])
 
         dists = distance_matrix[self._mask]
         r_sums = self._sum_of_radii[self._mask]
@@ -88,14 +88,14 @@ class InternalEnergy(_RDKitScoringFunction):
     def __init__(self, molecule: Mol):
         super().__init__(molecule)
 
-        mmff_props = Chem.AllChem.MMFFGetMoleculeProperties(self.mol)
-        self._mmff_ff = Chem.AllChem.MMFFGetMoleculeForceField(self.mol, mmff_props)
+        mmff_props = Chem.AllChem.MMFFGetMoleculeProperties(self.mol.rdkit)
+        self._mmff_ff = Chem.AllChem.MMFFGetMoleculeForceField(self.mol.rdkit, mmff_props)
         if self._mmff_ff is None:
             # MMFF94 cannot assign atom types for this molecule (unusual connectivity).
             # Fall back to UFF; if that also fails, internal energy returns 0.
             import warnings
 
-            self._mmff_ff = Chem.AllChem.UFFGetMoleculeForceField(self.mol)
+            self._mmff_ff = Chem.AllChem.UFFGetMoleculeForceField(self.mol.rdkit)
             if self._mmff_ff is None:
                 warnings.warn(
                     f"InternalEnergy: MMFF and UFF both failed for {molecule}; "
@@ -109,7 +109,7 @@ class InternalEnergy(_RDKitScoringFunction):
     def _score(self, pose, computed) -> float:
         if self._mmff_ff is None:
             return 0.0
-        pos = self.mol.GetConformer(computed[self.rdkit_dep]).GetPositions()
+        pos = computed[self.rdkit_dep].GetConformer().GetPositions()
         self._mmff_ff.Initialize()
         flat_pos = pos.reshape(-1).tolist()
         return self._mmff_ff.CalcEnergy(flat_pos)  # kcal/mol

@@ -1,7 +1,9 @@
-"""`Mol.pose_to_positions`: atom positions from poses in numpy, equal to RDKit's `Mol.pose_to_conformer`."""
+"""`Mol.pose_to_positions`: atom positions from poses in numpy, equal to what RDKit's own transforms
+give, and the conformers `Mol.pose_to_conformer` makes from them."""
 
 import numpy as np
 import pytest
+from helpers import rdkit_positions
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
@@ -77,12 +79,7 @@ def _random_poses(mol: Mol, n: int, seed: int = 0) -> Poses:
 
 
 def _rdkit_positions(mol: Mol, poses: Poses) -> np.ndarray:
-    out = []
-    for pose in poses:
-        conf_id = mol.pose_to_conformer(pose, new_conf=True)
-        out.append(mol.get_positions(conf_id))
-        mol.RemoveConformer(conf_id)
-    return np.stack(out)
+    return rdkit_positions(mol, poses)
 
 
 @pytest.mark.parametrize("rot_type", ["euler", "quat"])
@@ -102,7 +99,7 @@ def test_a_single_pose_and_raw_arrays(name="branched"):
 
     batch = mol.pose_to_positions(poses)
 
-    assert batch.shape == (5, mol.GetNumAtoms(), 3)
+    assert batch.shape == (5, mol.n_atoms, 3)
     for i, pose in enumerate(poses):
         assert np.array_equal(mol.pose_to_positions(pose), batch[i])
         assert np.array_equal(mol.pose_to_positions(np.asarray(pose)), batch[i])
@@ -177,11 +174,11 @@ def test_a_changed_center_atom_still_matches_rdkit():
 
 def test_pose_to_positions_leaves_the_molecule_alone():
     mol = MOLECULES["factor_x"]("euler")
-    n_conformers, positions = mol.GetNumConformers(), mol.get_positions().copy()
+    n_conformers, positions = mol.n_conformers, mol.get_positions().copy()
 
     mol.pose_to_positions(_random_poses(mol, 5))
 
-    assert mol.GetNumConformers() == n_conformers
+    assert mol.n_conformers == n_conformers
     assert np.array_equal(mol.get_positions(), positions)
 
 
@@ -213,4 +210,69 @@ def test_an_empty_batch_has_no_positions():
     mol = MOLECULES["factor_x"]("euler")
     empty = _random_poses(mol, 3)[:0]
 
-    assert mol.pose_to_positions(empty).shape == (0, mol.GetNumAtoms(), 3)
+    assert mol.pose_to_positions(empty).shape == (0, mol.n_atoms, 3)
+
+
+def test_a_changed_center_atom_keeps_the_center_atom_at_the_translation():
+    # The center atom must be on the fixed side of every torsion, or a pose's translation is not
+    # where the center atom ends up. This used to hold only for a center atom given to the
+    # constructor, not for one set afterwards.
+    for name in ("factor_x", "branched"):
+        mol = MOLECULES[name]("euler")
+        torsions = np.array(mol.torsions).copy()
+        mol.center_atom = 4
+        poses = _random_poses(mol, 12)
+
+        positions = mol.pose_to_positions(poses)
+
+        assert np.allclose(positions[:, 4], poses.translation, atol=1e-9), name
+        assert np.abs(positions - _rdkit_positions(mol, poses)).max() < 1e-9
+        # the torsions themselves are unchanged (reversing a torsion gives the same angle)
+        assert np.allclose(np.angle(np.exp(1j * (np.array(mol.torsions) - torsions))), 0, atol=1e-9)
+
+
+def test_setting_the_center_atom_resets_the_orientation_and_moves_it_to_the_origin():
+    mol = MOLECULES["factor_x"]("euler")
+    mol.pose_to_conformer(_random_poses(mol, 1, seed=3)[0])  # rotate, move and twist it first
+    torsions = np.array(mol.torsions).copy()
+    internal = Chem.Get3DDistanceMatrix(mol.rdkit)
+
+    mol.center_atom = 4
+
+    assert np.allclose(mol.get_positions()[4], 0.0, atol=1e-9)
+    assert np.allclose(mol.rotation, mol.layout.identity_rotation)
+    assert np.allclose(Chem.Get3DDistanceMatrix(mol.rdkit), internal, atol=1e-9)  # not deformed
+    assert np.allclose(np.angle(np.exp(1j * (np.array(mol.torsions) - torsions))), 0, atol=1e-9)
+
+
+@pytest.mark.parametrize("rot_type", ["euler", "quat"])
+@pytest.mark.parametrize("name", ["factor_x", "branched", "rigid"])
+def test_pose_to_conformer_puts_the_positions_on_the_conformer(name, rot_type):
+    mol = MOLECULES[name](rot_type)
+    poses = _random_poses(mol, 4)
+    loaded = mol.get_positions().copy()
+
+    new_ids = [mol.pose_to_conformer(p, new_conf=True) for p in poses]
+
+    assert len(set(new_ids)) == 4 and -1 not in new_ids
+    assert np.array_equal(mol.get_positions(), loaded)  # a new conformer leaves the global one
+    for conf_id, expected in zip(new_ids, mol.pose_to_positions(poses), strict=True):
+        assert np.array_equal(mol.get_positions(conf_id), expected)
+        assert mol.rdkit.GetConformer(conf_id).Is3D()
+        mol.remove_conformer(conf_id)
+
+    assert mol.pose_to_conformer(poses[0]) == -1  # without `new_conf`: the global conformer
+    assert np.array_equal(mol.get_positions(), mol.pose_to_positions(poses[0]))
+    assert np.array_equal(mol.rotation, poses[0].rotation)
+    assert mol.n_conformers == 1
+
+
+def test_the_pose_does_not_depend_on_how_the_conformer_got_there():
+    # Applying poses one after the other gives the same conformer as applying the last one alone.
+    mol = MOLECULES["branched"]("euler")
+    poses = _random_poses(mol, 6)
+    for pose in poses:
+        mol.pose_to_conformer(pose)
+
+    assert np.array_equal(mol.get_positions(), mol.pose_to_positions(poses[-1]))
+    assert np.abs(mol.get_positions() - rdkit_positions(mol, poses[-1])).max() < 1e-9

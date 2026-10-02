@@ -50,9 +50,7 @@ class DistanceToPocket(ScoringFunction):
 
         self.pocket = pocket
         self._include_hs = include_hs
-        self._mask = np.array(
-            [include_hs or atom.GetAtomicNum() > 1 for atom in self.mol.GetAtoms()]
-        )
+        self._mask = np.array([include_hs or atom.GetAtomicNum() > 1 for atom in self.mol.atoms])
 
         self.cutoff = 40
 
@@ -123,9 +121,7 @@ class WeightedBoundsOverlap(ScoringFunction):
 
         self.pocket = pocket
         self.include_hs = include_hs
-        self.mask = np.array(
-            [include_hs or atom.GetAtomicNum() > 1 for atom in self.mol.GetAtoms()]
-        )
+        self.mask = np.array([include_hs or atom.GetAtomicNum() > 1 for atom in self.mol.atoms])
 
         self.nn_dep = KNNDependency(
             pocket.centers,

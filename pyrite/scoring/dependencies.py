@@ -43,8 +43,8 @@ To subclass ``Dependency``, the following methods should be implemented:
 :meth:`~Dependency.compute(realized)`
     In this method the expensive operation should be executed. `realized` is a
     :class:`Realization` of the pose (or batch of poses) being scored, which hands out the atom
-    positions (:meth:`Realization.positions`) or an RDKit conformer
-    (:meth:`Realization.conformers`) of any :class:`~pyrite.Mol`, computed at most once per
+    positions (:meth:`Realization.positions`) or a private RDKit copy
+    (:meth:`Realization.rdkit`) of any :class:`~pyrite.Mol`, computed at most once per
     scoring call.
 :meth:`~Dependency.group_key(dep)`
     This method should map a group of dependencies to the same key, i.e., all dependencies that
@@ -65,6 +65,7 @@ from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
+from rdkit import Chem
 from scipy.spatial import KDTree
 
 from .._common import Mol
@@ -89,11 +90,6 @@ class Dependency(ABC):
 
 
     """
-
-    #: Dependencies with a lower value are computed first. :class:`RDKitDependency` goes first, so
-    #: that everything after it can read positions off the conformer it made instead of computing
-    #: them a second time.
-    priority: int = 0
 
     @abstractmethod
     def compute(self, realized: Realization) -> Any:
@@ -278,11 +274,12 @@ class Realization:
     concrete, and does so at most once per :class:`~pyrite.Mol`, however many dependencies ask:
 
     - :meth:`positions`: the atom positions, computed in numpy by
-      :meth:`~pyrite.Mol.pose_to_positions`. No RDKit conformer is made.
-    - :meth:`conformers`: a real RDKit conformer, for terms that need RDKit itself. If it was
-      asked for, :meth:`positions` reads from it instead of computing the positions again.
+      :meth:`~pyrite.Mol.pose_to_positions`.
+    - :meth:`rdkit`: a private RDKit copy of the molecule with the pose as its conformer, for
+      terms that need RDKit itself.
 
-    Conformers made here are removed again by :meth:`close` (or leaving the ``with`` block).
+    Nothing is ever written to the :class:`~pyrite.Mol` that is being scored, so any number of
+    threads can score poses of one ``Mol`` at the same time, and there is nothing to clean up.
 
     Parameters
     ----------
@@ -296,7 +293,7 @@ class Realization:
         self.poses = poses
         self.batched = batched
         self._positions: dict[Mol, NDArray] = {}
-        self._conformers: dict[Mol, int | list[int]] = {}
+        self._rdkit: dict[Mol, Chem.Mol | list[Chem.Mol]] = {}
 
     def positions(self, mol: Mol) -> NDArray:
         """The atom positions of `mol` for the pose(s).
@@ -307,40 +304,28 @@ class Realization:
             Shape ``(n_atoms, 3)``, or ``(n_poses, n_atoms, 3)`` for a batch.
         """
         if mol not in self._positions:
-            if mol in self._conformers:
-                conformers = self._conformers[mol]
-                if self.batched:
-                    value = np.stack([mol.get_positions(c) for c in conformers])
-                else:
-                    value = mol.get_positions(conformers)
-            else:
-                value = mol.pose_to_positions(self.poses)
-            self._positions[mol] = value
+            self._positions[mol] = mol.pose_to_positions(self.poses)
         return self._positions[mol]
 
-    def conformers(self, mol: Mol) -> int | list[int]:
-        """An RDKit conformer of `mol` for the pose(s): its id, or a list of ids for a batch."""
-        if mol not in self._conformers:
-            if self.batched:
-                self._conformers[mol] = [
-                    mol.pose_to_conformer(p, new_conf=True) for p in self.poses
-                ]
-            else:
-                self._conformers[mol] = mol.pose_to_conformer(self.poses, new_conf=True)
-        return self._conformers[mol]
+    def rdkit(self, mol: Mol) -> Chem.Mol | list[Chem.Mol]:
+        """A private RDKit copy of `mol` that has the pose as its (only) conformer.
 
-    def close(self) -> None:
-        """Remove every conformer that was made."""
-        for mol, ids in self._conformers.items():
-            for conf_id in ids if self.batched else [ids]:
-                mol.RemoveConformer(conf_id)
-        self._conformers.clear()
+        One :class:`~rdkit.Chem.rdchem.Mol` for a single pose, or a list of them for a batch. The
+        copies are the caller's to use freely: they are not shared with anything else, and the
+        molecule being scored is not touched.
+        """
+        if mol not in self._rdkit:
+            template = mol.rdkit
+            conformer_id = template.GetConformer().GetId()
 
-    def __enter__(self) -> Realization:
-        return self
+            def posed(positions: NDArray) -> Chem.Mol:
+                copy = Chem.Mol(template, False, conformer_id)  # only the global conformer
+                copy.GetConformer().SetPositions(positions)
+                return copy
 
-    def __exit__(self, *exc) -> None:
-        self.close()
+            positions = self.positions(mol)
+            self._rdkit[mol] = [posed(p) for p in positions] if self.batched else posed(positions)
+        return self._rdkit[mol]
 
 
 class PositionQuery:
@@ -407,25 +392,25 @@ class PositionDependency(Dependency):
 
 
 class RDKitDependency(Dependency):
-    """An RDKit conformer of a molecule, for scoring functions that need RDKit itself.
+    """A private RDKit copy of a molecule with the pose as its conformer, for scoring functions
+    that need RDKit itself.
 
-    The conformer id (``int``, or ``list[int]`` for a batch) is shared by every term that depends
-    on the same molecule, so a composite of several RDKit-based terms makes one conformer per pose.
-    The conformer is removed after scoring.
+    The result is an :class:`~rdkit.Chem.rdchem.Mol` with one conformer (the default one,
+    ``confId=-1``): a list of them for a batch. It is shared by every term that depends on the
+    same molecule, so a composite of several RDKit-based terms makes one copy per pose. It is a
+    copy, so a term may do anything to it, and the scored :class:`~pyrite.Mol` is never touched.
 
     Parameters
     ----------
     mol : Mol
-        The molecule to make a conformer of.
+        The molecule to make the posed copy of.
     """
-
-    priority = -1
 
     def __init__(self, mol: Mol):
         self.mol = mol
 
-    def compute(self, realized: Realization) -> int | list[int]:
-        return realized.conformers(self.mol)
+    def compute(self, realized: Realization) -> Chem.Mol | list[Chem.Mol]:
+        return realized.rdkit(self.mol)
 
     @classmethod
     def group_key(cls, dep):

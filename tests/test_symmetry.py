@@ -21,16 +21,16 @@ def _mol(smiles: str, seed: int = 1) -> Mol:
 
 def _relabelled(mol: Mol, sigma) -> Mol:
     """Copy `mol` with atom i placed where atom sigma[i] is: the same structure, relabelled."""
-    copy = Mol(Chem.Mol(mol))
+    copy = Mol(mol.rdkit)
     positions = mol.get_positions()
-    conformer = copy.GetConformer()
+    conformer = copy.rdkit.GetConformer()
     for i, j in enumerate(sigma):
         conformer.SetAtomPosition(i, tuple(float(x) for x in positions[j]))
     return copy
 
 
 def _most_mobile_symmetry(mol: Mol):
-    automorphisms = mol.GetSubstructMatches(mol, uniquify=False, useChirality=True)
+    automorphisms = mol.rdkit.GetSubstructMatches(mol.rdkit, uniquify=False, useChirality=True)
     return max(automorphisms, key=lambda s: sum(i != j for i, j in enumerate(s)))
 
 
@@ -42,16 +42,16 @@ def biphenyl() -> Mol:
 def test_rmsd_is_zero_for_a_symmetric_relabelling(biphenyl):
     sigma = _most_mobile_symmetry(biphenyl)
     relabelled = _relabelled(biphenyl, sigma)
-    identity = [[(i, i) for i in range(biphenyl.GetNumAtoms())]]
+    identity = [[(i, i) for i in range(biphenyl.n_atoms)]]
 
-    assert rdMolAlign.CalcRMS(biphenyl, relabelled, map=identity) > 1.0
+    assert rdMolAlign.CalcRMS(biphenyl.rdkit, relabelled.rdkit, map=identity) > 1.0
     assert RMSD(biphenyl, relabelled).get_score(loaded_pose(biphenyl)) < 1e-6
 
 
 def test_rmsd_does_not_depend_on_the_atom_order_of_the_reference():
     mol = _mol("CC(N)C(=O)OC")
-    order = [int(i) for i in np.random.default_rng(0).permutation(mol.GetNumAtoms())]
-    renumbered = Mol(Chem.RenumberAtoms(mol, order))
+    order = [int(i) for i in np.random.default_rng(0).permutation(mol.n_atoms)]
+    renumbered = Mol(Chem.RenumberAtoms(mol.rdkit, order))
 
     assert RMSD(mol, renumbered).get_score(loaded_pose(mol)) < 1e-6
 
@@ -60,14 +60,14 @@ def test_rmsd_equals_rdkit_for_different_conformers(biphenyl):
     other = _mol("c1ccccc1-c1ccccc1", seed=7)
 
     assert RMSD(biphenyl, other).get_score(loaded_pose(biphenyl)) == pytest.approx(
-        rdMolAlign.CalcRMS(biphenyl, other), abs=1e-6
+        rdMolAlign.CalcRMS(biphenyl.rdkit, other.rdkit), abs=1e-6
     )
 
 
 def test_crowding_recognises_a_symmetric_duplicate(biphenyl):
     crowding = Crowding(biphenyl, offset=4.0)
     relabelled = _relabelled(biphenyl, _most_mobile_symmetry(biphenyl))
-    conf_id = crowding._ref_mol.AddConformer(relabelled.GetConformer(), assignId=True)
+    conf_id = crowding._ref_mol.rdkit.AddConformer(relabelled.rdkit.GetConformer(), assignId=True)
     crowding.register_pose(int(conf_id))
 
     assert crowding.get_score(loaded_pose(biphenyl)) == pytest.approx(4**4.0, rel=1e-6)
@@ -84,7 +84,7 @@ def _poses(mol: Mol, n: int) -> Poses:
 def test_rmsd_matrix_agrees_with_the_rmsd_scoring_function(biphenyl):
     poses = _poses(biphenyl, 6)
     matrix = rmsd_matrix(biphenyl, poses)
-    probe, ref = Mol(Chem.Mol(biphenyl), flexible=True), Mol(Chem.Mol(biphenyl), flexible=True)
+    probe, ref = Mol(biphenyl.rdkit, flexible=True), Mol(biphenyl.rdkit, flexible=True)
 
     for i, j in [(0, 1), (2, 5), (3, 4)]:
         ref.pose_to_conformer(poses[i])

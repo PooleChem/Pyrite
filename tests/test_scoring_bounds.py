@@ -32,7 +32,7 @@ def test_distance_to_pocket_uses_every_atom(ctx):
 
     r, idx, mask = scoring._nn_dep.compute(Realization(pose, batched=False))
 
-    assert r.shape == idx.shape == mask.shape == (ligand.GetNumAtoms(), 1)
+    assert r.shape == idx.shape == mask.shape == (ligand.n_atoms, 1)
     assert r.shape == scoring._nn_dep.narrow((r, idx, mask))[0].shape
 
 
@@ -42,13 +42,11 @@ def test_knn_dependency_keeps_the_neighbour_axis_for_every_k(ctx):
 
     for k in (1, 2, 5):
         dependency = KNNDependency(points, PositionQuery(ligand), k, 8.0)
-        with Realization(ctx.poses[0], batched=False) as one:
-            r, idx, mask = dependency.compute(one)
-        with Realization(ctx.poses[:2], batched=True) as two:
-            batch = dependency.compute(two)[0]
+        r, idx, mask = dependency.compute(Realization(ctx.poses[0], batched=False))
+        batch = dependency.compute(Realization(ctx.poses[:2], batched=True))[0]
 
-        assert r.shape == idx.shape == mask.shape == (ligand.GetNumAtoms(), k)
-        assert batch.shape == (2, ligand.GetNumAtoms(), k)
+        assert r.shape == idx.shape == mask.shape == (ligand.n_atoms, k)
+        assert batch.shape == (2, ligand.n_atoms, k)
         assert np.array_equal(batch[0], r)
         assert dependency.narrow((r, idx, mask))[0].shape == r.shape
 

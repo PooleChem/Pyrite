@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import warnings
 from dataclasses import dataclass, field
 from typing import Literal
@@ -15,10 +16,7 @@ from scipy.spatial.transform import Rotation
 from ._util import (
     _apply_torsions,
     _atoms_beyond,
-    _compose_delta_transform,
     _pack_torsions,
-    _rotation_matrix_from_euler,
-    _rotation_matrix_from_quat,
     _rotation_matrix_to_euler,
 )
 from .atom_consts import AtomType, vina_atom_consts
@@ -41,7 +39,7 @@ NON_POLAR_H_STRUCT = Chem.MolFromSmarts("[#1;$([#1]-[#6,#14])]")
 VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF = 1000
 
 
-class Mol(Chem.Mol):
+class Mol:
     """
     Representation of a molecule.
 
@@ -49,6 +47,10 @@ class Mol(Chem.Mol):
     such as SMILES strings, PDB files, or objects. It also assigns atom
     types, rotatable torsions, and the center point of the molecule. Furthermore, it allows for
     easy manipulation of ligand position, rotation, and torsion angles.
+
+    A ``Mol`` *holds* an RDKit molecule (it is not one): use :attr:`rdkit` for any RDKit
+    functionality (descriptors, substructure matches, force fields), treating it as read-only,
+    and :meth:`to_rdkit` for a copy to edit. A new topology is a new ``Mol``: ``Mol(edited)``.
 
     Parameters
     ----------
@@ -67,15 +69,6 @@ class Mol(Chem.Mol):
 
     # region Construction
 
-    def __new__(cls, mol: Chem.Mol = None, **kwargs):
-        if mol is None:
-            inst = super().__new__(cls)
-        else:
-            inst = Chem.Mol(mol)
-            inst.__class__ = cls
-
-        return inst
-
     def __init__(
         self,
         mol: Chem.Mol = None,
@@ -86,6 +79,12 @@ class Mol(Chem.Mol):
         rotation_type: Literal["euler", "quat"] = "euler",
         ignore_non_polar_hydrogens: bool = True,
     ):
+        if isinstance(mol, Mol):
+            raise TypeError(
+                "A Mol is built from an RDKit molecule: use `Mol(mol.rdkit)` to build it again, "
+                "or `mol.copy()` for an exact copy."
+            )
+        self._rdkit = Chem.Mol(mol)  # a private copy: the caller's molecule is never modified
         self.__rotatable_torsions = np.array([], dtype=object)
         self.__torsion_angles = np.array([])
         self.__torsion_moving = []
@@ -101,11 +100,13 @@ class Mol(Chem.Mol):
 
         # The center atom is chosen from the conformer, so a molecule without one (e.g. from a
         # SMILES string) needs it embedded first.
-        if self.GetNumConformers() == 0:
-            Chem.SanitizeMol(self)
+        if self._rdkit.GetNumConformers() == 0:
+            Chem.SanitizeMol(self._rdkit)
             params = Chem.AllChem.ETKDGv3()
             params.randomSeed = 0xC0FFEE
-            if Chem.AllChem.EmbedMolecule(self, params) == -1:  # TODO: cant do if not sanitized.
+            if (
+                Chem.AllChem.EmbedMolecule(self._rdkit, params) == -1
+            ):  # TODO: cant do if not sanitized.
                 raise ValueError("RDKit could not embed a 3D conformer of the molecule.")
 
         # TODO: this doesnt make sense for proteins. In a protein, all torsions should be oriented wrt the backbone, not the center atom.
@@ -113,10 +114,11 @@ class Mol(Chem.Mol):
         # The geometry (bond lengths and angles) that poses are applied to, see `pose_to_positions`.
         # Torsions are absolute and the rotation is relative to this orientation, so the global
         # conformer can be moved afterwards without changing what a pose means.
-        self._reference_positions = np.array(self.GetConformer().GetPositions(), dtype=float)
+        self._reference_positions = np.array(self._rdkit.GetConformer().GetPositions(), dtype=float)
 
         # TODO: make property. Setting it will then compute the torsions if needed. Perhaps bool | list ?
         self.is_flexible = flexible
+        self._flex_hydrogens = flex_hydrogens
         if self.is_flexible:
             self.__compute_rotatable_torsions(flex_hydrogens)
 
@@ -133,16 +135,15 @@ class Mol(Chem.Mol):
             )
         )
 
-        Chem.rdPartialCharges.ComputeGasteigerCharges(self)
+        Chem.rdPartialCharges.ComputeGasteigerCharges(self._rdkit)
 
         # Set the layout
         self.layout: PoseLayout = PoseLayout(rotation_type, len(self.__rotatable_torsions))
 
-        self.__cur_rotation_matrix = np.eye(3)
         self.__cur_rotation = np.zeros(self.layout.rot_dim)
 
         # If more than 1000 heavy atoms: assume protein for viewing
-        if self.GetNumHeavyAtoms() >= VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF:
+        if self._rdkit.GetNumHeavyAtoms() >= VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF:
             self.draw_options = self.__default_protein_draw_options.copy()
         else:
             self.draw_options = self.__default_ligand_draw_options.copy()
@@ -373,8 +374,8 @@ class Mol(Chem.Mol):
         canon_smiles = Chem.CanonSmiles(Chem.MolToSmiles(mol))
 
         # Alignment atom map
-        matches = lig.GetSubstructMatches(lig, uniquify=True, useChirality=True)
-        atom_map = [list(zip(range(lig.GetNumAtoms()), match)) for match in matches]
+        matches = lig.rdkit.GetSubstructMatches(lig.rdkit, uniquify=True, useChirality=True)
+        atom_map = [list(zip(range(lig.n_atoms), match)) for match in matches]
 
         atom_map = [t for sub in atom_map for t in sub]  # Flatten
 
@@ -384,15 +385,18 @@ class Mol(Chem.Mol):
                 if Chem.CanonSmiles(Chem.MolToSmiles(pose)) != canon_smiles:
                     raise ValueError("Molecules in SDF file are not equal.")
                 # TODO: dont create whole ligand every time.
-                pose_lig = cls(pose, **kwargs)
+                # the same center atom as `lig`, or the translation is the position of another atom
+                pose_lig = cls(pose, **{**kwargs, "center_atom": lig.center_atom})
                 pose_torsions = pose_lig.torsions
 
                 # Set torsions equal for alignment
-                pose_lig.set_torsions(lig.torsions)
+                pose_lig.pose_to_conformer(
+                    np.concatenate([lig.layout.identity_rotation, pose_lig.position, lig.torsions])
+                )
 
                 # Align molecule
                 rmsd, transform = Chem.rdMolAlign.GetAlignmentTransform(
-                    lig, pose_lig, atomMap=atom_map
+                    lig.rdkit, pose_lig.rdkit, atomMap=atom_map
                 )
                 if rmsd > rmsd_delta:
                     raise ValueError("Molecules in SDF file could not be aligned.")
@@ -408,11 +412,11 @@ class Mol(Chem.Mol):
 
     def _fix_mol_valence(self, sanitize=True):
         Chem.SanitizeMol(
-            self,
+            self._rdkit,
             sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES),
         )
 
-        for atom in self.GetAtoms():
+        for atom in self._rdkit.GetAtoms():
             # print(
             #     atom.GetSymbol(),
             #     atom.GetValence(Chem.ValenceType.EXPLICIT),
@@ -427,10 +431,10 @@ class Mol(Chem.Mol):
             if atom.GetSymbol() == "O" and atom.GetValence(Chem.ValenceType.EXPLICIT) == 2:
                 atom.SetFormalCharge(0)
 
-        self.UpdatePropertyCache(strict=sanitize)
+        self._rdkit.UpdatePropertyCache(strict=sanitize)
 
         if sanitize:
-            Chem.SanitizeMol(self)
+            Chem.SanitizeMol(self._rdkit)
         return self
 
     # endregion
@@ -438,13 +442,13 @@ class Mol(Chem.Mol):
     # region Chemistry / topology analysis
 
     def __assign_atom_types(self):
-        self._atom_types = np.array([AtomType.Unknown] * len(self.GetAtoms()))
+        self._atom_types = np.array([AtomType.Unknown] * len(self._rdkit.GetAtoms()))
 
-        hba = [m[0] for m in self.GetSubstructMatches(HBA_STRUCT)]
+        hba = [m[0] for m in self._rdkit.GetSubstructMatches(HBA_STRUCT)]
 
-        non_polar_h = [m[0] for m in self.GetSubstructMatches(NON_POLAR_H_STRUCT)]
+        non_polar_h = [m[0] for m in self._rdkit.GetSubstructMatches(NON_POLAR_H_STRUCT)]
 
-        for i, atom in enumerate(self.GetAtoms()):
+        for i, atom in enumerate(self._rdkit.GetAtoms()):
             atomic_number = atom.GetAtomicNum()
 
             a_str = atom.GetSymbol()
@@ -481,12 +485,12 @@ class Mol(Chem.Mol):
             self._atom_types[i] = a_type
 
     def __get_center_atom(self):
-        conf = self.GetConformer()
+        conf = self._rdkit.GetConformer()
         centroid = Chem.rdMolTransforms.ComputeCentroid(conf)
 
         closest_dist = float("inf")
         closest_i = None
-        for atom in self.GetAtoms():
+        for atom in self._rdkit.GetAtoms():
             if atom.GetAtomicNum() > 1:
                 i = atom.GetIdx()
                 dist = np.linalg.norm(conf.GetAtomPosition(i) - centroid)
@@ -515,9 +519,9 @@ class Mol(Chem.Mol):
         rotatable_torsions = []
         torsion_angles = []
 
-        rotatable_bonds = self.GetSubstructMatches(ROTATABLE_BOND_STRUCT)
+        rotatable_bonds = self._rdkit.GetSubstructMatches(ROTATABLE_BOND_STRUCT)
 
-        distance_matrix = np.array(Chem.GetDistanceMatrix(self))[self._center_atom, :]
+        distance_matrix = np.array(Chem.GetDistanceMatrix(self._rdkit))[self._center_atom, :]
 
         for _, b in enumerate(rotatable_bonds):
             i_atom_1 = b[0]
@@ -527,22 +531,22 @@ class Mol(Chem.Mol):
                 heavy_degree_atom_1 = sum(
                     [
                         1
-                        for nbr in self.GetAtomWithIdx(i_atom_1).GetNeighbors()
+                        for nbr in self._rdkit.GetAtomWithIdx(i_atom_1).GetNeighbors()
                         if nbr.GetAtomicNum() > 1
                     ]
                 )
                 heavy_degree_atom_2 = sum(
                     [
                         1
-                        for nbr in self.GetAtomWithIdx(i_atom_2).GetNeighbors()
+                        for nbr in self._rdkit.GetAtomWithIdx(i_atom_2).GetNeighbors()
                         if nbr.GetAtomicNum() > 1
                     ]
                 )
                 if heavy_degree_atom_1 == 1 or heavy_degree_atom_2 == 1:
                     continue
 
-            atom_1_neighbors = self.GetAtomWithIdx(i_atom_1).GetNeighbors()
-            atom_2_neighbors = self.GetAtomWithIdx(i_atom_2).GetNeighbors()
+            atom_1_neighbors = self._rdkit.GetAtomWithIdx(i_atom_1).GetNeighbors()
+            atom_2_neighbors = self._rdkit.GetAtomWithIdx(i_atom_2).GetNeighbors()
 
             ix_atom_1_neighbors = [a.GetIdx() for a in atom_1_neighbors if a.GetIdx() != i_atom_2]
             ix_atom_2_neighbors = [a.GetIdx() for a in atom_2_neighbors if a.GetIdx() != i_atom_1]
@@ -564,17 +568,54 @@ class Mol(Chem.Mol):
             rotatable_torsions.append(torsion)
             # Dont care about:?
             torsion_angles.append(
-                Chem.rdMolTransforms.GetDihedralRad(self.GetConformer(), *torsion)
+                Chem.rdMolTransforms.GetDihedralRad(self._rdkit.GetConformer(), *torsion)
             )
 
         self.__rotatable_torsions = rotatable_torsions
         self.__torsion_angles = torsion_angles
 
-        adjacency = [[n.GetIdx() for n in atom.GetNeighbors()] for atom in self.GetAtoms()]
+        adjacency = [[n.GetIdx() for n in atom.GetNeighbors()] for atom in self._rdkit.GetAtoms()]
         self.__torsion_moving = [
             _atoms_beyond(adjacency, c, b) for (_, b, c, _) in rotatable_torsions
         ]
         self.__packed_torsions = _pack_torsions(rotatable_torsions, self.__torsion_moving)
+
+    @property
+    def rdkit(self) -> Chem.Mol:
+        """The underlying :class:`~rdkit.Chem.rdchem.Mol`, for any RDKit functionality.
+
+        This is the molecule Pyrite works on, not a copy: treat it as read-only (descriptors,
+        substructure matches, force fields, ...). To change the molecule, edit a copy
+        (:meth:`to_rdkit`) and build a new :class:`Mol` from it.
+        """
+        return self._rdkit
+
+    def to_rdkit(self) -> Chem.Mol:
+        """A copy of the underlying :class:`~rdkit.Chem.rdchem.Mol`, with all its conformers.
+
+        Free to edit (add atoms, change bonds, ...). To use the result with Pyrite, build a new
+        :class:`Mol` from it: ``Mol(edited)``.
+        """
+        return Chem.Mol(self._rdkit)
+
+    @property
+    def n_atoms(self) -> int:
+        """The number of atoms in the molecule."""
+        return self._rdkit.GetNumAtoms()
+
+    @property
+    def atoms(self):
+        """The :class:`~rdkit.Chem.rdchem.Atom` objects of the molecule, in index order."""
+        return self._rdkit.GetAtoms()
+
+    @property
+    def n_conformers(self) -> int:
+        """The number of conformers: the global one, and any made by :meth:`pose_to_conformer`."""
+        return self._rdkit.GetNumConformers()
+
+    def remove_conformer(self, conf_id: int) -> None:
+        """Remove a conformer, e.g. one made by :meth:`pose_to_conformer` with ``new_conf=True``."""
+        self._rdkit.RemoveConformer(conf_id)
 
     @property
     def atom_types(self):
@@ -598,7 +639,7 @@ class Mol(Chem.Mol):
         -------
         list
         """
-        return self.GetConformer().GetPositions()
+        return self._rdkit.GetConformer().GetPositions()
 
     def get_positions(self, conf_id: int = -1) -> NDArray[np.float32]:
         """Returns the positions of all atoms in a specific conformer.
@@ -612,7 +653,7 @@ class Mol(Chem.Mol):
         -------
         list
         """
-        return self.GetConformer(conf_id).GetPositions()
+        return self._rdkit.GetConformer(conf_id).GetPositions()
 
     def pose_to_positions(self, poses) -> NDArray:
         """Compute the atom positions of poses, in numpy, without any RDKit conformer.
@@ -689,7 +730,7 @@ class Mol(Chem.Mol):
             self.__compute_rotatable_torsions()
         for i, torsion in enumerate(self.__rotatable_torsions):
             self.__torsion_angles[i] = Chem.rdMolTransforms.GetDihedralRad(
-                self.GetConformer(), *torsion
+                self._rdkit.GetConformer(), *torsion
             )
         return self.__torsion_angles
 
@@ -698,130 +739,29 @@ class Mol(Chem.Mol):
         """The number of torsions in the molecule."""
         return self.layout.n_tors
 
-    def set_torsion(self, i_torsion: int, angle_rad: float, conf_id: int = -1) -> None:
-        """Set the torsion angle of a molecule :class:`~rdkit.Chem.rdchem.Conformer` for a
-        specific torsion.
-
-        Parameters
-        ----------
-        i_torsion : int
-            The index of the rotatable torsion bond.
-        angle_rad : float
-            The torsion angle in radians.
-        conf_id : int, default -1
-            The conformer id to set the torsion to. By default selects the global conformer.
-        """
-        Chem.rdMolTransforms.SetDihedralRad(
-            self.GetConformer(conf_id),
-            *self.__rotatable_torsions[i_torsion],
-            angle_rad,
-        )
-
-    def set_torsions(self, angles_rad: list[float], conf_id: int = -1) -> None:
-        """Sets the torsion angles for a molecule.
-
-        Parameters
-        ----------
-        angles_rad : array_like
-            A list of float values representing torsion angles in radians.
-        conf_id : int, default -1
-            The conformer id to set the torsions to. By default selects the global conformer.
-        """
-        if len(angles_rad) > 0 and len(self.__rotatable_torsions) == 0:
-            warnings.warn(
-                "set_torsions called with angles but this Mol has no rotatable torsions. "
-                "Did you forget flexible=True when constructing the Mol?",
-                UserWarning,
-                stacklevel=2,
-            )
-        for i, angle in enumerate(angles_rad):
-            self.set_torsion(i, angle, conf_id)
-
-    def transform(
-        self,
-        rotation: NDArray[np.float32],
-        translation: NDArray[np.float32],
-        conf_id: int = -1,
-    ) -> None:
-        """Transforms the conformer of the molecule with respect to the center atom's coordinates.
-
-        Parameters
-        ----------
-        roll : float
-            Roll angle of rotation in radians.
-        pitch : float
-            Pitch angle of rotation in radians.
-        yaw :
-            Yaw angle of rotation in radians.
-        x : float
-            Translation along the x-axis.
-        y : float
-            Translation along the y-axis.
-        z : float
-            Translation along the z-axis.
-
-        conf_id : int
-            The conformer id to transform. By default selects the global conformer.
-
-        """
-        conf = self.GetConformer(conf_id)
-
-        if self.layout.rot_type == "euler":
-            assert len(rotation) == 3, "Rotation must be a 3-vector for Ligand with euler rotation."
-            rotate = _rotation_matrix_from_euler(*rotation)
-        else:
-            assert len(rotation) == 4, (
-                "Rotation must be a 4-vector for Ligand with quaternion rotation."
-            )
-            rotate = _rotation_matrix_from_quat(*rotation)
-
-        center_atom = conf.GetAtomPosition(self._center_atom)
-        center_atom_coords = np.array(
-            [center_atom.x, center_atom.y, center_atom.z],
-        )
-
-        transformation_matrix = _compose_delta_transform(
-            rotate[:3, :3],
-            translation,
-            self.__cur_rotation_matrix[:3, :3],
-            center_atom_coords,
-        )
-
-        if conf_id == -1:
-            self.__cur_rotation_matrix = rotate[:3, :3]
-            self.__cur_rotation = np.asarray(rotation)
-        # else:
-        #     transformation_matrix = new_transform
-        #     transformation_matrix[:3, 3] -= new_transform[:3, :3] @ center_atom_coords
-
-        Chem.rdMolTransforms.TransformConformer(conf, transformation_matrix)
-
     def pose_to_conformer(self, pose: Pose | NDArray, new_conf: bool = False) -> int:
-        """Update the molecule with the new variables.
+        """Put a pose on a conformer of the molecule.
 
-        Input should be shaped like ``(6 + n_tors,)``.
-
-        This method can act either on the default :class:`~rdkit.Chem.rdchem.Conformer`,
-        or can create a new conformer, apply the update and return the new conformers id.
+        The positions are those of :meth:`pose_to_positions`, set on either the global
+        conformer, or on a new conformer.
 
         .. note::
-            Using this method to create a new conformer on update is recommended. This allows for
-            parallelization, as each thread is able to use their own conformer.
-            See: TODO
+            Scoring does not use this method: scoring functions get positions from
+            :meth:`pose_to_positions`, or a private RDKit copy, and never modify the molecule.
+            This changes the molecule (a conformer of it), so it is for export and display.
 
         Parameters
         ----------
-        new_vars : array_like
-            Array containing the new variables in the order of
-            ``(roll, pitch, yaw, x, y, z, *torsions)``.
-
+        pose : Pose or array_like
+            The pose, or its values ``(roll, pitch, yaw, x, y, z, *torsions)`` (the rotation
+            has four values for a quaternion layout).
         new_conf : bool, default False
-            Whether to create a new conformer to apply the update to.
+            Whether to put the pose on a new conformer, instead of on the global conformer.
 
         Returns
         -------
         int
-            Conformer id of the updated molecule. If no new conformer is created, returns -1,
+            Conformer id of the new conformer. If no new conformer is created, returns -1,
             which is the id of the global conformer.
 
         """
@@ -833,14 +773,15 @@ class Mol(Chem.Mol):
             )
             pose = Pose(pose, self.layout)
 
-        conf_id = -1
+        positions = self.pose_to_positions(pose)
         if new_conf:
-            conf_id = self.AddConformer(self.GetConformer(), assignId=True)
+            conformer = Chem.Conformer(self._rdkit.GetConformer())  # a copy, with its flags
+            conformer.SetPositions(positions)
+            return self._rdkit.AddConformer(conformer, assignId=True)
 
-        self.transform(pose.rotation, pose.translation, conf_id=conf_id)
-        self.set_torsions(pose.torsions, conf_id=conf_id)
-
-        return conf_id
+        self._rdkit.GetConformer().SetPositions(positions)
+        self.__cur_rotation = np.array(pose.rotation, dtype=float)
+        return -1
 
     @property
     def center_atom(self):
@@ -854,9 +795,19 @@ class Mol(Chem.Mol):
 
     @center_atom.setter
     def center_atom(self, value):
-        self.transform(self.layout.identity_rotation, np.zeros(3))
+        # Rotations are about the center atom, so the global conformer is put back in the reference
+        # orientation (keeping its torsions), with the new center atom at the origin.
         self._center_atom = value
-        self.transform(self.layout.identity_rotation, np.zeros(3))
+        if self.is_flexible:
+            # Which side of every torsion moves depends on the center atom: it must stay fixed,
+            # or a pose's translation is no longer where the center atom ends up. The torsion
+            # values and their order do not change, so existing poses stay valid.
+            self.__compute_rotatable_torsions(self._flex_hydrogens)
+        pose = np.concatenate([self.layout.identity_rotation, np.zeros(3), self.torsions])
+        positions = self.pose_to_positions(pose)
+        positions -= positions[value]  # the torsions can move the new center atom
+        self._rdkit.GetConformer().SetPositions(positions)
+        self.__cur_rotation = np.array(self.layout.identity_rotation, dtype=float)
 
     @property
     def position(self):
@@ -869,7 +820,7 @@ class Mol(Chem.Mol):
         list
             A list of shape (3,) containing the x, y, and z coordinates of the center atom.
         """
-        center_atom_coords = self.GetConformer().GetAtomPosition(self._center_atom)
+        center_atom_coords = self._rdkit.GetConformer().GetAtomPosition(self._center_atom)
         return [center_atom_coords.x, center_atom_coords.y, center_atom_coords.z]
 
     @property
@@ -916,7 +867,7 @@ class Mol(Chem.Mol):
         params = Chem.AllChem.ETKDGv3()
         params.randomSeed = seed
 
-        new_mol = Chem.Mol(self)
+        new_mol = Chem.Mol(self._rdkit)
 
         cids = Chem.AllChem.EmbedMultipleConfs(new_mol, n, params)
 
@@ -960,7 +911,7 @@ class Mol(Chem.Mol):
         else:
             raise ValueError("file must be either filename str or SDWriter")
 
-        writer.write(self, confId=conf_id)
+        writer.write(self._rdkit, confId=conf_id)
 
         if close_writer:
             writer.close()
@@ -981,7 +932,7 @@ class Mol(Chem.Mol):
         for pose in poses:
             conf_id = self.pose_to_conformer(pose, new_conf=True)
             self.to_sdf(writer, conf_id=conf_id)
-            self.RemoveConformer(conf_id)
+            self._rdkit.RemoveConformer(conf_id)
         writer.close()
 
     # endregion
@@ -1034,13 +985,13 @@ class Mol(Chem.Mol):
         is_protein = (
             l_options["protein"]
             if l_options["protein"] != "auto"
-            else self.GetNumHeavyAtoms() >= VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF
+            else self._rdkit.GetNumHeavyAtoms() >= VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF
         )
 
         if is_protein:
             m_id = self._viewer_add_prot(viewer, c_m_id, l_options)
         else:
-            mblock = Chem.MolToMolBlock(self)
+            mblock = Chem.MolToMolBlock(self._rdkit)
             viewer.view.addModel(mblock, "mol")
             m_id = c_m_id + 1
             viewer.view.setStyle(
@@ -1051,7 +1002,7 @@ class Mol(Chem.Mol):
         return m_id
 
     def _viewer_add_prot(self, viewer, c_m_id, options: dict = None):
-        pdbblock = Chem.MolToPDBBlock(self)
+        pdbblock = Chem.MolToPDBBlock(self._rdkit)
 
         viewer.view.addModel(pdbblock, "pdb")
         m_id = c_m_id + 1
@@ -1166,14 +1117,14 @@ class Mol(Chem.Mol):
             self.draw_options["note"] = ""
         match self.draw_options["note"].lower():
             case "idx":
-                for a in self.GetAtoms():
+                for a in self._rdkit.GetAtoms():
                     a.SetProp("atomNote", f"{a.GetIdx()}")
             case "type":
-                for a in self.GetAtoms():
+                for a in self._rdkit.GetAtoms():
                     ty = self._atom_types[a.GetIdx()]
                     a.SetProp("atomNote", f"{str(ty)}")
             case _:
-                for a in self.GetAtoms():
+                for a in self._rdkit.GetAtoms():
                     a.ClearProp("atomNote")
 
         highlight = []
@@ -1184,17 +1135,50 @@ class Mol(Chem.Mol):
                 case list():
                     highlight = self.draw_options["highlight"]
 
-        d2d.DrawMolecule(self, highlightAtoms=highlight)
+        d2d.DrawMolecule(self._rdkit, highlightAtoms=highlight)
         d2d.FinishDrawing()
         return d2d.GetDrawingText()
 
     # endregion
 
-    # region Dunder / misc
+    # region Copying
 
-    def __hash__(self):
-        # TODO!
-        return id(self)
+    def copy(self) -> Mol:
+        """A full, independent copy: the RDKit molecule with all its conformers, and every
+        derived value (reference geometry, torsions, atom types, layout, center atom).
+
+        Nothing is re-derived, so unlike ``Mol(mol.rdkit)`` the copy also keeps the current
+        state of the global conformer and the custom settings of this molecule.
+        """
+        return copy.deepcopy(self)
+
+    # Pickling: RDKit leaves out private properties (like the Gasteiger charges that scoring
+    # functions read) and stores coordinates in single precision, unless asked otherwise.
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        default = Chem.GetDefaultPickleProperties()
+        Chem.SetDefaultPickleProperties(
+            Chem.PropertyPickleOptions.AllProps | Chem.PropertyPickleOptions.CoordsAsDouble
+        )
+        try:
+            state["_rdkit"] = self._rdkit.ToBinary()
+        finally:
+            Chem.SetDefaultPickleProperties(default)
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+        self._rdkit = Chem.Mol(state["_rdkit"])
+
+    def __copy__(self) -> Mol:
+        return self.copy()  # a shallow copy would share the RDKit molecule
+
+    def __deepcopy__(self, memo) -> Mol:
+        new = type(self).__new__(type(self))
+        memo[id(self)] = new
+        for key, value in self.__dict__.items():
+            new.__dict__[key] = Chem.Mol(value) if key == "_rdkit" else copy.deepcopy(value, memo)
+        return new
 
     # endregion
 

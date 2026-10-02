@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from helpers import rdkit_positions
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
@@ -66,9 +67,7 @@ def test_place_in_works_for_every_layout(site, rot_type):
         assert np.allclose(np.linalg.norm(poses.rotation, axis=1), 1.0)
     # The translation is the position of the center atom, so a pose really is in the site.
     for pose in list(poses)[:3]:
-        conf_id = mol.pose_to_conformer(pose, new_conf=True)
-        assert np.allclose(mol.get_positions(conf_id)[mol._center_atom], pose.translation)
-        mol.RemoveConformer(conf_id)
+        assert np.allclose(rdkit_positions(mol, pose)[mol._center_atom], pose.translation)
 
 
 @pytest.mark.parametrize(
@@ -128,9 +127,16 @@ def test_torsion_api():
     mol = _mol()
 
     assert mol.n_tors == 1 == len(mol.rotatable_torsions) == len(mol.torsions)
-    mol.set_torsions([0.5])
-    assert mol.torsions[0] == pytest.approx(0.5)
-    mol.set_torsion(0, -1.0)
-    assert mol.torsions[0] == pytest.approx(-1.0)
-    for old in ("dihedral_angles", "rotatable_dihedrals", "set_dihedral_angles", "place_in"):
+    for angle in (0.5, -1.0):  # a pose sets the torsions of the global conformer
+        mol.pose_to_conformer(np.concatenate([mol.layout.identity_rotation, np.zeros(3), [angle]]))
+        assert mol.torsions[0] == pytest.approx(angle)
+    for old in (
+        "dihedral_angles",
+        "rotatable_dihedrals",
+        "set_dihedral_angles",
+        "place_in",
+        "set_torsion",
+        "set_torsions",
+        "transform",
+    ):
         assert not hasattr(mol, old)

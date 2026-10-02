@@ -17,6 +17,7 @@ import contextlib
 import numbers
 
 import numpy as np
+from helpers import rdkit_positions
 
 from pyrite._common import Pose, PoseLayout
 from pyrite.scoring import Dependency, ScoringFunction
@@ -66,7 +67,7 @@ def _close(got, expected) -> bool:
 
 @contextlib.contextmanager
 def _positions_through_rdkit(mol):
-    """Compute the positions of poses of `mol` with RDKit (``Mol.pose_to_conformer``) instead of numpy.
+    """Compute the positions of poses of `mol` with RDKit (``helpers.rdkit_positions``) instead of numpy.
 
     The reference the numpy pipeline must agree with, for whatever a scoring function does with
     those positions.
@@ -77,13 +78,7 @@ def _positions_through_rdkit(mol):
     def through_rdkit(self, poses):
         if self is not mol:
             return original(self, poses)
-        values = np.asarray(poses, dtype=float)
-        out = []
-        for row in np.atleast_2d(values):
-            conf_id = self.pose_to_conformer(row, new_conf=True)
-            out.append(self.get_positions(conf_id))
-            self.RemoveConformer(conf_id)
-        return np.stack(out) if values.ndim == 2 else out[0]
+        return rdkit_positions(self, np.asarray(poses, dtype=float))
 
     cls.pose_to_positions = through_rdkit
     try:
@@ -105,7 +100,7 @@ def check_scoring_function(sf: ScoringFunction, mol, poses) -> None:
     - ``batch_scores(poses)`` returns one score per pose, equal to calling ``get_score`` for each
       (in any order, and for raw values).
     - The score does not depend on how the positions of the pose were computed (numpy, or RDKit).
-    - Scoring leaves `mol` as it was: no extra conformers, the loaded one unmoved.
+    - Scoring leaves `mol` as it was: no extra conformers, nothing moved, nothing changed.
     - ``get_dependencies()`` returns a list of :class:`~pyrite.scoring.Dependency`, which are
       hashable and equal to themselves.
 
@@ -119,7 +114,8 @@ def check_scoring_function(sf: ScoringFunction, mol, poses) -> None:
         A few poses of `mol`, in its layout.
     """
     assert isinstance(sf, ScoringFunction), f"{type(sf).__name__} is not a ScoringFunction"
-    n_conformers, loaded = mol.GetNumConformers(), mol.get_positions().copy()
+    n_conformers, loaded = mol.n_conformers, mol.get_positions().copy()
+    state = mol.rdkit.ToBinary()
 
     scores = np.array([sf.get_score(pose) for pose in poses])
     assert all(isinstance(s, numbers.Real) for s in scores), "get_score must return a float"
@@ -143,8 +139,9 @@ def check_scoring_function(sf: ScoringFunction, mol, poses) -> None:
             "batch_scores depends on how the positions are computed"
         )
 
-    assert mol.GetNumConformers() == n_conformers, "scoring left conformers on the molecule"
+    assert mol.n_conformers == n_conformers, "scoring left conformers on the molecule"
     assert np.array_equal(mol.get_positions(), loaded), "scoring moved the molecule"
+    assert mol.rdkit.ToBinary() == state, "scoring changed the RDKit molecule"
 
     dependencies = sf.get_dependencies()
     assert isinstance(dependencies, list), (

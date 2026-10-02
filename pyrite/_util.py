@@ -147,39 +147,6 @@ def _translation_matrix_from_coordinates(x: float, y: float, z: float):
     return m
 
 
-@njit
-def _compose_delta_transform(
-    r_new: NDArray, translation: NDArray, r_prev: NDArray, center: NDArray
-):
-    """
-    As rotation matrices are orthogonal, their inverse is the same as their transpose. We can therefore
-    calculate the inverse in closed form.
-
-    Parameters
-    ----------
-    r_new
-    translation
-    r_prev
-    center
-
-    Returns
-    -------
-
-    """
-    # Written out instead of `r_new @ r_prev.T`: the callers pass non-contiguous 3x3 slices of 4x4
-    # matrices, for which Numba's matrix product is slower than these loops (and warns about it).
-    out = np.eye(4)
-    for i in range(3):
-        for j in range(3):
-            out[i, j] = (
-                r_new[i, 0] * r_prev[j, 0] + r_new[i, 1] * r_prev[j, 1] + r_new[i, 2] * r_prev[j, 2]
-            )
-        out[i, 3] = translation[i] - (
-            out[i, 0] * center[0] + out[i, 1] * center[1] + out[i, 2] * center[2]
-        )
-    return out
-
-
 def _symmetry_mappings(probe, ref, max_matches: int, include_identity: bool = False) -> list:
     """Return the atom mappings of `ref` onto `probe` that preserve the molecular graph.
 
@@ -200,7 +167,9 @@ def _symmetry_mappings(probe, ref, max_matches: int, include_identity: bool = Fa
         and `ref` have the same atom order. Without it, a truncated list may not contain it.
     """
     matches = list(
-        probe.GetSubstructMatches(ref, uniquify=False, useChirality=True, maxMatches=max_matches)
+        probe.rdkit.GetSubstructMatches(
+            ref.rdkit, uniquify=False, useChirality=True, maxMatches=max_matches
+        )
     )
     if len(matches) >= max_matches:
         warnings.warn(
@@ -209,7 +178,7 @@ def _symmetry_mappings(probe, ref, max_matches: int, include_identity: bool = Fa
             stacklevel=3,
         )
     if include_identity:
-        identity = tuple(range(probe.GetNumAtoms()))
+        identity = tuple(range(probe.n_atoms))
         if identity not in matches:
             matches.insert(0, identity)
     return matches

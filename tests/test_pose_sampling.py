@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from helpers import rdkit_positions
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from scipy import stats
@@ -65,9 +66,12 @@ def test_euler_and_quat_layouts_describe_the_same_rotation():
     translation, torsion = np.array([1.0, -2.0, 3.0]), np.array([0.3])
 
     for q, e in zip(quaternions, eulers, strict=True):
-        a = quat.pose_to_conformer(np.concatenate([q, translation, torsion]), new_conf=True)
-        b = euler.pose_to_conformer(np.concatenate([e, translation, torsion]), new_conf=True)
-        assert np.allclose(quat.get_positions(a), euler.get_positions(b), atol=1e-9)
+        a = rdkit_positions(quat, np.concatenate([q, translation, torsion]))
+        b = rdkit_positions(euler, np.concatenate([e, translation, torsion]))
+        assert np.allclose(a, b, atol=1e-9)
+        assert np.allclose(
+            quat.pose_to_positions(np.concatenate([q, translation, torsion])), a, atol=1e-9
+        )
 
 
 @pytest.mark.parametrize("rot_type", ["euler", "quat"])

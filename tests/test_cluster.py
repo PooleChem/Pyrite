@@ -4,6 +4,7 @@ from unittest import mock
 
 import numpy as np
 import pytest
+from helpers import rdkit_positions
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolAlign
 from rdkit.ML.Cluster import Butina
@@ -36,12 +37,12 @@ def _poses(mol: Mol, n_groups: int = 6, per_group: int = 5, seed: int = 0) -> Po
 
 def _calc_rms_matrix(mol: Mol, poses: Poses) -> np.ndarray:
     """The RMSD matrix from RDKit's own CalcRMS, one conformer per pose (an independent path)."""
-    work = Chem.Mol(mol)
+    work = mol.to_rdkit()
     work.RemoveAllConformers()
     for pose in poses:
-        conf_id = mol.pose_to_conformer(pose, new_conf=True)
-        work.AddConformer(Chem.Conformer(mol.GetConformer(conf_id)), assignId=True)
-        mol.RemoveConformer(conf_id)
+        conformer = Chem.Conformer(mol.rdkit.GetConformer())
+        conformer.SetPositions(rdkit_positions(mol, pose))
+        work.AddConformer(conformer, assignId=True)
     n_atoms = work.GetNumAtoms()
     matches = work.GetSubstructMatches(work, uniquify=False, useChirality=True, maxMatches=100000)
     atom_maps = [[(probe, ref) for ref, probe in enumerate(m)] for m in matches]
@@ -52,7 +53,7 @@ def _calc_rms_matrix(mol: Mol, poses: Poses) -> np.ndarray:
             matrix[i, j] = matrix[j, i] = rdMolAlign.CalcRMS(
                 work, work, prbId=j, refId=i, map=atom_maps
             )
-    assert n_atoms == mol.GetNumAtoms()
+    assert n_atoms == mol.n_atoms
     return matrix
 
 
@@ -76,12 +77,12 @@ def test_rmsd_matrix_is_a_metric(mol):
 
 def test_rmsd_matrix_leaves_the_molecule_and_poses_alone(mol):
     poses = _poses(mol)
-    n_conformers, positions = mol.GetNumConformers(), mol.get_positions().copy()
+    n_conformers, positions = mol.n_conformers, mol.get_positions().copy()
     values = np.asarray(poses).copy()
 
     rmsd_matrix(mol, poses)
 
-    assert mol.GetNumConformers() == n_conformers
+    assert mol.n_conformers == n_conformers
     assert np.array_equal(mol.get_positions(), positions)
     assert np.array_equal(np.asarray(poses), values)
 

@@ -53,7 +53,8 @@ from numpy.typing import ArrayLike, NDArray
 from rdkit.Geometry import Point3D
 from scipy.spatial import KDTree
 
-from pyrite._common import Mol, PoseLayout, _rotation_matrix_from_euler
+from pyrite._common import Mol, PoseLayout
+from pyrite._util import _rotation_matrix_from_euler
 
 
 class Bounds(ABC):

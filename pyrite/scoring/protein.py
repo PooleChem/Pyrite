@@ -1241,10 +1241,10 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
 
     def __init_charges(self):
         _probe_mol_charges = np.array(
-            [a.GetDoubleProp("_GasteigerCharge") for a in self.probe_mol.GetAtoms()]
+            [a.GetDoubleProp("_GasteigerCharge") for a in self.probe_mol.atoms]
         )
         _fixed_mol_charges = np.array(
-            [a.GetDoubleProp("_GasteigerCharge") for a in self.fixed_mol.GetAtoms()]
+            [a.GetDoubleProp("_GasteigerCharge") for a in self.fixed_mol.atoms]
         )
         _probe_mol_charges[np.isnan(_probe_mol_charges)] = 0.0
         _fixed_mol_charges[np.isnan(_fixed_mol_charges)] = 0.0

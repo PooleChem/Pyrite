@@ -41,14 +41,12 @@ class ScoringFunction(ABC):
         pass
 
     def _resolved_dependencies(self) -> list[Dependency]:
-        """The merged dependencies, in the order they are computed. Cached: this only depends on
-        the (fixed) composition of the scoring function.
+        """The merged dependencies. Cached: this only depends on the (fixed) composition of the
+        scoring function.
         """
         opt_deps = getattr(self, "_opt_deps_cache", None)
         if opt_deps is None:
-            merged = Dependency.merge_all(self.get_dependencies())
-            # RDKit conformers first, so the rest can read positions off them
-            opt_deps = sorted(merged, key=lambda dep: dep.priority)
+            opt_deps = list(Dependency.merge_all(self.get_dependencies()))
             self._opt_deps_cache = opt_deps
         return opt_deps
 
@@ -62,8 +60,8 @@ class ScoringFunction(ABC):
         calculates the score using the computed dependencies.
 
         Nothing is done to the :class:`~pyrite.Mol`: the atom positions are computed from the pose
-        directly, and a temporary RDKit conformer is made (and removed again) only if a term
-        needs one.
+        directly, and a private RDKit copy is made only if a term needs one, so poses of one
+        molecule can be scored from several threads at once.
 
         .. note::
             The dependency set and its merge are cached on the instance after the first call,
@@ -82,18 +80,18 @@ class ScoringFunction(ABC):
         score : float
             The score associated with the pose.
         """
-        with Realization(pose, batched=False) as realized:
-            # _NarrowingComputed, not a plain dict: opt_deps holds one representative
-            # per merged group, but different dependencies sharing that group (e.g.
-            # different k/cutoff) still need their own narrowed view back — see
-            # Dependency.narrow()'s docstring for why that can't be a plain dict.
-            computed = _NarrowingComputed(
-                {dep: dep.compute(realized) for dep in self._resolved_dependencies()}
-            )
+        realized = Realization(pose, batched=False)
+        # _NarrowingComputed, not a plain dict: opt_deps holds one representative
+        # per merged group, but different dependencies sharing that group (e.g.
+        # different k/cutoff) still need their own narrowed view back — see
+        # Dependency.narrow()'s docstring for why that can't be a plain dict.
+        computed = _NarrowingComputed(
+            {dep: dep.compute(realized) for dep in self._resolved_dependencies()}
+        )
 
-            if subscores is not None:
-                return self._score_and_store(pose, computed, subscores)
-            return self._score(pose, computed=computed)
+        if subscores is not None:
+            return self._score_and_store(pose, computed, subscores)
+        return self._score(pose, computed=computed)
 
     def batch_scores(self, poses: Poses | NDArray) -> NDArray[np.float64]:
         """Score many poses at once.
@@ -113,11 +111,11 @@ class ScoringFunction(ABC):
         NDArray
             One score per pose, same order as `poses`.
         """
-        with Realization(poses, batched=True) as realized:
-            computed_batch = _NarrowingComputed(
-                {dep: dep.compute(realized) for dep in self._resolved_dependencies()}
-            )
-            return self._batch_scores(poses, computed_batch)
+        realized = Realization(poses, batched=True)
+        computed_batch = _NarrowingComputed(
+            {dep: dep.compute(realized) for dep in self._resolved_dependencies()}
+        )
+        return self._batch_scores(poses, computed_batch)
 
     def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
         """The batched score function.
@@ -609,10 +607,12 @@ class ConstantTerm(ScoringFunction):
 class _RDKitScoringFunction(ScoringFunction, ABC):
     """Base class for scoring functions that need a real RDKit conformer of the molecule.
 
-    Implement ``_score(pose, computed)`` as for any scoring function, and read the conformer id
-    with ``computed[self.rdkit_dep]``. The conformer is made by a shared
-    :class:`~pyrite.scoring.dependencies.RDKitDependency`, so any number of these terms in one
-    composite make one conformer per pose, and it is removed after scoring.
+    Implement ``_score(pose, computed)`` as for any scoring function, and read the posed molecule
+    with ``computed[self.rdkit_dep]``: an :class:`~rdkit.Chem.rdchem.Mol` copy of ``self.mol`` with
+    the pose as its only conformer (``confId=-1``), which is private to this call and may be used
+    freely. It is made by a shared :class:`~pyrite.scoring.dependencies.RDKitDependency`, so any
+    number of these terms in one composite share one copy per pose, and ``self.mol`` is never
+    modified.
 
     Parameters
     ----------

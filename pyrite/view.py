@@ -105,8 +105,8 @@ class Viewer:
         vn = self._vs[v_id]
 
         conf_id = self._ligand.pose_to_conformer(vn, new_conf=True)
-        mblock_n = Chem.MolToMolBlock(self._ligand, confId=conf_id)
-        self._ligand.RemoveConformer(conf_id)
+        mblock_n = Chem.MolToMolBlock(self._ligand.rdkit, confId=conf_id)
+        self._ligand.remove_conformer(conf_id)
         self.view.addModel(mblock_n, "mol")
         self.view.setStyle(
             {"model": self._v_m_id},
@@ -160,8 +160,8 @@ class Viewer:
             vn = self._vs[0]
 
             conf_id = self._ligand.pose_to_conformer(vn, new_conf=True)
-            mblock = Chem.MolToMolBlock(self._ligand, confId=conf_id)
-            self._ligand.RemoveConformer(conf_id)
+            mblock = Chem.MolToMolBlock(self._ligand.rdkit, confId=conf_id)
+            self._ligand.remove_conformer(conf_id)
 
             self.view.addModel(mblock, "mol")
             self._v_m_id = self.max_m_id + 1
@@ -200,8 +200,8 @@ class Viewer:
         else:
             for var in self._vs:
                 conf_id = mol.pose_to_conformer(var, new_conf=True)
-                mblock = Chem.MolToMolBlock(mol, confId=conf_id)
-                mol.RemoveConformer(conf_id)
+                mblock = Chem.MolToMolBlock(mol.rdkit, confId=conf_id)
+                mol.remove_conformer(conf_id)
                 self.view.addModel(mblock, "mol")
                 self.max_m_id += 1
                 self.view.setStyle(

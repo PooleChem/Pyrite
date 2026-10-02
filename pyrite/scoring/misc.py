@@ -37,7 +37,7 @@ class RMSD(_RDKitScoringFunction):
         self.probe_mol = probe_mol
         same_atom_order = ref_mol is None
         if ref_mol is None:
-            self.ref_mol = type(probe_mol)(Chem.Mol(probe_mol))
+            self.ref_mol = probe_mol.copy()
         else:
             self.ref_mol = ref_mol
 
@@ -50,9 +50,8 @@ class RMSD(_RDKitScoringFunction):
 
     def _score(self, pose, computed) -> float:
         score = Chem.rdMolAlign.CalcRMS(
-            self.probe_mol,
-            self.ref_mol,
-            prbId=computed[self.rdkit_dep],
+            computed[self.rdkit_dep],
+            self.ref_mol.rdkit,
             map=self._atom_map,
         )
         return score
@@ -120,9 +119,7 @@ class Crowding(_RDKitScoringFunction):
     ):
         super().__init__(molecule)
 
-        self._ref_mol = Mol(
-            Chem.Mol(molecule), flexible=True
-        )  # TODO: create copy function for molecule.
+        self._ref_mol = molecule.copy()  # holds the registered poses as its conformers
 
         self._registered_conf = []
         if register_initial:
@@ -153,14 +150,13 @@ class Crowding(_RDKitScoringFunction):
         self._registered_conf.append(conf_id)
 
     def _score(self, pose, computed) -> float:
-        conf_id = computed[self.rdkit_dep]
+        posed = computed[self.rdkit_dep]
         score = 0
 
         for i in self._registered_conf:
             rms = Chem.rdMolAlign.CalcRMS(
-                self.mol,
-                self._ref_mol,
-                prbId=conf_id,
+                posed,
+                self._ref_mol.rdkit,
                 refId=i,
                 map=self._atom_map,
             )
@@ -204,7 +200,7 @@ class NumProteinAtomsWithinA(ScoringFunction):
     ):
         self.probe_mol = probe_mol
         self._mask = np.array(
-            [not ignore_hs_ligand or atom.GetAtomicNum() > 1 for atom in self.probe_mol.GetAtoms()]
+            [not ignore_hs_ligand or atom.GetAtomicNum() > 1 for atom in self.probe_mol.atoms]
         )
         self.ref_mol = ref_mol
         self.a = a
