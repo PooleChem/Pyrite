@@ -1,10 +1,58 @@
 import numpy as np
-from scipy.interpolate import RegularGridInterpolator
+from numba import njit
 
 from pyrite.bounds import Bounds
 from pyrite.scoring import Clamp, ScoringFunction
 from pyrite.scoring._base import _CombinedScoringFunction, _ScaledScoringFunction
 from pyrite.scoring.dependencies import Dependency, KNNDependency, PositionDependency
+
+
+@njit
+def _trilinear_sum(positions, values, columns, origin, step):
+    """Sum, per pose, the trilinear interpolation of every atom in its own column of `values`.
+
+    Parameters
+    ----------
+    positions : ndarray
+        Shape ``(n_poses, n_atoms, 3)``.
+    values : ndarray
+        Shape ``(nx, ny, nz, n_columns)``, on a regular grid starting at `origin`.
+    columns : ndarray
+        Shape ``(n_atoms,)``, the column of `values` that every atom reads.
+    origin, step : ndarray
+        Shape ``(3,)``: the first grid vertex, and the (uniform) spacing, per axis.
+
+    Returns
+    -------
+    ndarray
+        Shape ``(n_poses,)``. Atoms outside the grid contribute 0.
+    """
+    n_poses, n_atoms, _ = positions.shape
+    nx, ny, nz = values.shape[0], values.shape[1], values.shape[2]
+    out = np.zeros(n_poses)
+    for i in range(n_poses):
+        total = 0.0
+        for j in range(n_atoms):
+            f0 = (positions[i, j, 0] - origin[0]) / step[0]
+            f1 = (positions[i, j, 1] - origin[1]) / step[1]
+            f2 = (positions[i, j, 2] - origin[2]) / step[2]
+            if f0 < 0 or f1 < 0 or f2 < 0 or f0 > nx - 1 or f1 > ny - 1 or f2 > nz - 1:
+                continue
+            i0, i1, i2 = min(int(f0), nx - 2), min(int(f1), ny - 2), min(int(f2), nz - 2)
+            d0, d1, d2 = f0 - i0, f1 - i1, f2 - i2
+            c = columns[j]
+            total += (
+                values[i0, i1, i2, c] * (1 - d0) * (1 - d1) * (1 - d2)
+                + values[i0 + 1, i1, i2, c] * d0 * (1 - d1) * (1 - d2)
+                + values[i0, i1 + 1, i2, c] * (1 - d0) * d1 * (1 - d2)
+                + values[i0, i1, i2 + 1, c] * (1 - d0) * (1 - d1) * d2
+                + values[i0 + 1, i1 + 1, i2, c] * d0 * d1 * (1 - d2)
+                + values[i0 + 1, i1, i2 + 1, c] * d0 * (1 - d1) * d2
+                + values[i0, i1 + 1, i2 + 1, c] * (1 - d0) * d1 * d2
+                + values[i0 + 1, i1 + 1, i2 + 1, c] * d0 * d1 * d2
+            )
+        out[i] = total
+    return out
 
 
 class GridScore(ScoringFunction):
@@ -93,16 +141,21 @@ class GridScore(ScoringFunction):
         )
         r_grid, idx_grid, _ = grid_dep.compute(None)
 
-        atom_types = sorted(set(self._probe_mol.atom_types[self._probe_mask].tolist()))
-        self._interpolators = {}
-        for atom_type in atom_types:
-            values = scoring_function._score_field(r_grid, idx_grid, atom_type).reshape(shape)
-            self._interpolators[atom_type] = RegularGridInterpolator(
-                axes,
-                values,
-                bounds_error=False,
-                fill_value=0.0,
+        # One column per atom type present in the ligand; every atom reads the column of its type.
+        probe_types = self._probe_mol.atom_types[self._probe_mask]
+        atom_types = sorted(set(probe_types.tolist()))
+        self._values = np.ascontiguousarray(
+            np.stack(
+                [
+                    scoring_function._score_field(r_grid, idx_grid, atom_type).reshape(shape)
+                    for atom_type in atom_types
+                ],
+                axis=-1,
             )
+        )
+        self._columns = np.array([atom_types.index(t) for t in probe_types.tolist()])
+        self._origin = np.array([axis[0] for axis in axes])
+        self._step = np.array([axis[1] - axis[0] for axis in axes])
 
     def _make_grid_points(self, binding_site: Bounds, spacing: float, padding: float):
         # how far this ligand can reach from wherever its center atom ends up,
@@ -140,30 +193,19 @@ class GridScore(ScoringFunction):
         # only the positions: the grid replaces the need for a live KNN query at score time
         return [self._position_dep]
 
+    def _interpolate(self, positions: np.ndarray) -> np.ndarray:
+        """The grid score of ``(n_poses, n_atoms, 3)`` positions of the probe's scored atoms."""
+        return _trilinear_sum(
+            np.ascontiguousarray(positions, dtype=np.float64),
+            self._values,
+            self._columns,
+            self._origin,
+            self._step,
+        )
+
     def _score(self, pose, computed) -> float:
         positions = computed[self._position_dep][self._probe_mask]
-        types = self._probe_mol.atom_types[self._probe_mask]
-
-        total = 0.0
-        for atom_type, interpolator in self._interpolators.items():
-            m = types == atom_type
-            if m.any():
-                total += interpolator(positions[m]).sum()
-        return total
+        return float(self._interpolate(positions[None])[0])
 
     def _batch_scores(self, poses, computed_batch) -> np.ndarray:
-        # the interpolator calls below — the actual thing this batches — run once per atom type
-        # across every pose at once, not once per atom type *per pose*.
-        positions = computed_batch[self._position_dep][:, self._probe_mask]  # (n_poses, n_atoms, 3)
-        types = self._probe_mol.atom_types[self._probe_mask]  # (n_atoms,) — same every pose
-
-        total = np.zeros(len(poses))
-        for atom_type, interpolator in self._interpolators.items():
-            m = types == atom_type
-            if not m.any():
-                continue
-            pts = positions[:, m]  # (n_poses, n_atoms_of_type, 3)
-            n_poses, n_of_type, _ = pts.shape
-            values = interpolator(pts.reshape(-1, 3)).reshape(n_poses, n_of_type)
-            total += values.sum(axis=1)
-        return total
+        return self._interpolate(computed_batch[self._position_dep][:, self._probe_mask])
