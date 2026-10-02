@@ -57,9 +57,11 @@ class Mol:
     mol : rdkit.Chem.rdchem.Mol
         The :class:`~rdkit.Chem.rdchem.Mol` object representing the molecule.
     center_atom : int, optional
-        The index of the atom to use as the center point for rotations.
-        By default, the center atom is determined automatically by selecting the heavy atom closest
-        to the initial conformer centroid.
+        The index of the atom to use as the center point for rotations, and the fixed side of
+        every torsion. By default, for a ``flexible`` molecule it is chosen from the molecular
+        graph so that no torsion moves a large part of the molecule (the largest moved fragment is
+        minimal, ties are broken by centrality), independent of the loaded conformer. Without
+        torsions it is the heavy atom closest to the centroid of the loaded conformer.
     ignore_non_polar_hydrogens : bool, default True
         Whether non-polar hydrogens are excluded from `scoring_mask` — the mask every
         scoring function built on this molecule uses to decide which atoms count.
@@ -110,7 +112,10 @@ class Mol:
                 raise ValueError("RDKit could not embed a 3D conformer of the molecule.")
 
         # TODO: this doesnt make sense for proteins. In a protein, all torsions should be oriented wrt the backbone, not the center atom.
-        self._center_atom = center_atom if center_atom is not None else self.__get_center_atom()
+        rotatable_bonds = self.__find_rotatable_bonds(flex_hydrogens) if flexible else []
+        self._center_atom = (
+            center_atom if center_atom is not None else self.__get_center_atom(rotatable_bonds)
+        )
         # The geometry (bond lengths and angles) that poses are applied to, see `pose_to_positions`.
         # Torsions are absolute and the rotation is relative to this orientation, so the global
         # conformer can be moved afterwards without changing what a pose means.
@@ -484,22 +489,68 @@ class Mol:
 
             self._atom_types[i] = a_type
 
-    def __get_center_atom(self):
-        conf = self._rdkit.GetConformer()
-        centroid = Chem.rdMolTransforms.ComputeCentroid(conf)
+    def __get_center_atom(self, rotatable_bonds: list) -> int:
+        """Choose the center atom: the pivot of the rotation, and the fixed side of every torsion.
 
-        closest_dist = float("inf")
-        closest_i = None
-        for atom in self._rdkit.GetAtoms():
-            if atom.GetAtomicNum() > 1:
-                i = atom.GetIdx()
-                dist = np.linalg.norm(conf.GetAtomPosition(i) - centroid)
+        The side of a rotatable bond that does not contain the center atom is the one that moves,
+        so with torsions the center atom is chosen to keep the largest moved fragment small: a
+        torsion then never drags most of the molecule along, and the angles are comparably
+        sized steps. The choice comes from the molecular graph, so it does not depend on which
+        conformer was loaded. Ties are broken by (in order) the fewest atoms moved in total,
+        the smallest summed topological distance to the other heavy atoms (the most central), the
+        smallest distance to the centroid of the loaded conformer, and the lowest index.
 
-                if dist < closest_dist:
-                    closest_dist = dist
-                    closest_i = i
+        Without torsions (rigid molecules, and everything that is not ``flexible``, such as a
+        receptor) it is the heavy atom closest to the centroid.
+        """
+        rd = self._rdkit
+        heavy = np.array([atom.GetAtomicNum() > 1 for atom in rd.GetAtoms()])
+        positions = rd.GetConformer().GetPositions()
+        distance = np.linalg.norm(positions - positions[heavy].mean(axis=0), axis=1)
+        candidates = np.flatnonzero(heavy)
 
-        return closest_i
+        if not rotatable_bonds:
+            return int(candidates[np.lexsort((candidates, distance[candidates]))[0]])
+
+        adjacency = [[n.GetIdx() for n in atom.GetNeighbors()] for atom in rd.GetAtoms()]
+        n_atoms, n_bonds = rd.GetNumAtoms(), len(rotatable_bonds)
+        side_a = np.zeros((n_bonds, n_atoms), dtype=bool)  # the atoms on the first atom's side
+        side_b = np.zeros((n_bonds, n_atoms), dtype=bool)
+        for k, (a, b) in enumerate(rotatable_bonds):
+            side_a[k, _atoms_beyond(adjacency, a, b)] = True
+            side_b[k, _atoms_beyond(adjacency, b, a)] = True
+        # heavy atoms that every bond moves, for every candidate center atom
+        moved = np.where(
+            side_a, (side_b & heavy).sum(axis=1)[:, None], (side_a & heavy).sum(axis=1)[:, None]
+        )[:, candidates]
+        central = np.asarray(Chem.GetDistanceMatrix(rd))[:, heavy].sum(axis=1)[candidates]
+
+        order = np.lexsort(
+            (candidates, distance[candidates], central, moved.sum(axis=0), moved.max(axis=0))
+        )
+        return int(candidates[order[0]])
+
+    def __find_rotatable_bonds(self, flex_hydrogens: bool = False) -> list[tuple[int, int]]:
+        """The rotatable bonds, as pairs of atom indices.
+
+        Which bonds rotate does not depend on the center atom. Unless `flex_hydrogens`, bonds to
+        a terminal heavy atom (a methyl group, a hydroxyl hydrogen, ...) are left out.
+        """
+        bonds = []
+        for match in self._rdkit.GetSubstructMatches(ROTATABLE_BOND_STRUCT):
+            atom_1, atom_2 = match[0], match[1]
+            if not flex_hydrogens:
+                heavy_degrees = [
+                    sum(
+                        nbr.GetAtomicNum() > 1
+                        for nbr in self._rdkit.GetAtomWithIdx(i).GetNeighbors()
+                    )
+                    for i in (atom_1, atom_2)
+                ]
+                if 1 in heavy_degrees:
+                    continue
+            bonds.append((atom_1, atom_2))
+        return bonds
 
     def __compute_rotatable_torsions(self, flex_hydrogens: bool = False):
         """
@@ -518,33 +569,11 @@ class Mol:
         # self.__torsion_angles = np.zeros(num_rotatable_bonds)
         rotatable_torsions = []
         torsion_angles = []
-
-        rotatable_bonds = self._rdkit.GetSubstructMatches(ROTATABLE_BOND_STRUCT)
+        rotatable_bonds = self.__find_rotatable_bonds(flex_hydrogens)
 
         distance_matrix = np.array(Chem.GetDistanceMatrix(self._rdkit))[self._center_atom, :]
 
-        for _, b in enumerate(rotatable_bonds):
-            i_atom_1 = b[0]
-            i_atom_2 = b[1]
-
-            if not flex_hydrogens:
-                heavy_degree_atom_1 = sum(
-                    [
-                        1
-                        for nbr in self._rdkit.GetAtomWithIdx(i_atom_1).GetNeighbors()
-                        if nbr.GetAtomicNum() > 1
-                    ]
-                )
-                heavy_degree_atom_2 = sum(
-                    [
-                        1
-                        for nbr in self._rdkit.GetAtomWithIdx(i_atom_2).GetNeighbors()
-                        if nbr.GetAtomicNum() > 1
-                    ]
-                )
-                if heavy_degree_atom_1 == 1 or heavy_degree_atom_2 == 1:
-                    continue
-
+        for i_atom_1, i_atom_2 in rotatable_bonds:
             atom_1_neighbors = self._rdkit.GetAtomWithIdx(i_atom_1).GetNeighbors()
             atom_2_neighbors = self._rdkit.GetAtomWithIdx(i_atom_2).GetNeighbors()
 
