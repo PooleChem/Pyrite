@@ -68,7 +68,9 @@ def test_add_to_a_molecule_that_has_hydrogens_adds_nothing():
     assert Mol(rd, hydrogens="add").n_atoms == rd.GetNumAtoms()
 
 
-@pytest.mark.parametrize("hydrogens, expected", [("keep", 0), ("remove", 0), ("add", 5)])
+@pytest.mark.parametrize(
+    "hydrogens, expected", [("keep", 0), ("remove", 0), ("polar", 0), ("add", 5)]
+)
 def test_from_smiles(hydrogens, expected):
     mol = Mol.from_smiles("CCO", hydrogens=hydrogens)
 
@@ -89,8 +91,50 @@ def test_the_receptor_has_no_hydrogens_at_the_origin_when_they_are_added():
     )
 
 
-def test_from_pdb_remove_leaves_heavy_atoms_only(ctx):
-    assert _n_hydrogens(ctx.receptor) == 0  # the shared receptor is loaded with the default
+def test_the_default_keeps_only_the_polar_hydrogens(ctx):
+    receptor = ctx.receptor  # loaded with the default
+
+    hydrogens = [a for a in receptor.atoms if a.GetAtomicNum() == 1]
+    assert len(hydrogens) > 0
+    # every one is on a heteroatom: none is bonded to carbon
+    assert all(n.GetAtomicNum() not in (6, 14) for h in hydrogens for n in h.GetNeighbors())
+
+
+def test_polar_removes_the_hydrogens_on_carbon_and_keeps_the_others():
+    rd = _with_hydrogens("CC(N)C(=O)O")  # 7 on carbon, 2 on nitrogen, 1 on oxygen
+    heavy = [a.GetIdx() for a in rd.GetAtoms() if a.GetAtomicNum() > 1]
+    positions = rd.GetConformer().GetPositions()
+
+    mol = Mol(rd, hydrogens="polar")
+
+    assert _n_hydrogens(mol) == 3 and mol.n_atoms == len(heavy) + 3
+    assert all(
+        n.GetAtomicNum() != 6 for a in mol.atoms if a.GetAtomicNum() == 1 for n in a.GetNeighbors()
+    )
+    kept = [
+        a.GetIdx()
+        for a in rd.GetAtoms()
+        if a.GetAtomicNum() > 1 or all(n.GetAtomicNum() != 6 for n in a.GetNeighbors())
+    ]
+    assert np.allclose(mol.get_positions(), positions[kept])  # the others did not move
+
+
+def test_polar_scores_exactly_like_keep_and_all_hydrogens_off_loses_the_hbond_term(ctx):
+    # The scoring functions ignore hydrogens on carbon anyway, so dropping them changes nothing.
+    # Dropping the polar ones too does: the donor atom types, and with them the H-bond term, need them.
+    from pyrite.scoring import NonDirHBond
+
+    path = str(EXAMPLES / "factor_x.pdb")
+    receptors = {h: Mol.from_pdb(path, hydrogens=h) for h in ("keep", "polar", "remove")}
+    assert receptors["polar"].n_atoms < receptors["keep"].n_atoms
+
+    def hbond(h):
+        score = NonDirHBond(ctx.ligand, receptors[h], good=-0.7, bad=0.0)
+        return np.array([score.get_score(p) for p in ctx.poses])
+
+    assert np.array_equal(hbond("polar"), hbond("keep"))
+    assert hbond("keep").max() > 0.1  # the term is not zero to begin with
+    assert np.all(hbond("remove") == 0.0)
 
 
 def test_an_unknown_value_is_rejected():
@@ -126,3 +170,28 @@ def test_embedding_uses_temporary_hydrogens_for_a_better_geometry():
     AllChem.EmbedMolecule(heavy_only, params)
 
     assert strain(Mol.from_smiles(smiles).rdkit) < 0.5 * strain(heavy_only)
+
+
+@pytest.mark.filterwarnings("ignore:from_pdb")
+def test_large_molecules_are_typed_completely():
+    # RDKit stops at 1000 substructure matches by default: the receptor has 1625 hydrogens on
+    # carbon, of which only 1000 used to be recognised as non-polar (and the rest typed as polar).
+    from pyrite.atom_consts import AtomType
+
+    receptor = Mol.from_pdb(str(EXAMPLES / "factor_x.pdb"), hydrogens="keep")
+    on_carbon = sum(
+        a.GetAtomicNum() == 1 and a.GetNeighbors()[0].GetAtomicNum() == 6 for a in receptor.atoms
+    )
+    types = receptor.atom_types
+
+    assert on_carbon > 1000
+    assert int(np.sum(types == AtomType.Hydrogen)) == on_carbon
+    polar = sum(
+        a.GetAtomicNum() == 1 and a.GetNeighbors()[0].GetAtomicNum() != 6 for a in receptor.atoms
+    )
+    assert int(np.sum(types == AtomType.PolarHydrogen)) == polar
+    # and `polar` removes every one of them, not the first 1000
+    assert not any(
+        a.GetAtomicNum() == 1 and a.GetNeighbors()[0].GetAtomicNum() == 6
+        for a in Mol.from_pdb(str(EXAMPLES / "factor_x.pdb"), hydrogens="polar").atoms
+    )

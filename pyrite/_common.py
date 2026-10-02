@@ -37,6 +37,10 @@ NON_POLAR_H_STRUCT = Chem.MolFromSmarts("[#1;$([#1]-[#6,#14])]")
 
 VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF = 1000
 
+# RDKit stops looking for substructure matches after 1000 unless told otherwise, which silently
+# truncates the matches of a query on a large molecule such as a receptor.
+_MAX_MATCHES = 10_000_000
+
 
 class Mol:
     """
@@ -61,9 +65,10 @@ class Mol:
         graph so that no torsion moves a large part of the molecule (the largest moved fragment is
         minimal, ties are broken by centrality), independent of the loaded conformer. Without
         torsions it is the heavy atom closest to the centroid of the loaded conformer.
-    hydrogens : {'keep', 'add', 'remove'}, default 'remove'
+    hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
         What to do with the explicit hydrogens of `mol`: keep them as they are, add the missing
-        ones (with coordinates), or remove all of them.
+        ones (with coordinates), remove all of them, or keep only the polar ones (those on
+        N, O, S, ...; the hydrogens on carbon are removed).
     flex_hydrogens : bool, default False
         Whether bonds to a terminal heavy atom (a methyl group, a hydroxyl hydrogen) are
         rotatable torsions too.
@@ -83,7 +88,7 @@ class Mol:
     def __init__(
         self,
         mol: Chem.Mol = None,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
         flex_hydrogens: bool = False,
         flexible: bool = False,  # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of torsions, or manual, or by resid.
         center_atom: int = None,
@@ -106,8 +111,20 @@ class Mol:
             self._rdkit = Chem.AddHs(self._rdkit, addCoords=True)
         elif hydrogens == "remove":
             self._rdkit = Chem.RemoveHs(self._rdkit, sanitize=False)
+        elif hydrogens == "polar":
+            # united atom: the hydrogens on carbon (and silicon) are merged into their atom, the
+            # polar ones (on N, O, S, ...) stay, as they decide the donor atom types
+            editable = Chem.RWMol(self._rdkit)
+            for match in sorted(
+                self._rdkit.GetSubstructMatches(NON_POLAR_H_STRUCT, maxMatches=_MAX_MATCHES),
+                reverse=True,
+            ):
+                editable.RemoveAtom(match[0])
+            self._rdkit = editable.GetMol()
         elif hydrogens != "keep":
-            raise ValueError(f"hydrogens must be 'keep', 'add' or 'remove', not {hydrogens!r}.")
+            raise ValueError(
+                f"hydrogens must be 'keep', 'add', 'remove' or 'polar', not {hydrogens!r}."
+            )
         self._fix_mol_valence(sanitize=False)  # also the ring information of the new molecule
 
         # The center atom is chosen from the conformer, so a molecule without one (e.g. from a
@@ -161,7 +178,7 @@ class Mol:
     def from_smiles(
         cls,
         smiles: str,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
         **kwargs,
     ):
         """Constructs an instance of :class:`Mol` from a SMILES string representation of a molecule.
@@ -170,8 +187,9 @@ class Mol:
         ----------
         smiles : str
             The SMILES string representation of the molecule.
-        hydrogens : {'keep', 'add', 'remove'}, default 'remove'
-            Whether to keep hydrogens as is, add additional hydrogens, or remove all hydrogens.
+        hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
+            Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
+            keep only the polar ones.
 
         Returns
         -------
@@ -184,7 +202,7 @@ class Mol:
     def from_rdkit(
         cls,
         mol: Chem.Mol,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
         **kwargs,
     ):
         """Create an instance of :class:`Mol` from an RDKit :class:`~rdkit.Chem.rdchem.Mol` object.
@@ -193,8 +211,9 @@ class Mol:
         ----------
         mol : rdkit.Chem.rdchem.Mol
             The input molecule as an RDKit :class:`~rdkit.Chem.rdchem.Mol` object.
-        hydrogens : {'keep', 'add', 'remove'}, default 'remove'
-            Whether to keep hydrogens as is, add additional hydrogens, or remove all hydrogens.
+        hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
+            Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
+            keep only the polar ones.
 
         Returns
         -------
@@ -206,7 +225,7 @@ class Mol:
     def from_pdb(
         cls,
         pdb_file: str,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
         template_smiles: str = None,
         template_sdf: str = None,
         **kwargs,
@@ -225,8 +244,9 @@ class Mol:
         ----------
         pdb_file : str
             Path to the PDB file containing the molecule.
-        hydrogens : {'keep', 'add', 'remove'}, default 'remove'
-            Whether to keep hydrogens as is, add additional hydrogens, or remove all hydrogens.
+        hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
+            Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
+            keep only the polar ones.
         template_smiles : str, optional
             SMILES string representing a reference molecule.
             To sanitize the molecule, either `template_smiles` or
@@ -299,7 +319,7 @@ class Mol:
     def from_sdf(
         cls,
         mol_file: str,
-        hydrogens: Literal["keep", "add", "remove"] = "remove",
+        hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
         **kwargs,
     ):
         """Creates an instance of :class:`Mol` from an SDF file.
@@ -308,8 +328,9 @@ class Mol:
         ----------
         mol_file : str
             Path to the SDF file containing the molecule.
-        hydrogens : {'keep', 'add', 'remove'}, default 'remove'
-            Whether to keep hydrogens as is, add additional hydrogens, or remove all hydrogens.
+        hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
+            Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
+            keep only the polar ones.
 
         Returns
         -------
@@ -380,9 +401,12 @@ class Mol:
     def __assign_atom_types(self):
         self._atom_types = np.array([AtomType.Unknown] * len(self._rdkit.GetAtoms()))
 
-        hba = [m[0] for m in self._rdkit.GetSubstructMatches(HBA_STRUCT)]
+        hba = [m[0] for m in self._rdkit.GetSubstructMatches(HBA_STRUCT, maxMatches=_MAX_MATCHES)]
 
-        non_polar_h = [m[0] for m in self._rdkit.GetSubstructMatches(NON_POLAR_H_STRUCT)]
+        non_polar_h = [
+            m[0]
+            for m in self._rdkit.GetSubstructMatches(NON_POLAR_H_STRUCT, maxMatches=_MAX_MATCHES)
+        ]
 
         for i, atom in enumerate(self._rdkit.GetAtoms()):
             atomic_number = atom.GetAtomicNum()
@@ -468,7 +492,9 @@ class Mol:
         a terminal heavy atom (a methyl group, a hydroxyl hydrogen, ...) are left out.
         """
         bonds = []
-        for match in self._rdkit.GetSubstructMatches(ROTATABLE_BOND_STRUCT):
+        for match in self._rdkit.GetSubstructMatches(
+            ROTATABLE_BOND_STRUCT, maxMatches=_MAX_MATCHES
+        ):
             atom_1, atom_2 = match[0], match[1]
             if not flex_hydrogens:
                 heavy_degrees = [
@@ -818,7 +844,10 @@ class Mol:
         params = Chem.AllChem.ETKDGv3()
         params.randomSeed = seed
 
-        new_mol = Chem.Mol(self._rdkit)
+        # Embedded with temporary hydrogens, like the molecule itself (see `__embed`): a molecule
+        # without them embeds worse, and RDKit can refuse to embed one with stereocentres. The
+        # atoms of this molecule keep their indices, so the torsions are read off as they are.
+        new_mol = Chem.AddHs(self._rdkit)
 
         cids = Chem.AllChem.EmbedMultipleConfs(new_mol, n, params)
 

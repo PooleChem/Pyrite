@@ -154,3 +154,21 @@ def test_poses_from_list_stacks_poses_and_keeps_the_layout():
         Poses.from_list(
             [poses[0], Pose(np.zeros(PoseLayout("euler", 2).n_dims), PoseLayout("euler", 2))]
         )
+
+
+def test_conformer_torsions_are_embedded_with_temporary_hydrogens():
+    # A molecule without hydrogens (the default) must give torsions that belong to its own
+    # atoms, from conformers that RDKit can embed, and the molecule itself is left alone.
+    mol = Mol(
+        Chem.MolFromSmiles("C[C@@H]1C[C@H](C)C[C@H](NC(=O)C[C@H]2CC[C@H](OC(C)(C)C(=O)O)CC2)C1"),
+        flexible=True,
+    )
+    before = mol.rdkit.ToBinary()
+
+    configurations = mol.get_n_conformer_torsion_configurations(6)
+
+    assert configurations.shape[1] == mol.n_tors == len(mol.rotatable_torsions) > 3
+    assert 1 <= len(configurations) <= 6 and np.isfinite(configurations).all()
+    assert np.all(np.abs(configurations) <= np.pi + 1e-9)
+    assert mol.rdkit.ToBinary() == before and mol.n_atoms == mol.rdkit.GetNumAtoms()
+    assert not np.allclose(configurations, mol.torsions)  # genuinely different conformers
