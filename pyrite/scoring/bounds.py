@@ -34,8 +34,6 @@ class DistanceToPocket(ScoringFunction):
         The molecule to be used for the calculation.
     pocket : Pocket
         The pocket to be used for the calculation.
-    include_hs : bool, default False
-        If `include_hs` is ``False``, Hydrogen atoms will be masked out of the calculation.
 
 
     """
@@ -44,13 +42,13 @@ class DistanceToPocket(ScoringFunction):
         self,
         molecule: Mol,
         pocket: Pocket,
-        include_hs: bool = False,
     ):
         self.mol = molecule
 
         self.pocket = pocket
-        self._include_hs = include_hs
-        self._mask = np.array([include_hs or atom.GetAtomicNum() > 1 for atom in self.mol.atoms])
+        self._mask = np.asarray(
+            molecule.scoring_mask
+        )  # the atoms that count: by default no hydrogens
 
         self.cutoff = 40
 
@@ -102,8 +100,6 @@ class WeightedBoundsOverlap(ScoringFunction):
         The molecule to be used for the calculation.
     pocket : Pocket
         The pocket to be used for the calculation.
-    include_hs : bool, default False
-        If `include_hs` is `False`, Hydrogen atoms will be masked out of the calculation.
     outside_penalty : float, optional
         This value is an optional multiplier of the maximum charge of the pocket. Any point outside
         the pocket is assigned this weight.
@@ -114,14 +110,14 @@ class WeightedBoundsOverlap(ScoringFunction):
         self,
         molecule: Mol,
         pocket: Pocket,
-        include_hs: bool = False,
         outside_penalty: float | None = None,
     ):
         self.mol = molecule
 
         self.pocket = pocket
-        self.include_hs = include_hs
-        self.mask = np.array([include_hs or atom.GetAtomicNum() > 1 for atom in self.mol.atoms])
+        self.mask = np.asarray(
+            molecule.scoring_mask
+        )  # the atoms that count: by default no hydrogens
 
         self.nn_dep = KNNDependency(
             pocket.centers,

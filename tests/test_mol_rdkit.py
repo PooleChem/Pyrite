@@ -121,3 +121,43 @@ def test_molecules_are_hashable_by_identity(ligand):
 
     assert {ligand: 1, other: 2}[ligand] == 1
     assert ligand != other and ligand == ligand  # noqa: PLR0124
+
+
+def test_to_rdkit_with_a_pose_is_a_private_copy_with_the_pose_as_its_conformer(ctx, ligand):
+    pose = ctx.poses[0]
+    ligand.pose_to_conformer(ctx.poses[1], new_conf=True)  # a molecule with two conformers
+    state = ligand.rdkit.ToBinary()
+
+    posed = ligand.to_rdkit(pose)
+
+    assert posed.GetNumConformers() == 1 and posed.GetNumAtoms() == ligand.n_atoms
+    assert posed is not ligand.rdkit
+    assert np.allclose(posed.GetConformer().GetPositions(), ligand.pose_to_positions(pose))
+    assert np.allclose(
+        posed.GetConformer().GetPositions(),
+        ligand.to_rdkit(np.asarray(pose)).GetConformer().GetPositions(),
+    )
+    assert ligand.rdkit.ToBinary() == state  # the molecule is untouched
+    assert ligand.to_rdkit().GetNumConformers() == 2  # without a pose: all of its conformers
+
+
+def test_any_rdkit_function_can_be_applied_to_a_posed_copy(ctx, ligand):
+    pose = ctx.poses[2]
+    positions = ligand.pose_to_positions(pose)
+
+    posed = ligand.to_rdkit(pose)
+
+    expected = np.linalg.norm(positions[:, None] - positions[None], axis=-1)
+    assert np.allclose(Chem.Get3DDistanceMatrix(posed), expected)
+    centroid = Chem.rdMolTransforms.ComputeCentroid(posed.GetConformer())
+    assert np.allclose([centroid.x, centroid.y, centroid.z], positions.mean(axis=0))
+    charge = ligand.rdkit.GetAtomWithIdx(0).GetFormalCharge()
+    posed.GetAtomWithIdx(0).SetFormalCharge(
+        charge + 2
+    )  # edited freely: the molecule is not affected
+    assert ligand.rdkit.GetAtomWithIdx(0).GetFormalCharge() == charge
+
+
+def test_to_rdkit_takes_one_pose_not_a_batch(ctx, ligand):
+    with pytest.raises(ValueError, match="one pose"):
+        ligand.to_rdkit(ctx.poses)

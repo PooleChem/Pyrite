@@ -176,3 +176,44 @@ def test_the_default_batch_computes_the_dependencies_once_for_the_whole_batch(ct
 
     assert spy.call_count == 1  # not once per pose
     assert np.allclose(batch, Gaussian(ligand, ctx.receptor).batch_scores(ctx.poses))
+
+
+# ---------------------------------------------------------------------------
+# Terms written without any knowledge of dependencies
+# ---------------------------------------------------------------------------
+
+
+class _RadiusOfGyration(ScoringFunction):
+    """What a learner writes: the pose, a public Mol method, no dependencies, `computed` unused."""
+
+    def __init__(self, mol):
+        self.mol = mol
+
+    def _score(self, pose, computed):
+        positions = self.mol.pose_to_positions(pose)
+        return float(np.sqrt(((positions - positions.mean(axis=0)) ** 2).sum(axis=1).mean()))
+
+
+class _PosedCentroidX(ScoringFunction):
+    """The same with RDKit: a posed copy of the molecule from `to_rdkit(pose)`."""
+
+    def __init__(self, mol):
+        self.mol = mol
+
+    def _score(self, pose, computed):
+        from rdkit import Chem
+
+        posed = self.mol.to_rdkit(pose)
+        return float(Chem.rdMolTransforms.ComputeCentroid(posed.GetConformer()).x)
+
+
+@pytest.mark.parametrize("term", [_RadiusOfGyration, _PosedCentroidX])
+def test_a_term_without_dependencies_satisfies_the_whole_contract(ctx, term):
+    from contracts import check_composition, check_scoring_function
+
+    sf = term(ctx.ligand)
+
+    check_scoring_function(
+        sf, ctx.ligand, ctx.poses
+    )  # single, batched, raw arrays, untouched molecule
+    check_composition(sf, ctx.partner, ctx.ligand, ctx.poses)  # in composites with a KNN term

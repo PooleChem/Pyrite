@@ -2,15 +2,21 @@ import numpy as np
 from rdkit import Chem
 
 from .._common import Mol
-from ._base import _RDKitScoringFunction
+from ._base import ScoringFunction, _RDKitScoringFunction
+from .dependencies import Dependency, PositionDependency
 
 
-class InternalOverlap(_RDKitScoringFunction):
+class InternalOverlap(ScoringFunction):
     """
     ✈️ — Calculates the overlap between atoms in a ligand.
 
     Uses the atom Van Der Waals radius as a measure of atom size. When atoms which have a
-    topological distance ``> 4`` overlap, the overlap distance is added to the score.
+    topological distance ``> 4`` overlap, the overlap distance is added to the score. Every pair
+    of atoms counts once, and only atoms in the molecule's ``scoring_mask`` take part (by default
+    that leaves out the hydrogens, see :class:`~pyrite.Mol`).
+
+    The score is computed from the atom positions alone, in numpy, for one pose or a whole batch
+    at once. It does not depend on the rotation or translation, only on the torsions.
 
     .. note::
         This class can be used as a measure of internal ligand energy. However, it does not fully
@@ -23,8 +29,6 @@ class InternalOverlap(_RDKitScoringFunction):
     ----------
     molecule : Mol
         The molecule to be used for the calculation.
-    ignore_hs : bool, default False
-        If `ignore_hs` is ``True``, Hydrogen atoms will be masked out of the calculation.
     vdw_scale : float, default 1.0
         A multiplier of the Van Der Waals radii used for the calculation.
 
@@ -35,33 +39,38 @@ class InternalOverlap(_RDKitScoringFunction):
 
     """
 
-    def __init__(self, molecule: Mol, ignore_hs: bool = False, vdw_scale: float = 1.0):
-        super().__init__(molecule)
+    def __init__(self, molecule: Mol, vdw_scale: float = 1.0):
+        self.mol = molecule
+        self._position_dep = PositionDependency(molecule)
 
-        # Set up
-        pt = Chem.GetPeriodicTable()
-        a_nums = [atom.GetAtomicNum() for atom in self.mol.atoms]
-        rvdw = np.array([pt.GetRvdw(z) * vdw_scale for z in a_nums], dtype=float)
+        periodic_table = Chem.GetPeriodicTable()
+        atomic_numbers = np.array([atom.GetAtomicNum() for atom in molecule.atoms])
+        radii = np.array([periodic_table.GetRvdw(int(z)) * vdw_scale for z in atomic_numbers])
 
-        top_distance_matrix = Chem.GetDistanceMatrix(self.mol.rdkit)
+        topological_distance = np.asarray(Chem.GetDistanceMatrix(molecule.rdkit))
+        pairs = np.triu(np.ones(topological_distance.shape, dtype=bool), k=1)
+        pairs &= topological_distance > 4
+        counted = np.asarray(molecule.scoring_mask)
+        pairs &= counted[:, None] & counted[None, :]
 
-        self._sum_of_radii = rvdw[:, None] + rvdw[None, :]
+        # the atoms of every counted pair, and the sum of their radii
+        self._first, self._second = np.nonzero(pairs)
+        self._sum_of_radii = radii[self._first] + radii[self._second]
 
-        N = top_distance_matrix.shape[0]
-        utri = np.triu(np.ones((N, N), dtype=bool), k=1)
-        self._mask = utri & (top_distance_matrix > 4)
+    def get_dependencies(self) -> list[Dependency]:
+        return [self._position_dep]
 
-        if ignore_hs:
-            self._mask &= (a_nums[:, None] > 1) & (a_nums[None, :] > 1)
+    def _overlap(self, positions: np.ndarray) -> np.ndarray:
+        """The summed overlap of ``(..., n_atoms, 3)`` positions: a number per pose."""
+        offsets = positions[..., self._first, :] - positions[..., self._second, :]
+        distances = np.sqrt(np.einsum("...pk,...pk->...p", offsets, offsets))
+        return np.maximum(self._sum_of_radii - distances, 0.0).sum(axis=-1)
 
     def _score(self, pose, computed) -> float:
-        distance_matrix = Chem.Get3DDistanceMatrix(computed[self.rdkit_dep])
+        return float(self._overlap(computed[self._position_dep]))
 
-        dists = distance_matrix[self._mask]
-        r_sums = self._sum_of_radii[self._mask]
-        overlaps = np.maximum(r_sums - dists, 0.0)
-
-        return float(overlaps.sum())
+    def _batch_scores(self, poses, computed_batch) -> np.ndarray:
+        return self._overlap(computed_batch[self._position_dep])
 
 
 class InternalEnergy(_RDKitScoringFunction):

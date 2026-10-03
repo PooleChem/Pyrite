@@ -315,16 +315,12 @@ class Realization:
         molecule being scored is not touched.
         """
         if mol not in self._rdkit:
-            template = mol.rdkit
-            conformer_id = template.GetConformer().GetId()
-
-            def posed(positions: NDArray) -> Chem.Mol:
-                copy = Chem.Mol(template, False, conformer_id)  # only the global conformer
-                copy.GetConformer().SetPositions(positions)
-                return copy
-
             positions = self.positions(mol)
-            self._rdkit[mol] = [posed(p) for p in positions] if self.batched else posed(positions)
+            self._rdkit[mol] = (
+                [mol._rdkit_with_positions(p) for p in positions]
+                if self.batched
+                else mol._rdkit_with_positions(positions)
+            )
         return self._rdkit[mol]
 
 

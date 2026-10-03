@@ -76,9 +76,11 @@ class Mol:
         Whether the rotatable bonds of the molecule are torsions of its poses.
     rotation_type : {'euler', 'quat'}, default 'euler'
         How the rotation of a pose is represented.
-    ignore_non_polar_hydrogens : bool, default True
-        Whether non-polar hydrogens are excluded from `scoring_mask` — the mask every
-        scoring function built on this molecule uses to decide which atoms count.
+    ignore_hydrogens : bool, default True
+        Whether hydrogen atoms (polar and non-polar alike) are excluded from `scoring_mask`, the
+        mask every scoring function built on this molecule uses to decide which atoms count.
+        Polar hydrogens still decide the atom types of their neighbours (donors); only the
+        hydrogens themselves are left out of the scores, as in united-atom scoring.
 
 
     """
@@ -93,7 +95,7 @@ class Mol:
         flexible: bool = False,  # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of torsions, or manual, or by resid.
         center_atom: int = None,
         rotation_type: Literal["euler", "quat"] = "euler",
-        ignore_non_polar_hydrogens: bool = True,
+        ignore_hydrogens: bool = True,
     ):
         if isinstance(mol, Mol):
             raise TypeError(
@@ -154,7 +156,7 @@ class Mol:
         # scoring function built on this Mol agrees, instead of each one recomputing (and
         # potentially disagreeing about) the same mask from the same atom_types.
         self.scoring_mask = ~(
-            ignore_non_polar_hydrogens
+            ignore_hydrogens
             & (
                 (self._atom_types == AtomType.Hydrogen)
                 | (self._atom_types == AtomType.PolarHydrogen)
@@ -564,13 +566,45 @@ class Mol:
         """
         return self._rdkit
 
-    def to_rdkit(self) -> Chem.Mol:
-        """A copy of the underlying :class:`~rdkit.Chem.rdchem.Mol`, with all its conformers.
+    def to_rdkit(self, pose: Pose | NDArray | None = None) -> Chem.Mol:
+        """A copy of the underlying :class:`~rdkit.Chem.rdchem.Mol`, free to use and to edit.
 
-        Free to edit (add atoms, change bonds, ...). To use the result with Pyrite, build a new
-        :class:`Mol` from it: ``Mol(edited)``.
+        Without a `pose` the copy has all the conformers of this molecule. With one, it has a
+        single conformer (the default one, ``confId=-1``) with the atoms where the pose puts
+        them, so any RDKit function can be applied to a pose without touching this molecule::
+
+            posed = mol.to_rdkit(pose)
+            Chem.rdMolTransforms.ComputeCentroid(posed.GetConformer())
+
+        To use an edited copy with Pyrite, build a new :class:`Mol` from it: ``Mol(edited)``.
+
+        Parameters
+        ----------
+        pose : Pose or array_like, optional
+            One pose, or its raw values. A batch of poses is not accepted: call this for every
+            pose.
+
+        Returns
+        -------
+        rdkit.Chem.rdchem.Mol
+
+        Raises
+        ------
+        ValueError
+            When `pose` is a batch.
         """
-        return Chem.Mol(self._rdkit)
+        if pose is None:
+            return Chem.Mol(self._rdkit)
+        positions = self.pose_to_positions(pose)
+        if positions.ndim != 2:
+            raise ValueError("to_rdkit takes one pose, not a batch: call it for every pose.")
+        return self._rdkit_with_positions(positions)
+
+    def _rdkit_with_positions(self, positions: NDArray) -> Chem.Mol:
+        """A private copy with only the default conformer, set to `positions` ``(n_atoms, 3)``."""
+        copy = Chem.Mol(self._rdkit, False, self._rdkit.GetConformer().GetId())
+        copy.GetConformer().SetPositions(positions)
+        return copy
 
     @property
     def n_atoms(self) -> int:
@@ -615,7 +649,7 @@ class Mol:
         """
         return self._rdkit.GetConformer().GetPositions()
 
-    def get_positions(self, conf_id: int = -1) -> NDArray[np.float32]:
+    def get_positions(self, conf_id: int = -1, poses=None) -> NDArray[np.float32]:
         """Returns the positions of all atoms in a specific conformer.
 
         Parameters
@@ -627,6 +661,8 @@ class Mol:
         -------
         list
         """
+        if poses is not None:
+            return self.pose_to_positions(poses)
         return self._rdkit.GetConformer(conf_id).GetPositions()
 
     def pose_to_positions(self, poses) -> NDArray:

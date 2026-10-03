@@ -2,7 +2,7 @@ import numpy as np
 from rdkit import Chem
 from scipy.spatial import cKDTree
 
-from .._common import AtomType, Mol
+from .._common import Mol
 from .._util import _symmetry_mappings
 from ._base import ScoringFunction, _RDKitScoringFunction
 from .dependencies import Dependency, PositionDependency
@@ -186,8 +186,9 @@ class NumProteinAtomsWithinA(ScoringFunction):
         The receptor to be used for the calculation.
     a : float, default 4.0
         The radius (in Angstroms) within which to search for protein atoms.
-    ignore_hs_ligand : bool, default False
-        If `ignore_hs_ligand` is ``True``, Hydrogen atoms will be masked out of the calculation.
+
+    Only the atoms in the ``scoring_mask`` of the two molecules take part (by default the hydrogens
+    are left out, so the count does not depend on whether the files contain them).
 
     """
 
@@ -196,15 +197,12 @@ class NumProteinAtomsWithinA(ScoringFunction):
         probe_mol: Mol,
         ref_mol: Mol,
         a: float = 4.0,
-        ignore_hs_ligand: bool = False,
     ):
         self.probe_mol = probe_mol
-        self._mask = np.array(
-            [not ignore_hs_ligand or atom.GetAtomicNum() > 1 for atom in self.probe_mol.atoms]
-        )
+        self._mask = np.asarray(probe_mol.scoring_mask)
         self.ref_mol = ref_mol
         self.a = a
-        self.tree = cKDTree(self.ref_mol.positions)
+        self.tree = cKDTree(self.ref_mol.positions[np.asarray(ref_mol.scoring_mask)])
         self._position_dep = PositionDependency(self.probe_mol)
 
     def get_dependencies(self) -> list[Dependency]:
@@ -248,19 +246,13 @@ class NumAtoms(ScoringFunction):
     ----------
     molecule : Mol
         The ligand to be used.
-    include_hs : bool, default False
-        If `include_hs` is ``False``, only heavy atoms will be counted.
+
+    Only the atoms in the molecule's ``scoring_mask`` are counted: by default the heavy atoms.
     """
 
-    def __init__(self, molecule: Mol, include_hs: bool = False):
+    def __init__(self, molecule: Mol):
         self.mol = molecule
-        self.include_hs = include_hs
-
-        mask = np.ones(len(self.mol.positions), dtype=bool)
-        if not self.include_hs:
-            mask &= self.mol.atom_types != AtomType.Hydrogen
-            mask &= self.mol.atom_types != AtomType.PolarHydrogen
-        self.result = np.sum(mask)
+        self.result = int(np.sum(molecule.scoring_mask))
 
     def _score(self, *args, **kwargs):
         return self.result
