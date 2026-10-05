@@ -80,6 +80,12 @@ class InternalEnergy(_RDKitScoringFunction):
     Uses :mod:`rdkit` and the MMFF forcefield,
     using :func:`~rdkit.Chem.rdForceFieldHelpers.MMFFGetMoleculeForceField`.
 
+    MMFF needs every hydrogen. When the molecule does not have them all (``hydrogens="polar"``,
+    the default, or ``"remove"``), the missing ones are added to each pose at ideal positions
+    computed from the heavy atoms (:func:`~rdkit.Chem.rdmolops.AddHs` with ``addCoords``), and the
+    energy is that of the complete molecule. A molecule that has all its hydrogens is scored as
+    it is.
+
     **Speed**: 🚗
 
     Parameters
@@ -97,14 +103,19 @@ class InternalEnergy(_RDKitScoringFunction):
     def __init__(self, molecule: Mol):
         super().__init__(molecule)
 
-        mmff_props = Chem.AllChem.MMFFGetMoleculeProperties(self.mol.rdkit)
-        self._mmff_ff = Chem.AllChem.MMFFGetMoleculeForceField(self.mol.rdkit, mmff_props)
+        complete = self._with_all_hydrogens(self.mol.rdkit)
+        # The force field is built once, on the complete molecule; a pose only changes positions.
+        self._n_atoms = complete.GetNumAtoms()
+        self._adds_hydrogens = self._n_atoms > self.mol.n_atoms
+
+        mmff_props = Chem.AllChem.MMFFGetMoleculeProperties(complete)
+        self._mmff_ff = Chem.AllChem.MMFFGetMoleculeForceField(complete, mmff_props)
         if self._mmff_ff is None:
             # MMFF94 cannot assign atom types for this molecule (unusual connectivity).
             # Fall back to UFF; if that also fails, internal energy returns 0.
             import warnings
 
-            self._mmff_ff = Chem.AllChem.UFFGetMoleculeForceField(self.mol.rdkit)
+            self._mmff_ff = Chem.AllChem.UFFGetMoleculeForceField(complete)
             if self._mmff_ff is None:
                 warnings.warn(
                     f"InternalEnergy: MMFF and UFF both failed for {molecule}; "
@@ -115,10 +126,25 @@ class InternalEnergy(_RDKitScoringFunction):
         if self._mmff_ff is not None:
             self._mmff_ff.Initialize()
 
+    @staticmethod
+    def _with_all_hydrogens(rdkit_mol: Chem.Mol) -> Chem.Mol:
+        """Return `rdkit_mol` with its implicit hydrogens added, placed from the heavy atoms.
+
+        The added hydrogens come after the existing atoms, so those keep their indices.
+        """
+        rdkit_mol = Chem.Mol(rdkit_mol)
+        rdkit_mol.UpdatePropertyCache(strict=False)
+        return Chem.AddHs(rdkit_mol, addCoords=True)
+
     def _score(self, pose, computed) -> float:
         if self._mmff_ff is None:
             return 0.0
-        pos = computed[self.rdkit_dep].GetConformer().GetPositions()
+        posed = computed[self.rdkit_dep]
+        if self._adds_hydrogens:
+            posed = self._with_all_hydrogens(posed)
+            if posed.GetNumAtoms() != self._n_atoms:
+                raise RuntimeError("InternalEnergy: adding hydrogens to the pose gave other atoms.")
+        pos = posed.GetConformer().GetPositions()
         self._mmff_ff.Initialize()
         flat_pos = pos.reshape(-1).tolist()
         return self._mmff_ff.CalcEnergy(flat_pos)  # kcal/mol
