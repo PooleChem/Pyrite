@@ -4,7 +4,7 @@ from rdkit.Chem import AllChem  # noqa: F401
 
 # from openff.toolkit.topology import Topology
 # from pyrite._common import Ligand, Receptor, Viewer
-from pyrite import bounds, cluster, scoring, search
+from pyrite import bounds, cluster, io, scoring, search
 from pyrite._common import Mol, Pose, PoseLayout, Poses, Viewer
 from pyrite.atom_consts import AtomType, vina_atom_consts
 
@@ -17,6 +17,7 @@ __all__ = [
     "Viewer",
     "bounds",
     "cluster",
+    "io",
     "scoring",
     "search",
     "vina_atom_consts",

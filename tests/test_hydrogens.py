@@ -195,3 +195,21 @@ def test_large_molecules_are_typed_completely():
         a.GetAtomicNum() == 1 and a.GetNeighbors()[0].GetAtomicNum() == 6
         for a in Mol.from_pdb(str(EXAMPLES / "factor_x.pdb"), hydrogens="polar").atoms
     )
+
+
+@pytest.mark.parametrize(
+    "smiles, charge",
+    [("CC(N)C(=O)O", 0), ("OCC(O)CN", 0), ("CC(=O)[O-]", -1), ("C[NH3+]", 1), ("CC(=O)NCCO", 0)],
+)
+def test_changing_the_hydrogens_never_changes_the_charges(smiles, charge):
+    # The charge rules read the valences of the molecule as it is given. They used to run again
+    # after the hydrogens were removed, which turned every hydroxyl oxygen into an oxide.
+    rd = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.EmbedMolecule(rd, randomSeed=1)
+
+    molecules = {h: Mol(rd, hydrogens=h) for h in ("keep", "polar", "remove", "add")}
+
+    for hydrogens, mol in molecules.items():
+        assert sum(a.GetFormalCharge() for a in mol.atoms) == charge, hydrogens
+    heavy = {h: Chem.MolToSmiles(Chem.RemoveHs(m.to_rdkit())) for h, m in molecules.items()}
+    assert len(set(heavy.values())) == 1, heavy  # the same molecule whichever hydrogens are kept

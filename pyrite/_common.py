@@ -127,7 +127,8 @@ class Mol:
             raise ValueError(
                 f"hydrogens must be 'keep', 'add', 'remove' or 'polar', not {hydrogens!r}."
             )
-        self._fix_mol_valence(sanitize=False)  # also the ring information of the new molecule
+        # the new molecule needs its ring information; its valences must not be read as charges
+        self._fix_mol_valence(sanitize=False, assign_charges=False)
 
         # The center atom is chosen from the conformer, so a molecule without one (e.g. from a
         # SMILES string) needs it embedded first.
@@ -369,13 +370,20 @@ class Mol:
         conformer.Set3D(True)
         self._rdkit.AddConformer(conformer, assignId=True)
 
-    def _fix_mol_valence(self, sanitize=True):
+    def _fix_mol_valence(self, sanitize=True, assign_charges=True):
+        """Sanitize (all but the properties) and, unless `assign_charges` is false, set the formal
+        charges that the valences of the input imply (an ammonium, an oxide).
+
+        The charge rules read the valences of the molecule *as it is given*, so they are applied
+        once, to the input, and not again after hydrogens were added or removed: an oxygen that
+        has just lost its hydrogen would look like an oxide.
+        """
         Chem.SanitizeMol(
             self._rdkit,
             sanitizeOps=(Chem.SanitizeFlags.SANITIZE_ALL ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES),
         )
 
-        for atom in self._rdkit.GetAtoms():
+        for atom in self._rdkit.GetAtoms() if assign_charges else ():
             # print(
             #     atom.GetSymbol(),
             #     atom.GetValence(Chem.ValenceType.EXPLICIT),
