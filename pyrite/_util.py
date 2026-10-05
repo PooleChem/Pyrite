@@ -162,7 +162,8 @@ def _symmetrized_query(rdkit_mol):
     so the two O of a carboxylate drawn as ``C(=O)[O-]`` are interchangeable too).
     """
     query = Chem.RWMol(rdkit_mol)
-    for terminal, centre in rdkit_mol.GetSubstructMatches(_CONJUGATED_TERMINAL):
+    # RDKit stops at 1000 matches by default; a protein has more carboxylates and amidines than that
+    for terminal, centre in rdkit_mol.GetSubstructMatches(_CONJUGATED_TERMINAL, maxMatches=10**7):
         bond = query.GetBondBetweenAtoms(terminal, centre)
         if bond.GetBondType() in (Chem.BondType.SINGLE, Chem.BondType.DOUBLE):
             query.ReplaceBond(bond.GetIdx(), Chem.BondFromSmarts("-,="), preserveProps=True)

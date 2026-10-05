@@ -42,6 +42,26 @@ VIEWER_PROTEINS_HEAVY_ATOMS_CUTOFF = 1000
 _MAX_MATCHES = 10_000_000
 
 
+def _charge_deprotonated_oxygens(mol: Chem.Mol) -> None:
+    """Give a -1 charge to the oxygens of a PDB molecule that have one bond and no hydrogen.
+
+    A PDB file has no charges. When it has hydrogens, an oxygen with a single bond and no
+    hydrogen has lost its proton: the carboxylates of Asp, Glu and the C-terminus, a phosphate.
+    Without hydrogens in the file, a hydroxyl looks the same, so nothing is changed.
+    """
+    if not any(atom.GetAtomicNum() == 1 for atom in mol.GetAtoms()):
+        return
+    mol.UpdatePropertyCache(strict=False)  # the valences, after residues may have been removed
+    for atom in mol.GetAtoms():
+        if (
+            atom.GetSymbol() == "O"
+            and atom.GetFormalCharge() == 0
+            and atom.GetValence(Chem.ValenceType.EXPLICIT) == 1
+            and all(n.GetAtomicNum() != 1 for n in atom.GetNeighbors())
+        ):
+            atom.SetFormalCharge(-1)
+
+
 class Mol:
     """
     Representation of a molecule.
@@ -263,7 +283,9 @@ class Mol:
         -------
         Mol
         """
-        mol = Chem.MolFromPDBFile(pdb_file, sanitize=False, removeHs=(hydrogens == "remove"))
+        # Hydrogens are always read: whether the file has them decides the charges below. The
+        # constructor removes them for hydrogens="remove".
+        mol = Chem.MolFromPDBFile(pdb_file, sanitize=False, removeHs=False)
 
         if mol is None:
             raise ValueError(f"RDKit could not parse PDB file: {pdb_file}")
@@ -304,6 +326,9 @@ class Mol:
             ):
                 edit.RemoveAtom(idx)
             mol = edit.GetMol()
+
+        if not (template_smiles or template_sdf):
+            _charge_deprotonated_oxygens(mol)
 
         if template_smiles or template_sdf:
             if template_smiles:
@@ -372,7 +397,11 @@ class Mol:
 
     def _fix_mol_valence(self, sanitize=True, assign_charges=True):
         """Sanitize (all but the properties) and, unless `assign_charges` is false, set the formal
-        charges that the valences of the input imply (an ammonium, an oxide).
+        charges that the valences of the input imply (an ammonium).
+
+        Oxygens are left as given: a singly bonded oxygen is a hydroxyl in a SMILES string, an SDF
+        or a MOL2 file (their hydrogens are implicit). Only a PDB file says nothing about charges;
+        :meth:`from_pdb` charges its deprotonated oxygens itself.
 
         The charge rules read the valences of the molecule *as it is given*, so they are applied
         once, to the input, and not again after hydrogens were added or removed: an oxygen that
@@ -390,10 +419,10 @@ class Mol:
             #     atom.GetFormalCharge(),
             # )
 
+            # a neutral nitrogen cannot have four bonds: an ammonium (Lys NZ, His, Arg in a PDB
+            # file with hydrogens, or a quaternary amine drawn without its charge)
             if atom.GetSymbol() == "N" and atom.GetValence(Chem.ValenceType.EXPLICIT) == 4:
                 atom.SetFormalCharge(+1)
-            if atom.GetSymbol() == "O" and atom.GetValence(Chem.ValenceType.EXPLICIT) == 1:
-                atom.SetFormalCharge(-1)
             # incorrect epoxide fix TODO: check with David
             if atom.GetSymbol() == "O" and atom.GetValence(Chem.ValenceType.EXPLICIT) == 2:
                 atom.SetFormalCharge(0)

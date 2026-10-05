@@ -69,7 +69,7 @@ def test_add_to_a_molecule_that_has_hydrogens_adds_nothing():
 
 
 @pytest.mark.parametrize(
-    "hydrogens, expected", [("keep", 0), ("remove", 0), ("polar", 0), ("add", 5)]
+    "hydrogens, expected", [("keep", 0), ("remove", 0), ("polar", 0), ("add", 6)]
 )
 def test_from_smiles(hydrogens, expected):
     mol = Mol.from_smiles("CCO", hydrogens=hydrogens)
