@@ -3,6 +3,7 @@ import warnings
 import numpy as np
 from numba import njit
 from numpy.typing import NDArray
+from rdkit import Chem
 
 
 def _rotation_matrix_to_euler(r: NDArray):
@@ -147,7 +148,37 @@ def _translation_matrix_from_coordinates(x: float, y: float, z: float):
     return m
 
 
-def _symmetry_mappings(probe, ref, max_matches: int, include_identity: bool = False) -> list:
+# A terminal O or N bonded to an atom that has another terminal O or N with the other bond order:
+# the two O of a carboxylic acid, the two N of an amidine. RDKit's ``symmetrizeConjugatedTerminalGroups``.
+_CONJUGATED_TERMINAL = Chem.MolFromSmarts(
+    "[O,N;D1;$([O,N;D1]-[*]=[O,N;D1]),$([O,N;D1]=[*]-[O,N;D1])]~[*]"
+)
+
+
+def _symmetrized_query(rdkit_mol):
+    """Return `rdkit_mol` as a query in which conjugated terminal atoms are interchangeable.
+
+    Their bonds match single or double, and the atoms match on the element only (not the charge,
+    so the two O of a carboxylate drawn as ``C(=O)[O-]`` are interchangeable too).
+    """
+    query = Chem.RWMol(rdkit_mol)
+    for terminal, centre in rdkit_mol.GetSubstructMatches(_CONJUGATED_TERMINAL):
+        bond = query.GetBondBetweenAtoms(terminal, centre)
+        if bond.GetBondType() in (Chem.BondType.SINGLE, Chem.BondType.DOUBLE):
+            query.ReplaceBond(bond.GetIdx(), Chem.BondFromSmarts("-,="), preserveProps=True)
+            element = rdkit_mol.GetAtomWithIdx(terminal).GetAtomicNum()
+            query.ReplaceAtom(terminal, Chem.AtomFromSmarts(f"[#{element}]"))
+    return query
+
+
+def _heavy_atoms(mol) -> NDArray:
+    """Return the indices of the atoms of `mol` (a :class:`~pyrite.Mol`) that are not hydrogen."""
+    return np.array([a.GetIdx() for a in mol.atoms if a.GetAtomicNum() != 1], dtype=np.intp)
+
+
+def _symmetry_mappings(
+    probe, ref, max_matches: int, include_identity: bool = False, heavy_atoms: bool = False
+) -> list:
     """Return the atom mappings of `ref` onto `probe` that preserve the molecular graph.
 
     These are the symmetries of the molecule when `probe` and `ref` are (copies of) the same
@@ -156,7 +187,7 @@ def _symmetry_mappings(probe, ref, max_matches: int, include_identity: bool = Fa
 
     Parameters
     ----------
-    probe, ref : rdkit.Chem.Mol
+    probe, ref : Mol
         The molecules to map. `ref` is the query.
     max_matches : int
         The maximum number of mappings. A molecule with many symmetric groups has exponentially
@@ -165,10 +196,30 @@ def _symmetry_mappings(probe, ref, max_matches: int, include_identity: bool = Fa
     include_identity : bool, default False
         Whether to make sure the identity mapping is among the mappings. Only valid when `probe`
         and `ref` have the same atom order. Without it, a truncated list may not contain it.
+    heavy_atoms : bool, default False
+        Whether to map the heavy atoms only. ``mapping[k]`` is then the atom of `probe` that the
+        ``k``-th heavy atom of `ref` (``_heavy_atoms(ref)[k]``) is mapped onto, still as an index
+        into `probe`. Hydrogens add many mappings that only swap equivalent hydrogens (3! for
+        every methyl group), which can push out the ones that swap heavy atoms.
+
+    Notes
+    -----
+    The mappings are those RDKit's ``CalcRMS`` uses by default, so an RMSD over them equals it:
+
+    - Chirality is ignored. A mapping of a molecule onto itself can only swap equivalent
+      neighbours of an atom, and an atom with equivalent neighbours is no stereocentre; the chiral
+      tags are not reliable for this either (perception from 3D tags atoms such as a sulfonyl S or
+      a gem-dimethyl C, whose two O or methyl groups must be swappable).
+    - The terminal atoms of conjugated groups are equivalent (the two O of a carboxylic acid or
+      carboxylate, the two N of an amidine): their bond orders and charges are ignored.
     """
+    probe_rdkit, ref_rdkit = probe.rdkit, ref.rdkit
+    if heavy_atoms:
+        probe_rdkit = Chem.RemoveAllHs(probe_rdkit, sanitize=False)
+        ref_rdkit = Chem.RemoveAllHs(ref_rdkit, sanitize=False)
     matches = list(
-        probe.rdkit.GetSubstructMatches(
-            ref.rdkit, uniquify=False, useChirality=True, maxMatches=max_matches
+        probe_rdkit.GetSubstructMatches(
+            _symmetrized_query(ref_rdkit), uniquify=False, maxMatches=max_matches
         )
     )
     if len(matches) >= max_matches:
@@ -178,9 +229,13 @@ def _symmetry_mappings(probe, ref, max_matches: int, include_identity: bool = Fa
             stacklevel=3,
         )
     if include_identity:
-        identity = tuple(range(probe.n_atoms))
+        identity = tuple(range(probe_rdkit.GetNumAtoms()))
         if identity not in matches:
             matches.insert(0, identity)
+    if heavy_atoms:
+        # RemoveAllHs keeps the heavy atoms in their order: map back to the indices of `probe`.
+        probe_heavy = _heavy_atoms(probe)
+        matches = [tuple(int(probe_heavy[i]) for i in m) for m in matches]
     return matches
 
 

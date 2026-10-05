@@ -7,7 +7,7 @@ from numpy.typing import ArrayLike, NDArray
 from rdkit.ML.Cluster import Butina
 
 from pyrite._common import Mol, Poses
-from pyrite._util import _symmetry_mappings
+from pyrite._util import _heavy_atoms, _symmetry_mappings
 
 
 def rmsd_matrix(
@@ -19,8 +19,8 @@ def rmsd_matrix(
     """Calculate the RMSD between every pair of poses of a molecule.
 
     The poses are compared in place, so they are *not* aligned onto each other: this is the RMSD
-    that tells how far a docked pose lies from another one. Every atom of `mol` is used, so a
-    molecule with hydrogens includes them (and their symmetry).
+    that tells how far a docked pose lies from another one. Only the heavy atoms are used, so the
+    hydrogens `mol` has, which depend on how it was loaded, do not change it.
 
     The memory needed is ``O(n_poses ** 2)``.
 
@@ -54,10 +54,13 @@ def rmsd_matrix(
     if not np.isfinite(positions).all():
         raise ValueError("The poses contain non-finite atom positions.")
 
+    heavy = _heavy_atoms(mol)
     if symmetry:
-        matches = _symmetry_mappings(mol, mol, max_matches, include_identity=True)
+        matches = _symmetry_mappings(mol, mol, max_matches, include_identity=True, heavy_atoms=True)
     else:
-        matches = [tuple(range(n_atoms))]
+        matches = [tuple(heavy)]
+    positions, n_atoms = positions[:, heavy], len(heavy)
+    matches = [np.searchsorted(heavy, m) for m in matches]  # into the heavy-atom positions
 
     # The RMSD is a Euclidean distance between flattened positions, so with a permutation sigma of
     # the atoms, d^2(i, j) = |x_i|^2 + |x_j|^2 - 2 x_i . x_j[sigma]. A shift common to all poses does

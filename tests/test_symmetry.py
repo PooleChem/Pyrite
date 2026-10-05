@@ -117,3 +117,152 @@ def test_cluster_and_select_merges_symmetric_duplicates(biphenyl):
             0,
             1,
         ]
+
+
+# ---------------------------------------------------------------------------
+# Heavy atoms only: the hydrogens a Mol was loaded with do not change the RMSD
+# ---------------------------------------------------------------------------
+
+
+def _with_hydrogens(smiles: str, seed: int = 1) -> Mol:
+    """A Mol that keeps all its hydrogens, with one embedded conformer."""
+    rd = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.EmbedMolecule(rd, randomSeed=seed)
+    return Mol(rd, flexible=True, hydrogens="keep")
+
+
+def _heavy_rms(probe: Chem.Mol, ref: Chem.Mol) -> float:
+    """RDKit's own symmetry-aware RMSD over hydrogen-free copies (an independent path)."""
+    return rdMolAlign.CalcRMS(
+        Chem.RemoveAllHs(probe, sanitize=False), Chem.RemoveAllHs(ref, sanitize=False)
+    )
+
+
+def test_moving_only_hydrogens_does_not_change_the_rmsd():
+    mol = _with_hydrogens("CC(=O)Nc1ccc(O)cc1")
+    ref = Mol(mol.rdkit, flexible=True, hydrogens="keep")
+    conformer = ref.rdkit.GetConformer()
+    for atom in ref.atoms:
+        if atom.GetAtomicNum() == 1:
+            p = conformer.GetAtomPosition(atom.GetIdx())
+            conformer.SetAtomPosition(atom.GetIdx(), (p.x + 0.7, p.y - 0.4, p.z + 0.5))
+
+    assert rdMolAlign.CalcRMS(mol.rdkit, ref.rdkit) > 0.2  # all atoms: they did move
+    assert RMSD(mol, ref).get_score(loaded_pose(mol)) < 1e-9
+
+
+@pytest.mark.parametrize("smiles", ["CC(=O)Nc1ccc(O)cc1", "CC(C)(C)c1ccc(C(C)(C)C)cc1"])
+def test_rmsd_and_rmsd_matrix_are_heavy_atom_rmsds(smiles):
+    # The second has six methyl groups: (3!)^6 hydrogen swaps on top of the heavy-atom symmetries,
+    # far over max_matches when hydrogens count, a handful when they do not (so no warning).
+    mol = _with_hydrogens(smiles)
+    poses = _poses(mol, 5)
+
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        matrix = rmsd_matrix(mol, poses)
+        rmsd = RMSD(mol)
+        scores = rmsd.batch_scores(poses)
+
+    crystal = mol.rdkit
+    for i in range(5):
+        posed_i = mol.to_rdkit(poses[i])
+        assert scores[i] == pytest.approx(_heavy_rms(posed_i, crystal), abs=1e-6)
+        for j in range(i + 1, 5):
+            assert matrix[i, j] == pytest.approx(
+                _heavy_rms(posed_i, mol.to_rdkit(poses[j])), abs=1e-6
+            )
+
+
+def test_the_rmsd_is_the_same_whichever_hydrogens_are_kept():
+    # The same geometry loaded with all, polar or no hydrogens gives the same RMSD to the crystal.
+    rd = Chem.AddHs(Chem.MolFromSmiles("OCC(=O)Nc1ccc(C)cc1"))
+    AllChem.EmbedMolecule(rd, randomSeed=3)
+    moved = Chem.Mol(rd)
+    AllChem.EmbedMolecule(moved, randomSeed=11)
+    scores = []
+    for hydrogens in ("keep", "polar", "remove"):
+        crystal = Mol(rd, flexible=True, hydrogens=hydrogens)
+        probe = Mol(moved, flexible=True, hydrogens=hydrogens)
+        scores.append(RMSD(probe, crystal).get_score(loaded_pose(probe)))
+
+    assert scores == pytest.approx([scores[0]] * 3, abs=1e-9)
+    assert scores[0] > 0.1
+
+
+def test_hydrogens_between_the_heavy_atoms_are_skipped_correctly():
+    # AddHs puts every hydrogen after the heavy atoms; files often interleave them. Interleaved,
+    # the k-th heavy atom is no longer atom k.
+    rd = Chem.AddHs(Chem.MolFromSmiles("CC(=O)Nc1ccc(O)cc1"))
+    AllChem.EmbedMolecule(rd, randomSeed=1)
+    heavy = [a.GetIdx() for a in rd.GetAtoms() if a.GetAtomicNum() > 1]
+    hydrogens = [a.GetIdx() for a in rd.GetAtoms() if a.GetAtomicNum() == 1]
+    order = [i for pair in zip(hydrogens, heavy, strict=False) for i in pair]
+    order += heavy[len(hydrogens) :] + hydrogens[len(heavy) :]
+    mol = Mol(Chem.RenumberAtoms(rd, order), flexible=True, hydrogens="keep")
+    assert mol.rdkit.GetAtomWithIdx(0).GetAtomicNum() == 1
+    poses = _poses(mol, 4)
+
+    scores = RMSD(mol).batch_scores(poses)
+    matrix = rmsd_matrix(mol, poses)
+
+    for i in range(4):
+        posed_i = mol.to_rdkit(poses[i])
+        assert scores[i] == pytest.approx(_heavy_rms(posed_i, mol.rdkit), abs=1e-6)
+        assert matrix[0, i] == pytest.approx(_heavy_rms(mol.to_rdkit(poses[0]), posed_i), abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# The same mappings as RDKit's CalcRMS: conjugated terminal groups, no chirality
+# ---------------------------------------------------------------------------
+
+
+def _from_sdf(smiles: str, tmp_path, seed: int = 1) -> Mol:
+    """Load through an SDF, as docking inputs are: chiral tags are then perceived from 3D."""
+    rd = Chem.AddHs(Chem.MolFromSmiles(smiles))
+    AllChem.EmbedMolecule(rd, randomSeed=seed)
+    path = str(tmp_path / "mol.sdf")
+    with Chem.SDWriter(path) as writer:
+        writer.write(rd)
+    return Mol.from_sdf(path, flexible=True, hydrogens="keep")
+
+
+@pytest.mark.parametrize(
+    "smiles",
+    [
+        "OC(=O)Cc1cccc2ccccc12",  # a carboxylic acid: its two O are interchangeable
+        "CC(C)(CO)[C@@H](O)C(=O)[O-]",  # a carboxylate drawn with one O charged (Astex 1n2j)
+        "NC(=N)c1ccc(C)cc1",  # an amidine: its two N are interchangeable
+        "NS(=O)(=O)c1ccc2c(c1)CNCC2",  # a sulfonyl S tagged chiral from 3D (Astex 1hnn)
+    ],
+)
+def test_the_rmsd_equals_rdkits_calcrms_on_the_heavy_atoms(smiles, tmp_path):
+    mol = _from_sdf(smiles, tmp_path)
+    poses = _poses(mol, 6)
+
+    scores = RMSD(mol).batch_scores(poses)
+    matrix = rmsd_matrix(mol, poses)
+
+    for i in range(6):
+        posed_i = mol.to_rdkit(poses[i])
+        assert scores[i] == pytest.approx(_heavy_rms(posed_i, mol.rdkit), abs=1e-6)
+        for j in range(i + 1, 6):
+            assert matrix[i, j] == pytest.approx(
+                _heavy_rms(posed_i, mol.to_rdkit(poses[j])), abs=1e-6
+            )
+
+
+def test_swapping_the_two_oxygens_of_a_carboxylic_acid_gives_zero(tmp_path):
+    mol = _from_sdf("OC(=O)Cc1ccccc1", tmp_path)
+    heavy = Chem.RemoveAllHs(mol.rdkit, sanitize=False)
+    oxygens = [a.GetIdx() for a in heavy.GetAtoms() if a.GetSymbol() == "O"]
+    ref = Mol(heavy, flexible=True, hydrogens="keep")
+    conformer, positions = ref.rdkit.GetConformer(), ref.get_positions()
+    a, b = oxygens
+    conformer.SetAtomPosition(a, tuple(float(x) for x in positions[b]))
+    conformer.SetAtomPosition(b, tuple(float(x) for x in positions[a]))
+    probe = Mol(heavy, flexible=True, hydrogens="keep")
+
+    assert RMSD(probe, ref).get_score(loaded_pose(probe)) < 1e-9

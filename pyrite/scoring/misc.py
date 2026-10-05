@@ -3,7 +3,7 @@ from rdkit import Chem
 from scipy.spatial import cKDTree
 
 from .._common import Mol
-from .._util import _symmetry_mappings
+from .._util import _heavy_atoms, _symmetry_mappings
 from ._base import ScoringFunction, _RDKitScoringFunction
 from .dependencies import Dependency, PositionDependency
 
@@ -12,7 +12,9 @@ class RMSD(_RDKitScoringFunction):
     """
     🚗 — Used to calculate the RMSD between two poses.
 
-    The RMSD is calculated using :func:`~rdkit.Chem.rdMolAlign.CalcRMS`.
+    The RMSD is calculated using :func:`~rdkit.Chem.rdMolAlign.CalcRMS`, over the heavy atoms
+    only (the convention for docking poses): the hydrogens the molecule has, which depend on how it
+    was loaded, do not change it. The poses are compared in place, without aligning them.
 
     **Speed**: 🚲–🚄, depending on the size of the ligand.
 
@@ -42,10 +44,15 @@ class RMSD(_RDKitScoringFunction):
             self.ref_mol = ref_mol
 
         matches = _symmetry_mappings(
-            self.probe_mol, self.ref_mol, max_matches, include_identity=same_atom_order
+            self.probe_mol,
+            self.ref_mol,
+            max_matches,
+            include_identity=same_atom_order,
+            heavy_atoms=True,
         )
+        ref_atoms = _heavy_atoms(self.ref_mol)
         self._atom_map = [
-            [(probe_atom, ref_atom) for ref_atom, probe_atom in enumerate(m)] for m in matches
+            [(probe_atom, int(ref_atoms[k])) for k, probe_atom in enumerate(m)] for m in matches
         ]
 
     def _score(self, pose, computed) -> float:

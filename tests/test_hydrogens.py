@@ -213,3 +213,22 @@ def test_changing_the_hydrogens_never_changes_the_charges(smiles, charge):
         assert sum(a.GetFormalCharge() for a in mol.atoms) == charge, hydrogens
     heavy = {h: Chem.MolToSmiles(Chem.RemoveHs(m.to_rdkit())) for h, m in molecules.items()}
     assert len(set(heavy.values())) == 1, heavy  # the same molecule whichever hydrogens are kept
+
+
+@pytest.mark.parametrize(
+    "smiles",
+    [
+        "O=CN(O)CCc1ccccc1",  # an N-hydroxy formamide, as in Astex 1gkc
+        "O=CNCCc1ccccc1",  # a plain formamide
+        "CC(=O)NCCc1ccccc1",  # an acetamide: its carbonyl carbon has no hydrogen to lose
+    ],
+)
+def test_the_rotatable_bonds_do_not_depend_on_the_hydrogens(smiles):
+    # The amide exclusion must count implicit hydrogens too: a formyl carbon with its hydrogen
+    # removed is still an amide carbon, so the amide bond must stay rigid.
+    rd = _with_hydrogens(smiles)
+    n_tors = {
+        h: Mol(rd, flexible=True, hydrogens=h).layout.n_tors for h in ("keep", "polar", "remove")
+    }
+
+    assert len(set(n_tors.values())) == 1, n_tors
