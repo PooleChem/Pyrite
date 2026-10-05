@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-from helpers import loaded_pose
 from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem
 
@@ -21,7 +20,7 @@ def _complete_molecule() -> Chem.Mol:
 
 def _poses(mol: Mol, n: int = 20) -> Poses:
     rng = np.random.default_rng(0)
-    values = np.tile(np.array(loaded_pose(mol)), (n, 1))
+    values = np.tile(np.array(mol.input_pose), (n, 1))
     values[:, mol.layout.tors_slice] += rng.normal(0, 1.0, (n, mol.layout.n_tors))
     return Poses(values, mol.layout)
 
@@ -59,7 +58,7 @@ def test_all_hydrogen_settings_agree_when_the_hydrogens_are_where_rdkit_puts_the
     energies = {}
     for hydrogens in ("keep", "polar", "remove"):
         mol = Mol(complete, flexible=True, hydrogens=hydrogens)
-        energies[hydrogens] = InternalEnergy(mol).get_score(loaded_pose(mol))
+        energies[hydrogens] = InternalEnergy(mol).get_score(mol.input_pose)
 
     assert energies["polar"] == pytest.approx(energies["keep"], rel=1e-9)
     assert energies["remove"] == pytest.approx(energies["keep"], rel=1e-9)
@@ -69,6 +68,6 @@ def test_mmff_no_longer_scores_a_molecule_without_its_hydrogens(capfd):
     RDLogger.EnableLog("rdApp.warning")
     mol = Mol(_complete_molecule(), flexible=True, hydrogens="polar")
 
-    InternalEnergy(mol).get_score(loaded_pose(mol))
+    InternalEnergy(mol).get_score(mol.input_pose)
 
     assert "does not have explicit Hs" not in capfd.readouterr().err

@@ -995,12 +995,107 @@ class Mol:
         if close_writer:
             writer.close()
 
+    @property
+    def input_pose(self) -> Pose:
+        """The pose of the geometry this molecule was built from.
+
+        The pose that puts every atom where the input had it: no rotation, the center atom at its
+        input position, the input torsions. For a crystal ligand this is the crystal pose, to
+        score, to start a search from, or to compare docked poses with. It does not change when
+        the global conformer is moved (:meth:`pose_to_conformer`).
+
+        Returns
+        -------
+        Pose
+            In the layout of this molecule; ``pose_to_positions(mol.input_pose)`` gives the input
+            coordinates.
+        """
+        layout = self.layout
+        reference = self._reference_positions
+        values = np.concatenate(
+            [layout.identity_rotation, reference[self._center_atom], self.__torsions_in(reference)]
+        )
+        return Pose(values, layout)
+
+    def pose_from_positions(self, positions: NDArray, rmsd_delta: float = 0.5) -> Pose:
+        """Make a pose of this molecule from coordinates of its atoms.
+
+        The torsions are measured in `positions`, and the rotation and translation are the rigid
+        fit (Kabsch) of this molecule's geometry with those torsions onto them. Useful for a
+        conformer from another program or file, of the same molecule with its atoms in the same
+        order.
+
+        Parameters
+        ----------
+        positions : array_like
+            Shape ``(n_atoms, 3)``, in the atom order of this molecule.
+        rmsd_delta : float, default 0.5
+            The largest RMSD (in Angstrom) allowed between `positions` and the pose made of them.
+            Bond lengths and angles are not part of a pose, so coordinates that differ in those
+            cannot be reproduced exactly; this is how much is accepted.
+
+        Returns
+        -------
+        Pose
+            In the layout of this molecule.
+
+        Raises
+        ------
+        ValueError
+            When `positions` has the wrong shape, is not finite, or cannot be reproduced within
+            `rmsd_delta`.
+        """
+        positions = np.asarray(positions, dtype=float)
+        if positions.shape != (self.n_atoms, 3):
+            raise ValueError(
+                f"positions must have shape ({self.n_atoms}, 3), got {positions.shape}."
+            )
+        if not np.isfinite(positions).all():
+            raise ValueError("positions must be finite.")
+        rmsd, values = self.__fit_pose(positions)
+        if rmsd > rmsd_delta:
+            raise ValueError(
+                f"The positions cannot be reproduced as a pose: RMSD {rmsd:.2f} > rmsd_delta "
+                f"{rmsd_delta}."
+            )
+        return Pose(values, self.layout)
+
+    def __torsions_in(self, positions: NDArray) -> NDArray:
+        """The rotatable torsion angles of this molecule in `positions` (radians)."""
+        work = Chem.Mol(self._rdkit, False, self._rdkit.GetConformer().GetId())
+        work.GetConformer().SetPositions(np.asarray(positions, dtype=float))
+        return np.array(
+            [
+                Chem.rdMolTransforms.GetDihedralRad(work.GetConformer(), *torsion)
+                for torsion in self.__rotatable_torsions
+            ],
+            dtype=float,
+        )
+
+    def __fit_pose(self, observed: NDArray) -> tuple[float, NDArray]:
+        """The pose values that best reproduce `observed`, and the RMSD they leave."""
+        layout = self.layout
+        torsions = self.__torsions_in(observed)
+        # the reference geometry with these torsions, the center atom at the origin
+        identity = np.concatenate([layout.identity_rotation, np.zeros(3), torsions])
+        shape = self.pose_to_positions(identity)
+
+        # the rigid motion that takes it onto the observed positions (Kabsch)
+        shape_mean, observed_mean = shape.mean(axis=0), observed.mean(axis=0)
+        u, _, vt = np.linalg.svd((shape - shape_mean).T @ (observed - observed_mean))
+        reflection = np.sign(np.linalg.det(vt.T @ u.T))
+        rotation = vt.T @ np.diag([1.0, 1.0, reflection]) @ u.T
+        translation = observed_mean - rotation @ shape_mean
+
+        rmsd = np.sqrt(np.mean(np.sum((shape @ rotation.T + translation - observed) ** 2, 1)))
+        values = np.concatenate([layout.rotation_from_matrix(rotation), translation, torsions])
+        return float(rmsd), values
+
     def poses_from_sdf(self, file: str, rmsd_delta: float = 0.5) -> Poses:
         """Read the conformers in an SDF file as poses of this molecule.
 
-        The torsions of every conformer are measured, and the rotation and translation are the
-        rigid fit of this molecule's reference geometry (with those torsions) onto it. The
-        conformers must be of this molecule, with the same atoms in the same order.
+        Every conformer becomes a pose as in :meth:`pose_from_positions`. The conformers must be
+        of this molecule, with the same atoms in the same order.
 
         Parameters
         ----------
@@ -1031,7 +1126,6 @@ class Mol:
         elements = [a.GetAtomicNum() for a in template.GetAtoms()]
 
         values = []
-        work = Chem.Mol(template, False, template.GetConformer().GetId())
         for record in self.__read_sdf_records(file):
             same_molecule = [a.GetAtomicNum() for a in record.GetAtoms()] == elements and {
                 frozenset((b.GetBeginAtomIdx(), b.GetEndAtomIdx())) for b in record.GetBonds()
@@ -1041,35 +1135,13 @@ class Mol:
                     f"Record {len(values)} of {file} is not this molecule (or its atoms are in a "
                     "different order)."
                 )
-            observed = record.GetConformer().GetPositions()
-
-            work.GetConformer().SetPositions(observed)
-            torsions = np.array(
-                [
-                    Chem.rdMolTransforms.GetDihedralRad(work.GetConformer(), *torsion)
-                    for torsion in self.__rotatable_torsions
-                ]
-            )
-            # the reference geometry with these torsions, the center atom at the origin
-            identity = np.concatenate([layout.identity_rotation, np.zeros(3), torsions])
-            shape = self.pose_to_positions(identity)
-
-            # the rigid motion that takes it onto the conformer (Kabsch)
-            shape_mean, observed_mean = shape.mean(axis=0), observed.mean(axis=0)
-            u, _, vt = np.linalg.svd((shape - shape_mean).T @ (observed - observed_mean))
-            reflection = np.sign(np.linalg.det(vt.T @ u.T))
-            rotation = vt.T @ np.diag([1.0, 1.0, reflection]) @ u.T
-            translation = observed_mean - rotation @ shape_mean
-
-            rmsd = np.sqrt(np.mean(np.sum((shape @ rotation.T + translation - observed) ** 2, 1)))
+            rmsd, pose_values = self.__fit_pose(record.GetConformer().GetPositions())
             if rmsd > rmsd_delta:
                 raise ValueError(
                     f"Record {len(values)} of {file} cannot be reproduced as a pose: RMSD "
                     f"{rmsd:.2f} > rmsd_delta {rmsd_delta}."
                 )
-            values.append(
-                np.concatenate([layout.rotation_from_matrix(rotation), translation, torsions])
-            )
+            values.append(pose_values)
 
         if not values:
             raise ValueError(f"No molecules found in {file}.")

@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-from helpers import loaded_pose
 from scipy.spatial import cKDTree
 
 from pyrite.bounds import SphericalBounds
@@ -58,5 +57,5 @@ def test_out_of_bounds_penalty_is_zero_inside_and_grows_outside(ctx):
     small = OutOfBoundsPenalty(ligand, SphericalBounds(1.0, at=centre))
     smaller = OutOfBoundsPenalty(ligand, SphericalBounds(0.5, at=centre))
 
-    assert everything.get_score(loaded_pose(ligand)) == 0.0
-    assert 0.0 < small.get_score(loaded_pose(ligand)) < smaller.get_score(loaded_pose(ligand))
+    assert everything.get_score(ligand.input_pose) == 0.0
+    assert 0.0 < small.get_score(ligand.input_pose) < smaller.get_score(ligand.input_pose)

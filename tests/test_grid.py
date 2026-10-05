@@ -192,7 +192,6 @@ def test_the_default_is_tricubic(ctx):
 def test_tricubic_removes_the_bias_of_trilinear_where_good_poses_are(ctx):
     # Trilinear interpolation overestimates the wells of the potentials, where good poses sit:
     # near the crystal pose it scores them +6.7 too high on average at spacing 1.0, tricubic -0.04.
-    from helpers import loaded_pose
 
     ligand, receptor, k = ctx.ligand, ctx.receptor, 100
     exact = (
@@ -206,7 +205,7 @@ def test_tricubic_removes_the_bias_of_trilinear_where_good_poses_are(ctx):
     noise = np.zeros((100, layout.n_dims))
     noise[:, layout.trans_slice] = rng.normal(0, 0.4, (100, 3))
     noise[:, layout.tors_slice] = rng.normal(0, 0.25, (100, layout.n_tors))
-    poses = type(ctx.poses)(np.array(loaded_pose(ligand)) + noise, layout)
+    poses = type(ctx.poses)(np.array(ligand.input_pose) + noise, layout)
     expected = exact.batch_scores(poses)
 
     errors = {

@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-from helpers import loaded_pose
 from rdkit import Chem
 from rdkit.Chem import AllChem, rdMolAlign
 
@@ -45,7 +44,7 @@ def test_rmsd_is_zero_for_a_symmetric_relabelling(biphenyl):
     identity = [[(i, i) for i in range(biphenyl.n_atoms)]]
 
     assert rdMolAlign.CalcRMS(biphenyl.rdkit, relabelled.rdkit, map=identity) > 1.0
-    assert RMSD(biphenyl, relabelled).get_score(loaded_pose(biphenyl)) < 1e-6
+    assert RMSD(biphenyl, relabelled).get_score(biphenyl.input_pose) < 1e-6
 
 
 def test_rmsd_does_not_depend_on_the_atom_order_of_the_reference():
@@ -53,13 +52,13 @@ def test_rmsd_does_not_depend_on_the_atom_order_of_the_reference():
     order = [int(i) for i in np.random.default_rng(0).permutation(mol.n_atoms)]
     renumbered = Mol(Chem.RenumberAtoms(mol.rdkit, order))
 
-    assert RMSD(mol, renumbered).get_score(loaded_pose(mol)) < 1e-6
+    assert RMSD(mol, renumbered).get_score(mol.input_pose) < 1e-6
 
 
 def test_rmsd_equals_rdkit_for_different_conformers(biphenyl):
     other = _mol("c1ccccc1-c1ccccc1", seed=7)
 
-    assert RMSD(biphenyl, other).get_score(loaded_pose(biphenyl)) == pytest.approx(
+    assert RMSD(biphenyl, other).get_score(biphenyl.input_pose) == pytest.approx(
         rdMolAlign.CalcRMS(biphenyl.rdkit, other.rdkit), abs=1e-6
     )
 
@@ -70,7 +69,7 @@ def test_crowding_recognises_a_symmetric_duplicate(biphenyl):
     conf_id = crowding._ref_mol.rdkit.AddConformer(relabelled.rdkit.GetConformer(), assignId=True)
     crowding.register_pose(int(conf_id))
 
-    assert crowding.get_score(loaded_pose(biphenyl)) == pytest.approx(4**4.0, rel=1e-6)
+    assert crowding.get_score(biphenyl.input_pose) == pytest.approx(4**4.0, rel=1e-6)
 
 
 def _poses(mol: Mol, n: int) -> Poses:
@@ -148,7 +147,7 @@ def test_moving_only_hydrogens_does_not_change_the_rmsd():
             conformer.SetAtomPosition(atom.GetIdx(), (p.x + 0.7, p.y - 0.4, p.z + 0.5))
 
     assert rdMolAlign.CalcRMS(mol.rdkit, ref.rdkit) > 0.2  # all atoms: they did move
-    assert RMSD(mol, ref).get_score(loaded_pose(mol)) < 1e-9
+    assert RMSD(mol, ref).get_score(mol.input_pose) < 1e-9
 
 
 @pytest.mark.parametrize("smiles", ["CC(=O)Nc1ccc(O)cc1", "CC(C)(C)c1ccc(C(C)(C)C)cc1"])
@@ -186,7 +185,7 @@ def test_the_rmsd_is_the_same_whichever_hydrogens_are_kept():
     for hydrogens in ("keep", "polar", "remove"):
         crystal = Mol(rd, flexible=True, hydrogens=hydrogens)
         probe = Mol(moved, flexible=True, hydrogens=hydrogens)
-        scores.append(RMSD(probe, crystal).get_score(loaded_pose(probe)))
+        scores.append(RMSD(probe, crystal).get_score(probe.input_pose))
 
     assert scores == pytest.approx([scores[0]] * 3, abs=1e-9)
     assert scores[0] > 0.1
@@ -265,4 +264,4 @@ def test_swapping_the_two_oxygens_of_a_carboxylic_acid_gives_zero(tmp_path):
     conformer.SetAtomPosition(b, tuple(float(x) for x in positions[a]))
     probe = Mol(heavy, flexible=True, hydrogens="keep")
 
-    assert RMSD(probe, ref).get_score(loaded_pose(probe)) < 1e-9
+    assert RMSD(probe, ref).get_score(probe.input_pose) < 1e-9

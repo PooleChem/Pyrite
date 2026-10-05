@@ -27,7 +27,6 @@ import math
 
 import numpy as np
 import pytest
-from helpers import loaded_pose
 
 from pyrite._common import Mol
 from pyrite._util import (
@@ -65,7 +64,7 @@ def computed_knn(mol_pair):
     ligand, receptor = mol_pair
     sf = Gaussian(ligand, receptor, offset=0.0, width=0.5, k=400)
     dep = sf.nn_dep
-    return dep, {dep: dep.compute(Realization(loaded_pose(ligand), batched=False))}
+    return dep, {dep: dep.compute(Realization(ligand.input_pose, batched=False))}
 
 
 # ---------------------------------------------------------------------------
@@ -308,7 +307,7 @@ class TestRepulsionScore:
         ligand, receptor = mol_pair
         sf0 = Repulsion(ligand, receptor, offset=0.0, k=400)
         sf_pos = Repulsion(ligand, receptor, offset=1.0, k=400)
-        pose = loaded_pose(ligand)
+        pose = ligand.input_pose
         assert sf_pos.get_score(pose) >= sf0.get_score(pose)
 
 
