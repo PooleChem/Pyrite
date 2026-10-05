@@ -65,3 +65,39 @@ def test_rectangular_samples_stay_in_the_box_and_cover_it():
     assert np.allclose(bounds.get_translation_bounds(), [[-2.0, 8.0], [-6.0, 2.0], [2.0, 8.0]])
     assert np.allclose(positions.min(axis=0), [-2.0, -6.0, 2.0], atol=0.05)
     assert np.allclose(positions.max(axis=0), [8.0, 2.0, 8.0], atol=0.05)
+
+
+def _sphere():
+    return SphericalBounds(5.0, at=AT, rotation=ROTATION)
+
+
+def _box():
+    return RectangularBounds([8.0, 10.0, 12.0], AT)  # half-widths 4, 5, 6
+
+
+def _cylinder():
+    return CylindricalBounds(h=10.0, r=6.0, at=AT)  # axis y, half-height 5
+
+
+@pytest.mark.parametrize(
+    "make, direction, surface",
+    [
+        (_sphere, [1.0, 2.0, -2.0], 5.0),  # any direction: the radius
+        (_box, [1.0, 0.0, 0.0], 4.0),  # out through a face
+        (_box, [0.0, 0.0, -1.0], 6.0),
+        (_cylinder, [1.0, 0.0, 0.0], 6.0),  # radially
+        (_cylinder, [0.0, 1.0, 0.0], 5.0),  # along the axis
+    ],
+)
+def test_every_shape_measures_the_distance_to_its_surface(make, direction, surface):
+    # squared_distance is the squared distance to the surface for every shape; the sphere used to
+    # return |p|^2 - r^2 (24 instead of 4 for a point 2 A outside a 5 A sphere).
+    bounds = make()
+    unit = np.array(direction) / np.linalg.norm(direction)
+
+    for outside in (0.5, 2.0, 7.0):
+        point = tuple(np.array(AT) + unit * (surface + outside))
+        assert bounds.squared_distance(point) == pytest.approx(outside**2)
+        assert bounds.distance(point) == pytest.approx(outside)
+    inside = tuple(np.array(AT) + unit * (surface - 0.5))
+    assert bounds.squared_distance(inside) == 0.0 and bounds.is_within(inside)

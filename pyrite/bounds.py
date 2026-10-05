@@ -494,7 +494,9 @@ class SphericalBounds(Bounds):
         return super().is_within(p) and self.squared_distance(p) <= 0.0
 
     def squared_distance(self, p):
-        return max(0.0, np.sum(np.square(self._world_to_bounds(p))) - self.__r2)
+        # the squared distance to the surface, as for the other bounds (not |p|^2 - r^2)
+        outside = max(0.0, np.linalg.norm(self._world_to_bounds(p)) - self.r)
+        return outside**2
 
     # Spherical coordinates
     def transform_sample_to_bounds(self, v: NDArray):
