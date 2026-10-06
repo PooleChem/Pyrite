@@ -14,9 +14,10 @@ from rdkit.Chem import Draw, SDWriter
 from scipy.spatial.transform import Rotation
 
 from ._util import (
-    _apply_torsions,
     _atoms_beyond,
     _pack_torsions,
+    _pose_gradient_kernel,
+    _pose_positions_kernel,
 )
 from .atom_consts import AtomType, vina_atom_consts
 from .view import Viewer
@@ -126,6 +127,7 @@ class Mol:
         self.__rotatable_torsions = np.array([], dtype=object)
         self.__torsion_moving = []
         self.__packed_torsions = _pack_torsions([], [])
+        self.__torsion_offsets = np.empty(0)
 
         self._fix_mol_valence(sanitize=False)  # TODO: sanitize?
 
@@ -592,6 +594,10 @@ class Mol:
             _atoms_beyond(adjacency, c, b) for (_, b, c, _) in rotatable_torsions
         ]
         self.__packed_torsions = _pack_torsions(rotatable_torsions, self.__torsion_moving)
+        # The torsion values of the reference geometry: a pose turns every torsion by its target
+        # minus this (see `_pose_positions_kernel`). They depend on which side moves, so they are
+        # computed again when the center atom changes.
+        self.__torsion_offsets = self.__torsions_in(self._reference_positions)
 
     @property
     def rdkit(self) -> Chem.Mol:
@@ -733,20 +739,60 @@ class Mol:
                 f"Poses for this molecule have {self.layout.n_dims} variables, got {values.shape[-1]}."
             )
         layout = self.layout
-        if len(values) == 0:  # SciPy cannot build an empty set of rotations
-            return np.empty((0, *self._reference_positions.shape))
 
         reference = self._reference_positions
-        centered = reference - reference[self._center_atom]
-        positions = np.einsum(
-            "nij,aj->nai", layout.rotation_matrix(values[:, layout.rot_slice]), centered
+        positions = _pose_positions_kernel(
+            np.ascontiguousarray(values, dtype=np.float64),
+            reference - reference[self._center_atom],
+            layout.rot_type == "euler",
+            layout.rot_dim,
+            *self.__packed_torsions,
+            self.__torsion_offsets,
         )
-        positions += values[:, None, layout.trans_slice]
-        if self.n_tors:
-            positions = _apply_torsions(
-                positions, self.__packed_torsions, values[:, layout.tors_slice]
-            )
         return positions[0] if single else positions
+
+    def pose_gradient(self, pose, positions: NDArray, forces: NDArray) -> NDArray:
+        """Turn the gradient of a score per atom into its gradient per pose variable.
+
+        For a scoring function with an analytic gradient: compute ``dS/dx`` for every atom (how
+        the score changes when the atom moves), and this gives ``dS/dpose``, the gradient a local
+        optimizer needs. Every pose variable moves the atoms rigidly, so its derivative is a sum
+        over the atoms it moves: the forces for a translation, their torque for a rotation or a
+        torsion.
+
+        Parameters
+        ----------
+        pose : Pose or array_like
+            The pose, shape ``(n_dims,)``, in the layout of this molecule.
+        positions : array_like
+            The atom positions of `pose`, shape ``(n_atoms, 3)`` (from :meth:`pose_to_positions`).
+        forces : array_like
+            ``dS/dx`` for every atom, shape ``(n_atoms, 3)``; zero for atoms the score ignores.
+
+        Returns
+        -------
+        numpy.ndarray
+            Shape ``(n_dims,)``, in the layout of this molecule.
+
+        Examples
+        --------
+        In a scoring function:
+
+        >>> def _score_and_gradient(self, pose, computed):
+        ...     positions = computed[self._position_dep]
+        ...     score, forces = ...  # dS/dx per atom
+        ...     return score, self.mol.pose_gradient(pose, positions, forces)
+        """
+        layout = self.layout
+        return _pose_gradient_kernel(
+            np.ascontiguousarray(positions, dtype=np.float64),
+            np.ascontiguousarray(forces, dtype=np.float64),
+            np.asarray(pose, dtype=np.float64),
+            layout.rot_type == "euler",
+            layout.rot_dim,
+            self._center_atom,
+            *self.__packed_torsions[:3],
+        )
 
     @property
     def rotatable_torsions(self):

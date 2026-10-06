@@ -72,6 +72,20 @@ class InternalOverlap(ScoringFunction):
     def _batch_scores(self, poses, computed_batch) -> np.ndarray:
         return self._overlap(computed_batch[self._position_dep])
 
+    def _score_and_gradient(self, pose, computed):
+        # every overlapping pair adds (r_a + r_b - d): moving its atoms apart along their
+        # connecting line lowers it by 1 per Angstrom
+        positions = computed[self._position_dep]
+        offsets = positions[self._first] - positions[self._second]
+        distances = np.sqrt(np.einsum("pk,pk->p", offsets, offsets))
+        overlapping = self._sum_of_radii > distances
+        directions = offsets[overlapping] / distances[overlapping, None]
+        forces = np.zeros_like(positions)
+        np.add.at(forces, self._first[overlapping], -directions)
+        np.add.at(forces, self._second[overlapping], directions)
+        score = float((self._sum_of_radii[overlapping] - distances[overlapping]).sum())
+        return score, self.mol.pose_gradient(pose, positions, forces)
+
 
 class InternalEnergy(_RDKitScoringFunction):
     """

@@ -242,6 +242,10 @@ class NumTors(ScoringFunction):
     def _score(self, *args, **kwargs):
         return self.result
 
+    def _score_and_gradient(self, pose, computed):
+        # the number of torsions does not depend on the pose
+        return self.result, np.zeros(len(np.asarray(pose)))
+
 
 class NumAtoms(ScoringFunction):
     """

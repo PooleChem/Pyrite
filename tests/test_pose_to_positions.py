@@ -9,8 +9,8 @@ from rdkit.Chem import AllChem
 
 from pyrite import Mol, PoseLayout, Poses
 from pyrite._util import (
-    _apply_torsions,
     _pack_torsions,
+    _pose_positions_kernel,
     _rotation_matrix_from_euler,
     _rotation_matrix_from_quat,
 )
@@ -126,29 +126,54 @@ def test_the_torsions_of_the_positions_are_the_requested_ones():
         assert np.allclose(np.angle(np.exp(1j * difference)), 0.0, atol=1e-9)  # equal modulo 2π
 
 
-def test_the_order_of_the_torsions_does_not_matter():
-    # Torsions are absolute and rotating about one never changes another's dihedral, so the
-    # result is the same in any order, including for nested torsions.
-    mol = MOLECULES["branched"]("euler")
-    assert mol.n_tors >= 5
-    poses = _random_poses(mol, 8)
-    quads = list(mol.rotatable_torsions)
-    moving = list(mol._Mol__torsion_moving)
-    start = np.broadcast_to(mol._reference_positions, (8, *mol._reference_positions.shape))
-    expected = _apply_torsions(start, _pack_torsions(quads, moving), poses.torsions)
-    assert (
-        np.abs(expected - _reference_apply_torsions(start, quads, moving, poses.torsions)).max()
-        < 1e-9
+def _kernel_positions(mol: Mol, poses: Poses, order) -> np.ndarray:
+    """`_pose_positions_kernel` with the torsions of `mol` packed in the given order."""
+    quads = [mol.rotatable_torsions[i] for i in order]
+    moving = [mol._Mol__torsion_moving[i] for i in order]
+    offsets = mol._Mol__torsion_offsets[order]
+    layout = mol.layout
+    values = np.array(poses)
+    values = np.concatenate(
+        [values[:, : layout.rot_dim + 3], values[:, layout.tors_slice][:, order]], axis=1
+    )
+    reference = mol._reference_positions
+    return _pose_positions_kernel(
+        values,
+        reference - reference[mol._center_atom],
+        layout.rot_type == "euler",
+        layout.rot_dim,
+        *_pack_torsions(quads, moving),
+        offsets,
     )
 
-    for seed in range(5):
-        order = np.random.default_rng(seed).permutation(len(quads))
-        shuffled = _apply_torsions(
-            start,
-            _pack_torsions([quads[i] for i in order], [moving[i] for i in order]),
-            poses.torsions[:, order],
+
+@pytest.mark.parametrize("rot_type", ["euler", "quat"])
+def test_the_closed_form_equals_measuring_every_dihedral_in_any_order(rot_type):
+    # The kernel turns every torsion by (target - reference value) without measuring anything.
+    # That is right because a rigid motion does not change a dihedral and turning one torsion
+    # does not change another's; check it against measuring each dihedral before turning it,
+    # for nested torsions and in any order.
+    mol = MOLECULES["branched"](rot_type)
+    assert mol.n_tors >= 5
+    poses = _random_poses(mol, 8)
+    layout = mol.layout
+    reference = mol._reference_positions
+    rigid = (
+        np.einsum(
+            "nij,aj->nai",
+            layout.rotation_matrix(np.array(poses)[:, layout.rot_slice]),
+            reference - reference[mol._center_atom],
         )
-        assert np.abs(shuffled - expected).max() < 1e-9
+        + np.array(poses)[:, None, layout.trans_slice]
+    )
+    measured = _reference_apply_torsions(
+        rigid, list(mol.rotatable_torsions), list(mol._Mol__torsion_moving), poses.torsions
+    )
+
+    assert np.abs(mol.pose_to_positions(poses) - measured).max() < 1e-9
+    for seed in range(5):
+        order = np.random.default_rng(seed).permutation(mol.n_tors)
+        assert np.abs(_kernel_positions(mol, poses, order) - measured).max() < 1e-9
 
 
 def test_the_global_conformer_can_move_without_changing_the_poses():
@@ -302,3 +327,14 @@ def test_torsions_of_a_molecule_without_torsions_are_empty_and_change_nothing():
 
     assert rigid.torsions.shape == (0,)
     assert len(rigid.rotatable_torsions) == 0 and rigid.n_tors == 0
+
+
+def test_a_quaternion_need_not_be_normalised():
+    # A quaternion and any positive multiple of it are the same rotation (SciPy normalises, and so
+    # does the kernel): a pose with an unnormalised quaternion gives the same positions.
+    mol = MOLECULES["branched"]("quat")
+    poses = _random_poses(mol, 10)
+    scaled = np.array(poses)
+    scaled[:, mol.layout.rot_slice] *= np.random.default_rng(3).uniform(0.2, 5.0, (10, 1))
+
+    assert np.allclose(mol.pose_to_positions(scaled), mol.pose_to_positions(poses), atol=1e-12)

@@ -61,6 +61,19 @@ def _close(got, expected) -> bool:
     return bool(np.allclose(got, expected, rtol=RTOL, atol=ATOL))
 
 
+def _finite_difference_gradient(sf: ScoringFunction, pose, step: float = 1e-6) -> np.ndarray:
+    """Central differences of ``get_score`` in every pose variable: an independent reference."""
+    values = np.asarray(pose, dtype=float)
+    gradient = np.empty(len(values))
+    for k in range(len(values)):
+        shift = np.zeros(len(values))
+        shift[k] = step
+        up = sf.get_score(Pose(values + shift, pose.layout))
+        down = sf.get_score(Pose(values - shift, pose.layout))
+        gradient[k] = (up - down) / (2 * step)
+    return gradient
+
+
 @contextlib.contextmanager
 def _positions_through_rdkit(mol):
     """Compute the positions of poses of `mol` with RDKit (``helpers.rdkit_positions``) instead of numpy.
@@ -99,6 +112,8 @@ def check_scoring_function(sf: ScoringFunction, mol, poses) -> None:
     - Scoring leaves `mol` as it was: no extra conformers, nothing moved, nothing changed.
     - ``get_dependencies()`` returns a list of :class:`~pyrite.scoring.Dependency`, which are
       hashable and equal to themselves.
+    - ``get_score_and_gradient(pose)`` returns the score of ``get_score`` and the gradient that
+      central finite differences of ``get_score`` give.
 
     Parameters
     ----------
@@ -126,6 +141,21 @@ def check_scoring_function(sf: ScoringFunction, mol, poses) -> None:
     reversed_ = np.asarray(sf.batch_scores(poses[::-1]))
     assert _close(reversed_, scores[::-1]), "batch_scores depends on the order of the poses"
     assert _close(sf.batch_scores(raw), scores), "batch_scores of raw values differs"
+
+    for pose, score in zip(poses, scores, strict=True):
+        got, gradient = sf.get_score_and_gradient(pose)
+        assert isinstance(got, numbers.Real) and _close(got, score), (
+            f"get_score_and_gradient's score {got} differs from get_score {score}"
+        )
+        assert gradient.shape == (len(np.asarray(pose)),), f"gradient shape {gradient.shape}"
+        assert np.isfinite(gradient).all(), f"non-finite gradient: {gradient}"
+        reference = _finite_difference_gradient(sf, pose)
+        scale = max(1.0, float(np.abs(reference).max()))
+        assert np.allclose(gradient, reference, rtol=0, atol=1e-4 * scale), (
+            f"gradient {gradient} differs from finite differences {reference}"
+        )
+    _, from_raw = sf.get_score_and_gradient(np.asarray(poses[0]))
+    assert _close(from_raw, sf.get_score_and_gradient(poses[0])[1]), "raw values: other gradient"
 
     with _positions_through_rdkit(mol):
         assert _close([sf.get_score(p) for p in poses], scores), (
@@ -184,6 +214,7 @@ def check_composition(sf: ScoringFunction, partner: ScoringFunction, mol, poses)
         "2.5 * a": (2.5 * sf, 2.5 * a),
         "a * 2.5": (sf * 2.5, a * 2.5),
         "a / 4": (sf / 4.0, a / 4.0),
+        "a / (b**2 + 1)": (sf / (partner**2 + 1.0), a / (b**2 + 1)),
         "a + 1.5": (sf + 1.5, a + 1.5),
         "1.5 + a": (1.5 + sf, a + 1.5),
         "1.5 - a": (1.5 - sf, 1.5 - a),
@@ -198,6 +229,37 @@ def check_composition(sf: ScoringFunction, partner: ScoringFunction, mol, poses)
         assert _close(got, expected), f"{name}: get_score {got} != {expected}"
         batch = np.asarray(composite.batch_scores(poses))
         assert _close(batch, expected), f"{name}: batch_scores {batch} != {expected}"
+
+    # The gradient of a composite is the chain rule on the gradients of its parts.
+    ga = np.array([sf.get_score_and_gradient(p)[1] for p in poses])
+    gb = np.array([partner.get_score_and_gradient(p)[1] for p in poses])
+    A, B = a[:, None], b[:, None]
+    inside = ((a >= lo) & (a <= hi))[:, None]
+    below_hi = (a + b <= hi)[:, None]
+    gradients = {
+        "a + b": ga + gb,
+        "a - b": ga - gb,
+        "a * b": ga * B + A * gb,
+        "-a": -ga,
+        "2.5 * a": 2.5 * ga,
+        "a * 2.5": 2.5 * ga,
+        "a / 4": ga / 4.0,
+        "a / (b**2 + 1)": (ga * (B**2 + 1) - A * 2 * B * gb) / (B**2 + 1) ** 2,
+        "a + 1.5": ga,
+        "1.5 + a": ga,
+        "1.5 - a": -ga,
+        "a ** 2": 2 * A * ga,
+        "a + b + a": 2 * ga + gb,
+        "(a + b) * (a - b)": 2 * A * ga - 2 * B * gb,
+        "clamp(a)": np.where(inside, ga, 0.0),
+        "clamp(a + b)": np.where(below_hi, ga + gb, 0.0),
+    }
+    for name, (composite, expected) in cases.items():
+        got = np.array([composite.get_score_and_gradient(p)[1] for p in poses])
+        scale = max(1.0, float(np.abs(gradients[name]).max()))
+        assert np.allclose(got, gradients[name], rtol=1e-6, atol=1e-6 * scale), (
+            f"{name}: gradient {got} != chain rule {gradients[name]}"
+        )
 
 
 # ---------------------------------------------------------------------------

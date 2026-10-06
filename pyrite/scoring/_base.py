@@ -117,6 +117,67 @@ class ScoringFunction(ABC):
         )
         return self._batch_scores(poses, computed_batch)
 
+    def get_score_and_gradient(self, pose: Pose | NDArray) -> tuple[float, NDArray[np.float64]]:
+        """The score of a pose and its gradient with respect to the pose variables.
+
+        For a local optimizer: ``minimize(lambda v: sf.get_score_and_gradient(v), x0, jac=True)``.
+        Terms that know their derivative (``GridScore``, ``InternalOverlap``) compute it
+        analytically; every other term falls back to central finite differences of its own score,
+        so this works for any scoring function, and composites combine the parts by the chain rule.
+
+        Parameters
+        ----------
+        pose : Pose, ndarray
+            The pose, or its raw values.
+
+        Returns
+        -------
+        score : float
+            Equal to ``get_score(pose)``.
+        gradient : ndarray
+            Shape ``(n_dims,)``: the derivative of the score with respect to every pose variable,
+            in the layout of the pose.
+        """
+        realized = Realization(pose, batched=False)
+        computed = _NarrowingComputed(
+            {dep: dep.compute(realized) for dep in self._resolved_dependencies()}
+        )
+        score, gradient = self._score_and_gradient(pose, computed)
+        return float(score), np.asarray(gradient, dtype=np.float64)
+
+    _GRADIENT_STEP = 1e-6  # of the central differences, in Angstrom and radians
+
+    def _score_and_gradient(self, pose, computed) -> tuple[float, NDArray[np.float64]]:
+        """The score and its gradient with respect to the pose. Optional.
+
+        .. note::
+            Do not call this method directly. Use ``get_score_and_gradient`` instead.
+
+        :meta public:
+
+        The default is central finite differences of this term's own score (two scores per pose
+        variable): correct for every term, not fast. Implement it for a term whose gradient is
+        known; with the gradient per atom position (``dS/dx``), ``self.mol.pose_gradient`` gives
+        the gradient with respect to the pose.
+
+        Returns
+        -------
+        score : float
+        gradient : ndarray
+            Shape ``(n_dims,)``.
+        """
+        values = np.asarray(pose, dtype=np.float64)
+        layout = getattr(pose, "layout", None)
+        gradient = np.empty(len(values))
+        for k in range(len(values)):
+            step = np.zeros(len(values))
+            step[k] = self._GRADIENT_STEP
+            up, down = values + step, values - step
+            if layout is not None:
+                up, down = Pose(up, layout), Pose(down, layout)
+            gradient[k] = (self.get_score(up) - self.get_score(down)) / (2 * self._GRADIENT_STEP)
+        return self._score(pose, computed), gradient
+
     def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
         """The batched score function.
 
@@ -330,6 +391,15 @@ class _CombinedScoringFunction(ScoringFunction):  # pylint: disable=too-few-publ
             total += func._score(pose, computed=computed)
         return total
 
+    def _score_and_gradient(self, pose, computed):
+        total, gradient = 0.0, 0.0
+        for func in self.funcs:
+            # pylint: disable=protected-access
+            score, partial = func._score_and_gradient(pose, computed)
+            total += score
+            gradient = gradient + partial
+        return total, gradient
+
     def _score_and_store(
         self,
         pose: Pose,
@@ -428,6 +498,31 @@ class _ScaledScoringFunction(ScoringFunction):
                 return left_val**right_val
             case _:
                 raise TypeError(f"Unsupported operator for scaling: '{self.operator}'")
+
+    def _score_and_gradient(self, pose, computed):
+        # pylint: disable=protected-access
+        n_dims = len(np.asarray(pose))
+
+        def part(side):
+            if isinstance(side, ScoringFunction):
+                return side._score_and_gradient(pose, computed)
+            return side, np.zeros(n_dims)
+
+        (a, da), (b, db) = part(self.left), part(self.right)
+        match self.operator:
+            case "*":
+                return a * b, da * b + a * db
+            case "/":
+                return a / b, (da * b - a * db) / b**2
+            case "^":
+                value = a**b
+                gradient = np.zeros(n_dims)
+                if np.any(da):  # d(a^b)/da = b a^(b-1)
+                    gradient = gradient + b * a ** (b - 1) * da
+                if np.any(db):  # d(a^b)/db = a^b ln a
+                    gradient = gradient + value * np.log(a) * db
+                return value, gradient
+        raise ValueError(f"Unknown operator {self.operator!r}")
 
     def _score_and_store(self, pose, computed, subscores) -> float:
         # pylint: disable=protected-access
@@ -547,6 +642,13 @@ class Clamp(ScoringFunction):
             self.max_score,
         )
 
+    def _score_and_gradient(self, pose, computed):
+        # pylint: disable=protected-access
+        score, gradient = self.scoring_function._score_and_gradient(pose, computed)
+        if score < self.min_score or score > self.max_score:
+            return float(np.clip(score, self.min_score, self.max_score)), np.zeros_like(gradient)
+        return score, gradient
+
     def _score_and_store(self, pose, computed, subscores) -> float:
         score = np.clip(
             self.scoring_function._score_and_store(pose, computed=computed, subscores=subscores),
@@ -596,6 +698,9 @@ class ConstantTerm(ScoringFunction):
 
     def _score(self, *args, **kwargs) -> float:
         return self.constant
+
+    def _score_and_gradient(self, pose, computed):
+        return self.constant, np.zeros(len(np.asarray(pose)))
 
     def _score_field(self, r, idx, atom_type):
         return np.full(len(r), self.constant)

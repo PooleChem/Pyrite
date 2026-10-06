@@ -120,6 +120,115 @@ def _tricubic_sum(positions, coefficients, columns, origin, step, n_vertices):
     return out
 
 
+@njit(cache=True)
+def _tricubic_forces(positions, coefficients, columns, origin, step, n_vertices):
+    """The tricubic score of one pose and its gradient per atom, ``dS/dx``.
+
+    As `_tricubic_sum` for ``(n_atoms, 3)`` positions, with the derivative of the cubic B-spline
+    weights along each axis. Atoms outside the grid contribute 0 to both.
+
+    Returns
+    -------
+    value : float
+    forces : ndarray
+        Shape ``(n_atoms, 3)``.
+    """
+    n_atoms = positions.shape[0]
+    forces = np.zeros((n_atoms, 3))
+    weights = np.empty((3, 4))
+    slopes = np.empty((3, 4))
+    index = np.empty(3, dtype=np.int64)
+    total = 0.0
+    for j in range(n_atoms):
+        inside = True
+        for d in range(3):
+            f = (positions[j, d] - origin[d]) / step[d]
+            if f < 0 or f > n_vertices[d] - 1:
+                inside = False
+                break
+            cell = min(int(f), n_vertices[d] - 2)
+            t = f - cell
+            index[d] = cell + 1
+            weights[d, 0] = (1 - t) ** 3 / 6.0
+            weights[d, 1] = (3 * t**3 - 6 * t**2 + 4) / 6.0
+            weights[d, 2] = (-3 * t**3 + 3 * t**2 + 3 * t + 1) / 6.0
+            weights[d, 3] = t**3 / 6.0
+            # d weight / d position: the derivative in t, divided by the spacing
+            slopes[d, 0] = -((1 - t) ** 2) / 2.0 / step[d]
+            slopes[d, 1] = (3 * t**2 - 4 * t) / 2.0 / step[d]
+            slopes[d, 2] = (-3 * t**2 + 2 * t + 1) / 2.0 / step[d]
+            slopes[d, 3] = t**2 / 2.0 / step[d]
+        if not inside:
+            continue
+        c = columns[j]
+        value = gx = gy = gz = 0.0
+        for a in range(4):
+            for b in range(4):
+                for k in range(4):
+                    coefficient = coefficients[index[0] + a, index[1] + b, index[2] + k, c]
+                    value += weights[0, a] * weights[1, b] * weights[2, k] * coefficient
+                    gx += slopes[0, a] * weights[1, b] * weights[2, k] * coefficient
+                    gy += weights[0, a] * slopes[1, b] * weights[2, k] * coefficient
+                    gz += weights[0, a] * weights[1, b] * slopes[2, k] * coefficient
+        total += value
+        forces[j, 0], forces[j, 1], forces[j, 2] = gx, gy, gz
+    return total, forces
+
+
+@njit(cache=True)
+def _trilinear_forces(positions, values, columns, origin, step):
+    """The trilinear score of one pose and its gradient per atom (piecewise constant).
+
+    As `_trilinear_sum` for ``(n_atoms, 3)`` positions. Atoms outside the grid contribute 0.
+    """
+    n_atoms = positions.shape[0]
+    nx, ny, nz = values.shape[0], values.shape[1], values.shape[2]
+    forces = np.zeros((n_atoms, 3))
+    total = 0.0
+    for j in range(n_atoms):
+        f0 = (positions[j, 0] - origin[0]) / step[0]
+        f1 = (positions[j, 1] - origin[1]) / step[1]
+        f2 = (positions[j, 2] - origin[2]) / step[2]
+        if f0 < 0 or f1 < 0 or f2 < 0 or f0 > nx - 1 or f1 > ny - 1 or f2 > nz - 1:
+            continue
+        i0, i1, i2 = min(int(f0), nx - 2), min(int(f1), ny - 2), min(int(f2), nz - 2)
+        d0, d1, d2 = f0 - i0, f1 - i1, f2 - i2
+        c = columns[j]
+        v000, v100 = values[i0, i1, i2, c], values[i0 + 1, i1, i2, c]
+        v010, v001 = values[i0, i1 + 1, i2, c], values[i0, i1, i2 + 1, c]
+        v110, v101 = values[i0 + 1, i1 + 1, i2, c], values[i0 + 1, i1, i2 + 1, c]
+        v011, v111 = values[i0, i1 + 1, i2 + 1, c], values[i0 + 1, i1 + 1, i2 + 1, c]
+        total += (
+            v000 * (1 - d0) * (1 - d1) * (1 - d2)
+            + v100 * d0 * (1 - d1) * (1 - d2)
+            + v010 * (1 - d0) * d1 * (1 - d2)
+            + v001 * (1 - d0) * (1 - d1) * d2
+            + v110 * d0 * d1 * (1 - d2)
+            + v101 * d0 * (1 - d1) * d2
+            + v011 * (1 - d0) * d1 * d2
+            + v111 * d0 * d1 * d2
+        )
+        forces[j, 0] = (
+            (v100 - v000) * (1 - d1) * (1 - d2)
+            + (v110 - v010) * d1 * (1 - d2)
+            + (v101 - v001) * (1 - d1) * d2
+            + (v111 - v011) * d1 * d2
+        ) / step[0]
+        forces[j, 1] = (
+            (v010 - v000) * (1 - d0) * (1 - d2)
+            + (v110 - v100) * d0 * (1 - d2)
+            + (v011 - v001) * (1 - d0) * d2
+            + (v111 - v101) * d0 * d2
+        ) / step[1]
+        forces[j, 2] = (
+            (v001 - v000) * (1 - d0) * (1 - d1)
+            + (v101 - v100) * d0 * (1 - d1)
+            + (v011 - v010) * (1 - d0) * d1
+            + (v111 - v110) * d0 * d1
+        ) / step[2]
+    return total, forces
+
+
 def _spline_coefficients(values: np.ndarray) -> np.ndarray:
     """The cubic B-spline coefficients of grid values ``(nx, ny, nz, n_columns)``, padded by 2.
 
@@ -314,3 +423,23 @@ class GridScore(ScoringFunction):
 
     def _batch_scores(self, poses, computed_batch) -> np.ndarray:
         return self._interpolate(computed_batch[self._position_dep][:, self._probe_mask])
+
+    def _score_and_gradient(self, pose, computed):
+        positions = computed[self._position_dep]
+        scored = np.ascontiguousarray(positions[self._probe_mask], dtype=np.float64)
+        if self.interpolation == "tricubic":
+            value, scored_forces = _tricubic_forces(
+                scored,
+                self._coefficients,
+                self._columns,
+                self._origin,
+                self._step,
+                self._n_vertices,
+            )
+        else:
+            value, scored_forces = _trilinear_forces(
+                scored, self._values, self._columns, self._origin, self._step
+            )
+        forces = np.zeros_like(positions)
+        forces[self._probe_mask] = scored_forces
+        return value, self._probe_mol.pose_gradient(pose, positions, forces)

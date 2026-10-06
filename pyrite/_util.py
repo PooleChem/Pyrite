@@ -259,7 +259,7 @@ def _atoms_beyond(adjacency: list, start: int, blocked: int) -> NDArray:
 
 
 def _pack_torsions(quads: list, moving: list) -> tuple[NDArray, NDArray, NDArray]:
-    """Pack the torsions of a molecule into the arrays `_apply_torsions` works on.
+    """Pack the torsions of a molecule into the arrays `_pose_positions_kernel` works on.
 
     Parameters
     ----------
@@ -284,66 +284,137 @@ def _pack_torsions(quads: list, moving: list) -> tuple[NDArray, NDArray, NDArray
     return np.array(quads, dtype=np.int64).reshape(-1, 4), padded, n_moving
 
 
-@njit
-def _apply_torsions_kernel(positions, quads, moving, n_moving, torsions):
-    """Set the torsions of every conformer in `positions`, in place. See `_apply_torsions`."""
-    for i in range(positions.shape[0]):
-        pos = positions[i]
-        for t in range(quads.shape[0]):
-            a, b, c, d = quads[t, 0], quads[t, 1], quads[t, 2], quads[t, 3]
-            # the current dihedral, with RDKit's sign convention
-            b0 = pos[a] - pos[b]
-            axis = pos[c] - pos[b]
-            axis = axis / np.sqrt(np.sum(axis * axis))
-            b2 = pos[d] - pos[c]
-            v = b0 - np.sum(b0 * axis) * axis
-            w = b2 - np.sum(b2 * axis) * axis
-            cross = np.array(
-                [
-                    axis[1] * v[2] - axis[2] * v[1],
-                    axis[2] * v[0] - axis[0] * v[2],
-                    axis[0] * v[1] - axis[1] * v[0],
-                ]
-            )
-            angle = torsions[i, t] - np.arctan2(np.sum(cross * w), np.sum(v * w))
-            cos, sin = np.cos(angle), np.sin(angle)
-            # rotate the atoms beyond c about the axis through b (Rodrigues)
-            origin = pos[b].copy()
-            for m in range(n_moving[t]):
-                p = pos[moving[t, m]] - origin
-                k_cross_p = np.array(
-                    [
-                        axis[1] * p[2] - axis[2] * p[1],
-                        axis[2] * p[0] - axis[0] * p[2],
-                        axis[0] * p[1] - axis[1] * p[0],
-                    ]
-                )
-                along = np.sum(axis * p)
-                pos[moving[t, m]] = origin + p * cos + k_cross_p * sin + axis * along * (1.0 - cos)
+@njit(cache=True)
+def _rotate_torsions(pos, quads, moving, n_moving, angles):
+    """Rotate the atoms beyond every torsion of one conformer by `angles`, in place.
 
-
-def _apply_torsions(positions: NDArray, packed: tuple, torsions: NDArray) -> NDArray:
-    """Set the torsion angles of a batch of conformers.
-
-    Equivalent to RDKit's ``SetDihedralRad`` for every torsion in turn: the current dihedral of
-    ``(a, b, c, d)`` is measured, and the atoms beyond ``c`` are rotated about the bond ``b-c`` by
-    the difference to the target. The torsions are absolute, and rotating about one never changes
-    another's dihedral, so the result does not depend on the order.
-
-    Parameters
-    ----------
-    positions : ndarray
-        Shape ``(n, n_atoms, 3)``. Not modified.
-    packed : tuple
-        The torsions of the molecule, from `_pack_torsions`.
-    torsions : ndarray
-        Shape ``(n, n_torsions)``, the target angles in radians.
-
-    Returns
-    -------
-    ndarray
-        The new positions, shape ``(n, n_atoms, 3)``.
+    For torsion ``(a, b, c, d)`` the atoms beyond ``c`` turn by its angle about the axis
+    ``b -> c``, taken from the current positions (a nested torsion's axis has been moved by the
+    torsions before it). Plain scalar arithmetic: no temporary arrays.
     """
-    out = np.array(positions, dtype=np.float64, order="C")
-    _apply_torsions_kernel(out, *packed, np.ascontiguousarray(torsions, dtype=np.float64))
+    for t in range(quads.shape[0]):
+        b, c = quads[t, 1], quads[t, 2]
+        bx, by, bz = pos[b, 0], pos[b, 1], pos[b, 2]
+        kx, ky, kz = pos[c, 0] - bx, pos[c, 1] - by, pos[c, 2] - bz
+        norm = np.sqrt(kx * kx + ky * ky + kz * kz)
+        kx, ky, kz = kx / norm, ky / norm, kz / norm
+        co, si = np.cos(angles[t]), np.sin(angles[t])
+        one = 1.0 - co
+        # Rodrigues' rotation about the unit axis k, as a matrix
+        r00, r01, r02 = co + kx * kx * one, kx * ky * one - kz * si, kx * kz * one + ky * si
+        r10, r11, r12 = ky * kx * one + kz * si, co + ky * ky * one, ky * kz * one - kx * si
+        r20, r21, r22 = kz * kx * one - ky * si, kz * ky * one + kx * si, co + kz * kz * one
+        for m in range(n_moving[t]):
+            j = moving[t, m]
+            px, py, pz = pos[j, 0] - bx, pos[j, 1] - by, pos[j, 2] - bz
+            pos[j, 0] = bx + r00 * px + r01 * py + r02 * pz
+            pos[j, 1] = by + r10 * px + r11 * py + r12 * pz
+            pos[j, 2] = bz + r20 * px + r21 * py + r22 * pz
+
+
+@njit(cache=True)
+def _pose_positions_kernel(values, centered, euler, n_rot, quads, moving, n_moving, offsets):
+    """The atom positions of a batch of poses. See `Mol.pose_to_positions`.
+
+    Rotate the reference geometry (`centered`: the center atom at the origin) about the center
+    atom, place the center atom at the translation, then turn every torsion by its target minus
+    its reference value (`offsets`). Closed form: a rigid motion does not change a dihedral, and
+    turning one torsion does not change another's, so the dihedral to correct is always the
+    reference one, and nothing needs measuring.
+    """
+    n, n_atoms, n_tors = values.shape[0], centered.shape[0], offsets.shape[0]
+    out = np.empty((n, n_atoms, 3))
+    angles = np.empty(n_tors)
+    for i in range(n):
+        if euler:  # (roll, pitch, yaw), R = Rz(yaw) Ry(pitch) Rx(roll)
+            cr, sr = np.cos(values[i, 0]), np.sin(values[i, 0])
+            cp, sp = np.cos(values[i, 1]), np.sin(values[i, 1])
+            cy, sy = np.cos(values[i, 2]), np.sin(values[i, 2])
+            r00, r01, r02 = cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr
+            r10, r11, r12 = sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr
+            r20, r21, r22 = -sp, cp * sr, cp * cr
+        else:  # (w, x, y, z), normalised here as SciPy does
+            w, x, y, z = values[i, 0], values[i, 1], values[i, 2], values[i, 3]
+            q = np.sqrt(w * w + x * x + y * y + z * z)
+            w, x, y, z = w / q, x / q, y / q, z / q
+            r00, r01, r02 = 1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)
+            r10, r11, r12 = 2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)
+            r20, r21, r22 = 2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)
+        tx, ty, tz = values[i, n_rot], values[i, n_rot + 1], values[i, n_rot + 2]
+        for j in range(n_atoms):
+            x0, y0, z0 = centered[j, 0], centered[j, 1], centered[j, 2]
+            out[i, j, 0] = r00 * x0 + r01 * y0 + r02 * z0 + tx
+            out[i, j, 1] = r10 * x0 + r11 * y0 + r12 * z0 + ty
+            out[i, j, 2] = r20 * x0 + r21 * y0 + r22 * z0 + tz
+        for t in range(n_tors):
+            angles[t] = values[i, n_rot + 3 + t] - offsets[t]
+        _rotate_torsions(out[i], quads, moving, n_moving, angles)
     return out
+
+
+@njit(cache=True)
+def _pose_gradient_kernel(positions, forces, values, euler, n_rot, center, quads, moving, n_moving):
+    """The gradient of a score with respect to a pose, from the posed positions and the forces.
+
+    `forces` is the gradient of the score with respect to the atom positions (``dS/dx_j``,
+    shape ``(n_atoms, 3)``). Every pose variable moves the atoms rigidly, so its derivative is a
+    sum over the atoms it moves: a force for the translation, a torque for a rotation.
+
+    - translation: ``sum_j F_j``;
+    - rotation: the torque ``tau = sum_j (x_j - x_center) x F_j``, projected on the axis each
+      rotation variable turns about (euler), or mapped through the derivative of the normalised
+      quaternion (quat);
+    - torsion ``(a, b, c, d)``: ``u . sum_moved (x_j - x_b) x F_j``, with ``u`` the unit axis
+      ``b -> c`` in the posed geometry. Turning one torsion never changes another's dihedral, so
+      a nested torsion's derivative is this, too.
+    """
+    n_dims = values.shape[0]
+    gradient = np.zeros(n_dims)
+    cx, cy, cz = positions[center, 0], positions[center, 1], positions[center, 2]
+    fx = fy = fz = 0.0
+    tx = ty = tz = 0.0
+    for j in range(positions.shape[0]):
+        f0, f1, f2 = forces[j, 0], forces[j, 1], forces[j, 2]
+        fx += f0
+        fy += f1
+        fz += f2
+        rx, ry, rz = positions[j, 0] - cx, positions[j, 1] - cy, positions[j, 2] - cz
+        tx += ry * f2 - rz * f1
+        ty += rz * f0 - rx * f2
+        tz += rx * f1 - ry * f0
+    gradient[n_rot] = fx
+    gradient[n_rot + 1] = fy
+    gradient[n_rot + 2] = fz
+    if euler:  # the axes of roll, pitch and yaw: Rz(yaw) Ry(pitch) e_x, Rz(yaw) e_y, e_z
+        cp, sp = np.cos(values[1]), np.sin(values[1])
+        cyw, syw = np.cos(values[2]), np.sin(values[2])
+        gradient[0] = cyw * cp * tx + syw * cp * ty - sp * tz
+        gradient[1] = -syw * tx + cyw * ty
+        gradient[2] = tz
+    else:
+        # For the normalised q = (w, v): omega = 2 (w dv - dw v + v x dv), so the gradient is
+        # (-2 v . tau, 2 (w tau + tau x v)). It is orthogonal to q already, so the derivative of
+        # the normalisation only divides it by |q|.
+        w, x, y, z = values[0], values[1], values[2], values[3]
+        norm = np.sqrt(w * w + x * x + y * y + z * z)
+        w, x, y, z = w / norm, x / norm, y / norm, z / norm
+        gradient[0] = -2.0 * (x * tx + y * ty + z * tz) / norm
+        gradient[1] = 2.0 * (w * tx + ty * z - tz * y) / norm
+        gradient[2] = 2.0 * (w * ty + tz * x - tx * z) / norm
+        gradient[3] = 2.0 * (w * tz + tx * y - ty * x) / norm
+    for t in range(quads.shape[0]):
+        b, c = quads[t, 1], quads[t, 2]
+        bx, by, bz = positions[b, 0], positions[b, 1], positions[b, 2]
+        ux, uy, uz = positions[c, 0] - bx, positions[c, 1] - by, positions[c, 2] - bz
+        norm = np.sqrt(ux * ux + uy * uy + uz * uz)
+        ux, uy, uz = ux / norm, uy / norm, uz / norm
+        sx = sy = sz = 0.0
+        for m in range(n_moving[t]):
+            j = moving[t, m]
+            rx, ry, rz = positions[j, 0] - bx, positions[j, 1] - by, positions[j, 2] - bz
+            f0, f1, f2 = forces[j, 0], forces[j, 1], forces[j, 2]
+            sx += ry * f2 - rz * f1
+            sy += rz * f0 - rx * f2
+            sz += rx * f1 - ry * f0
+        gradient[n_rot + 3 + t] = ux * sx + uy * sy + uz * sz
+    return gradient
