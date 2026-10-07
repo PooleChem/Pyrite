@@ -37,6 +37,10 @@ class InternalOverlap(ScoringFunction):
     InternalEnergy
         More accurate, but slower approach.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import InternalOverlap
+    >>> clashes = 0.5 * InternalOverlap(ligand)
     """
 
     def __init__(self, molecule: Mol, vdw_scale: float = 1.0):
@@ -92,11 +96,11 @@ class InternalEnergy(_RDKitScoringFunction):
     🚗 — Calculates the MMFF internal energy of a molecule.
 
     Uses :mod:`rdkit` and the MMFF forcefield,
-    using :func:`~rdkit.Chem.rdForceFieldHelpers.MMFFGetMoleculeForceField`.
+    using `MMFFGetMoleculeForceField <https://www.rdkit.org/docs/source/rdkit.Chem.rdForceFieldHelpers.html>`_.
 
     MMFF needs every hydrogen. When the molecule does not have them all (``hydrogens="polar"``,
     the default, or ``"remove"``), the missing ones are added to each pose at ideal positions
-    computed from the heavy atoms (:func:`~rdkit.Chem.rdmolops.AddHs` with ``addCoords``), and the
+    computed from the heavy atoms (`AddHs <https://www.rdkit.org/docs/source/rdkit.Chem.rdmolops.html>`_ with ``addCoords``), and the
     energy is that of the complete molecule. A molecule that has all its hydrogens is scored as
     it is.
 
@@ -112,6 +116,11 @@ class InternalEnergy(_RDKitScoringFunction):
     InternalOverlap
         Faster, but less accurate approach.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import InternalEnergy
+    >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True, hydrogens="keep")
+    >>> strain = 1e-2 * InternalEnergy(ligand)
     """
 
     def __init__(self, molecule: Mol):

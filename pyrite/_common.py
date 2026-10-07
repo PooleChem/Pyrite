@@ -67,56 +67,67 @@ class Mol:
     """
     Representation of a molecule.
 
-    The Mol class provides methods for initializing molecules from various sources,
-    such as SMILES strings, PDB files, or objects. It also assigns atom
-    types, rotatable torsions, and the center point of the molecule. Furthermore, it allows for
-    easy manipulation of ligand position, rotation, and torsion angles.
+    The Mol class provides methods for initializing molecules from various sources, such as
+    SMILES strings, PDB files, SDF files, or RDKit molecules: the files are read with
+    `RDKit <https://www.rdkit.org/docs/>`_. It assigns atom types, rotatable torsions, and the
+    center atom of the molecule, and turns poses into atom positions.
 
-    A ``Mol`` *holds* an RDKit molecule (it is not one): use :attr:`rdkit` for any RDKit
-    functionality (descriptors, substructure matches, force fields), treating it as read-only,
-    and :meth:`to_rdkit` for a copy to edit. A new topology is a new ``Mol``: ``Mol(edited)``.
+    A ``Mol`` holds an RDKit molecule, it is not one: use :attr:`rdkit` for RDKit functionality,
+    treating it as read-only, and :meth:`to_rdkit` for a copy to edit.
 
     Parameters
     ----------
     mol : rdkit.Chem.rdchem.Mol
-        The :class:`~rdkit.Chem.rdchem.Mol` object representing the molecule.
-    center_atom : int, optional
-        The index of the atom to use as the center point for rotations, and the fixed side of
-        every torsion. By default, for a ``flexible`` molecule it is chosen from the molecular
-        graph so that no torsion moves a large part of the molecule (the largest moved fragment is
-        minimal, ties are broken by centrality), independent of the loaded conformer. Without
-        torsions it is the heavy atom closest to the centroid of the loaded conformer.
-    hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
-        What to do with the explicit hydrogens of `mol`: keep them as they are, add the missing
-        ones (with coordinates), remove all of them, or keep only the polar ones (those on
-        N, O, S, ...; the hydrogens on carbon are removed).
-    flex_hydrogens : bool, default False
-        Whether bonds to a terminal heavy atom (a methyl group, a hydroxyl hydrogen) are
-        rotatable torsions too.
+        The RDKit molecule, with a conformer (one is embedded if it has none). It is copied.
     flexible : bool, default False
-        Whether the rotatable bonds of the molecule are torsions of its poses.
-    rotation_type : {'euler', 'quat'}, default 'euler'
-        How the rotation of a pose is represented.
+        Whether the molecule can change its shape in a pose. If ``True``, every rotatable bond
+        becomes a torsion: a variable of the poses of this molecule, which a search can turn.
+        If ``False``, the molecule is rigid, and a pose only has a rotation and a translation.
+    hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
+        Whether to keep hydrogens as is, add the missing hydrogens, remove all hydrogens, or keep
+        only the polar ones (on N, O, S, ...).
     ignore_hydrogens : bool, default True
-        Whether hydrogen atoms (polar and non-polar alike) are excluded from `scoring_mask`, the
-        mask every scoring function built on this molecule uses to decide which atoms count.
-        Polar hydrogens still decide the atom types of their neighbours (donors); only the
-        hydrogens themselves are left out of the scores, as in united-atom scoring.
+        Whether hydrogen atoms are left out of :attr:`scoring_mask`, the atoms scoring functions
+        use. Polar hydrogens still decide which neighbours are donors.
+    flex_hydrogens : bool, default False
+        Whether bonds to a terminal heavy atom (a methyl or hydroxyl group) are rotatable too.
+    center_atom : int, optional
+        The index of the atom to use as the center point for rotations. It is also the fixed
+        side of every torsion. By default, it is chosen so that no torsion moves a large part of
+        the molecule, or, without torsions, the heavy atom closest to the centroid.
+    rotation_type : {'euler', 'quat'}, default 'euler'
+        How the rotation of a pose is represented: Euler angles, or a quaternion.
 
+    See Also
+    --------
+    Pose : A pose of a molecule: its rotation, translation and torsions.
+    pyrite.scoring.ScoringFunction : Scores poses of a molecule.
 
+    Examples
+    --------
+    >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+    >>> receptor = Mol.from_pdb("receptor.pdb")
+    >>> ligand.n_atoms, ligand.n_tors  # the number of atoms and torsions
+
+    A molecule from a SMILES string gets a conformer from RDKit:
+
+    >>> ethanol = Mol.from_smiles("CCO", hydrogens="add")
+    >>> ethanol.n_atoms
+    9
     """
 
     # region Construction
 
     def __init__(
         self,
-        mol: Chem.Mol = None,
-        hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
-        flex_hydrogens: bool = False,
+        mol: Chem.Mol,
+        *,
         flexible: bool = False,  # TODO: allow list of resids. No. Read everything rigid, and allow for auto setting of torsions, or manual, or by resid.
+        hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
+        ignore_hydrogens: bool = True,
+        flex_hydrogens: bool = False,
         center_atom: int = None,
         rotation_type: Literal["euler", "quat"] = "euler",
-        ignore_hydrogens: bool = True,
     ):
         if isinstance(mol, Mol):
             raise TypeError(
@@ -178,7 +189,7 @@ class Mol:
         # Which atoms scoring functions should consider — computed once, here, so every
         # scoring function built on this Mol agrees, instead of each one recomputing (and
         # potentially disagreeing about) the same mask from the same atom_types.
-        self.scoring_mask = ~(
+        self._scoring_mask = ~(
             ignore_hydrogens
             & (
                 (self._atom_types == AtomType.Hydrogen)
@@ -189,7 +200,7 @@ class Mol:
         Chem.rdPartialCharges.ComputeGasteigerCharges(self._rdkit)
 
         # Set the layout
-        self.layout: PoseLayout = PoseLayout(rotation_type, len(self.__rotatable_torsions))
+        self._layout = PoseLayout(rotation_type, len(self.__rotatable_torsions))
 
         self.__cur_rotation = np.zeros(self.layout.rot_dim)
 
@@ -203,10 +214,15 @@ class Mol:
     def from_smiles(
         cls,
         smiles: str,
+        *,
         hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
         **kwargs,
     ):
-        """Constructs an instance of :class:`Mol` from a SMILES string representation of a molecule.
+        """Construct an instance of :class:`Mol` from a SMILES string representation of a molecule.
+
+        A 3D conformer is embedded with RDKit's ETKDG, with temporary hydrogens (an embedding
+        without hydrogens is worse). The charges are those in the SMILES string: ``O`` with one bond
+        is a hydroxyl.
 
         Parameters
         ----------
@@ -215,10 +231,22 @@ class Mol:
         hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
             Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
             keep only the polar ones.
+        **kwargs
+            Passed on to :class:`Mol`, for example ``flexible=True``.
 
         Returns
         -------
         Mol
+
+        See Also
+        --------
+        from_sdf : Load a molecule with its coordinates.
+        from_rdkit : Create a molecule from an RDKit molecule.
+
+        Examples
+        --------
+        >>> ethanol = Mol.from_smiles("CCO")
+        >>> acetate = Mol.from_smiles("CC(=O)[O-]", flexible=True)
         """
         mol = Chem.MolFromSmiles(smiles, sanitize=False)
         return cls(mol, hydrogens=hydrogens, **kwargs)
@@ -227,22 +255,39 @@ class Mol:
     def from_rdkit(
         cls,
         mol: Chem.Mol,
+        *,
         hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
         **kwargs,
     ):
-        """Create an instance of :class:`Mol` from an RDKit :class:`~rdkit.Chem.rdchem.Mol` object.
+        """Create an instance of :class:`Mol` from an RDKit :class:`rdkit.Chem.rdchem.Mol` object.
+
+        The same as ``Mol(mol)``. The RDKit molecule is copied, so it can be changed afterwards
+        without affecting the :class:`Mol`. A molecule without a conformer gets one from RDKit's
+        ETKDG.
 
         Parameters
         ----------
         mol : rdkit.Chem.rdchem.Mol
-            The input molecule as an RDKit :class:`~rdkit.Chem.rdchem.Mol` object.
+            The input molecule as an RDKit :class:`rdkit.Chem.rdchem.Mol` object.
         hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
             Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
             keep only the polar ones.
+        **kwargs
+            Passed on to :class:`Mol`, for example ``flexible=True``.
 
         Returns
         -------
         Mol
+
+        See Also
+        --------
+        to_rdkit : Get an RDKit copy back.
+
+        Examples
+        --------
+        >>> from rdkit import Chem
+        >>> rd = Chem.MolFromMolFile("ligand.sdf", removeHs=False)
+        >>> ligand = Mol.from_rdkit(rd, flexible=True)
         """
         return cls(mol, hydrogens=hydrogens, **kwargs)
 
@@ -250,14 +295,17 @@ class Mol:
     def from_pdb(
         cls,
         pdb_file: str,
+        *,
         hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
         template_smiles: str = None,
         template_sdf: str = None,
         **kwargs,
     ):
-        r"""Creates an instance of :class:`Mol` from a PDB file.
+        r"""Create an instance of :class:`Mol` from a PDB file.
 
-        Always sanitizes if template included.
+        Always sanitizes if template included. A PDB file has no charges: when it has hydrogens,
+        an oxygen with one bond and no hydrogen is charged -1 (a carboxylate), and a nitrogen with
+        four bonds +1.
 
         .. warning::
             When loading small molecules from PDB, always include a template.
@@ -280,10 +328,25 @@ class Mol:
             Path to an SDF file containing a reference molecule.
             To sanitize the molecule, either `template_smiles` or
             `template_sdf` must be provided.
+        **kwargs
+            Passed on to :class:`Mol`, for example ``flexible=True``.
 
         Returns
         -------
         Mol
+
+        See Also
+        --------
+        pyrite.io.fix_receptor_pdb : Repair a receptor PDB file before loading it.
+        from_sdf : Load a ligand with its bond orders.
+
+        Examples
+        --------
+        >>> receptor = Mol.from_pdb("receptor.pdb")
+
+        A ligand from a PDB file needs its bond orders from a template:
+
+        >>> ligand = Mol.from_pdb("ligand.pdb", template_smiles="CC(=O)Nc1ccc(O)cc1", flexible=True)
         """
         # Hydrogens are always read: whether the file has them decides the charges below. The
         # constructor removes them for hydrogens="remove".
@@ -349,10 +412,14 @@ class Mol:
     def from_sdf(
         cls,
         mol_file: str,
+        *,
         hydrogens: Literal["keep", "add", "remove", "polar"] = "polar",
         **kwargs,
     ):
-        """Creates an instance of :class:`Mol` from an SDF file.
+        """Create an instance of :class:`Mol` from an SDF file.
+
+        Only the first record of the file is read. The hydrogens and charges are taken as the file
+        has them; whether a hydroxyl or a carboxylate, the bond orders in the file decide.
 
         Parameters
         ----------
@@ -361,10 +428,25 @@ class Mol:
         hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
             Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
             keep only the polar ones.
+        **kwargs
+            Passed on to :class:`Mol`, for example ``flexible=True``.
 
         Returns
         -------
         Mol
+
+        See Also
+        --------
+        poses_from_sdf : Read all records of an SDF file as poses of a molecule.
+        from_pdb : Load a molecule from a PDB file.
+
+        Examples
+        --------
+        >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+
+        Keep every hydrogen, for example for :class:`~pyrite.scoring.InternalEnergy`:
+
+        >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True, hydrogens="keep")
         """
         RDLogger.DisableLog("rdApp.*")
 
@@ -398,7 +480,9 @@ class Mol:
         self._rdkit.AddConformer(conformer, assignId=True)
 
     def _fix_mol_valence(self, sanitize=True, assign_charges=True):
-        """Sanitize (all but the properties) and, unless `assign_charges` is false, set the formal
+        """Sanitize the molecule, and set the formal charges its valences imply.
+
+        Sanitizes all but the properties, and, unless `assign_charges` is false, sets the formal
         charges that the valences of the input imply (an ammonium).
 
         Oxygens are left as given: a singly bonded oxygen is a hydroxyl in a SMILES string, an SDF
@@ -551,13 +635,11 @@ class Mol:
         return bonds
 
     def __compute_rotatable_torsions(self, flex_hydrogens: bool = False):
-        """
-        Calculates the rotatable torsion angles and stores them along with their
-        indices defining the torsion in the molecule. This includes identifying
-        rotatable bonds, constructing torsion definitions, and determining torsion
-        angles for each rotatable bond in the molecule. The results are stored as
-        attributes for later use.
+        """Find the rotatable torsions of the molecule, and store them for later use.
 
+        This includes identifying the rotatable bonds, the four atoms that define every torsion
+        (oriented so that the side with the center atom stays fixed), the atoms every torsion
+        moves, and the torsion values of the reference geometry.
         """
         rotatable_torsions = []
         rotatable_bonds = self.__find_rotatable_bonds(flex_hydrogens)
@@ -601,16 +683,33 @@ class Mol:
 
     @property
     def rdkit(self) -> Chem.Mol:
-        """The underlying :class:`~rdkit.Chem.rdchem.Mol`, for any RDKit functionality.
+        """The underlying :class:`rdkit.Chem.rdchem.Mol`, for any RDKit functionality.
 
         This is the molecule Pyrite works on, not a copy: treat it as read-only (descriptors,
         substructure matches, force fields, ...). To change the molecule, edit a copy
-        (:meth:`to_rdkit`) and build a new :class:`Mol` from it.
+        (:meth:`to_rdkit`) and build a new :class:`Mol` from it. For what RDKit can do, see the
+        `RDKit documentation <https://www.rdkit.org/docs/>`_, in particular
+        `Getting Started with the RDKit in Python
+        <https://www.rdkit.org/docs/GettingStartedInPython.html>`_.
+
+        Returns
+        -------
+        rdkit.Chem.rdchem.Mol
+            The RDKit molecule (not a Pyrite :class:`Mol`).
+
+        See Also
+        --------
+        to_rdkit : A copy to edit, optionally with a pose as its conformer.
+
+        Examples
+        --------
+        >>> from rdkit.Chem import Descriptors
+        >>> Descriptors.MolWt(ligand.rdkit)
         """
         return self._rdkit
 
     def to_rdkit(self, pose: Pose | NDArray | None = None) -> Chem.Mol:
-        """A copy of the underlying :class:`~rdkit.Chem.rdchem.Mol`, free to use and to edit.
+        """Return a copy of the underlying :class:`rdkit.Chem.rdchem.Mol`, free to use and to edit.
 
         Without a `pose` the copy has all the conformers of this molecule. With one, it has a
         single conformer (the default one, ``confId=-1``) with the atoms where the pose puts
@@ -630,11 +729,23 @@ class Mol:
         Returns
         -------
         rdkit.Chem.rdchem.Mol
+            The copy, with the conformers of this molecule, or one conformer for `pose`.
 
         Raises
         ------
         ValueError
             When `pose` is a batch.
+
+        See Also
+        --------
+        rdkit : The molecule itself, read-only.
+        pose_to_positions : Only the positions of a pose, without RDKit.
+
+        Examples
+        --------
+        >>> from rdkit import Chem
+        >>> posed = ligand.to_rdkit(pose)
+        >>> Chem.MolToMolFile(posed, "pose.mol")
         """
         if pose is None:
             return Chem.Mol(self._rdkit)
@@ -651,30 +762,101 @@ class Mol:
 
     @property
     def n_atoms(self) -> int:
-        """The number of atoms in the molecule."""
+        """The number of atoms in the molecule.
+
+        All atoms, the hydrogens it has included. Scoring functions only take the atoms in
+        ``scoring_mask`` into account.
+
+        See Also
+        --------
+        atoms : The atoms themselves.
+
+        Examples
+        --------
+        >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+        >>> ligand.n_atoms
+        """
         return self._rdkit.GetNumAtoms()
 
     @property
     def atoms(self):
-        """The :class:`~rdkit.Chem.rdchem.Atom` objects of the molecule, in index order."""
+        """The :class:`rdkit.Chem.rdchem.Atom` objects of the molecule, in index order.
+
+        The atoms of the RDKit molecule (:attr:`rdkit`): treat them as read-only.
+
+        See Also
+        --------
+        atom_types : The Pyrite atom type of every atom.
+
+        Examples
+        --------
+        >>> symbols = [atom.GetSymbol() for atom in ligand.atoms]
+        """
         return self._rdkit.GetAtoms()
 
     @property
     def n_conformers(self) -> int:
-        """The number of conformers: the global one, and any made by :meth:`pose_to_conformer`."""
+        """The number of conformers: the global one, and any made by :meth:`pose_to_conformer`.
+
+        Scoring never adds conformers: positions come from :meth:`pose_to_positions`. Only
+        :meth:`pose_to_conformer` with ``new_conf=True`` does, for export or display.
+
+        See Also
+        --------
+        remove_conformer : Remove a conformer again.
+
+        Examples
+        --------
+        >>> ligand.n_conformers
+        1
+        >>> conf_id = ligand.pose_to_conformer(pose, new_conf=True)
+        >>> ligand.n_conformers
+        2
+        """
         return self._rdkit.GetNumConformers()
 
     def remove_conformer(self, conf_id: int) -> None:
-        """Remove a conformer, e.g. one made by :meth:`pose_to_conformer` with ``new_conf=True``."""
+        """Remove a conformer, e.g. one made by :meth:`pose_to_conformer` with ``new_conf=True``.
+
+        The global conformer (the input geometry) should not be removed: the poses are defined
+        relative to it.
+
+        Parameters
+        ----------
+        conf_id : int
+            The id of the conformer to remove.
+
+        See Also
+        --------
+        pose_to_conformer : Put a pose on a (new) conformer.
+
+        Examples
+        --------
+        >>> conf_id = ligand.pose_to_conformer(pose, new_conf=True)
+        >>> ligand.remove_conformer(conf_id)
+        """
         self._rdkit.RemoveConformer(conf_id)
 
     @property
     def atom_types(self):
-        """The atom types of all atoms in the ligand.
+        """The atom types of all atoms in the molecule.
+
+        The types follow AutoDock Vina's XS types: they decide which atoms are hydrophobic, donors
+        or acceptors in the scoring functions.
 
         Returns
         -------
         numpy.ndarray
+
+        See Also
+        --------
+        pyrite.AtomType : The atom types.
+        atoms : The atoms themselves.
+
+        Examples
+        --------
+        >>> from pyrite import AtomType
+        >>> [AtomType(t).name for t in ligand.atom_types[:3]]
         """
         return self._atom_types
 
@@ -686,23 +868,51 @@ class Mol:
     def positions(self):
         """The positions of all atoms in the global conformer.
 
+        The same as ``get_positions()``. The global conformer is the input geometry, unless
+        :meth:`pose_to_conformer` moved it.
+
         Returns
         -------
-        list
+        numpy.ndarray
+            Shape ``(n_atoms, 3)``.
+
+        See Also
+        --------
+        get_positions : The positions of any conformer, or of poses.
+        pose_to_positions : The positions of poses.
+
+        Examples
+        --------
+        >>> ligand.positions.shape  # (n_atoms, 3)
         """
         return self._rdkit.GetConformer().GetPositions()
 
     def get_positions(self, conf_id: int = -1, poses=None) -> NDArray[np.float32]:
-        """Returns the positions of all atoms in a specific conformer.
+        """Return the positions of all atoms in a specific conformer.
+
+        To get the positions of poses, prefer :meth:`pose_to_positions`: it does not need a
+        conformer.
 
         Parameters
         ----------
         conf_id : int, default -1
-             The conformer id to retrieve positions from. By default selects the global conformer.
+            The conformer id to retrieve positions from. By default selects the global conformer.
+        poses : Pose or Poses, optional
+            If given, the positions of these poses instead, as :meth:`pose_to_positions`.
 
         Returns
         -------
-        list
+        numpy.ndarray
+            Shape ``(n_atoms, 3)``, or ``(n, n_atoms, 3)`` for a batch of poses.
+
+        See Also
+        --------
+        pose_to_positions : The positions of poses.
+
+        Examples
+        --------
+        >>> ligand.get_positions().shape  # (n_atoms, 3)
+        >>> ligand.get_positions(poses=poses).shape  # (n_poses, n_atoms, 3)
         """
         if poses is not None:
             return self.pose_to_positions(poses)
@@ -726,6 +936,17 @@ class Mol:
         -------
         numpy.ndarray
             Shape ``(n_atoms, 3)`` for a single pose, or ``(n, n_atoms, 3)`` for a batch.
+
+        See Also
+        --------
+        pose_to_conformer : Put a pose on a conformer, for export and display.
+        to_rdkit : An RDKit copy with a pose as its conformer.
+        pose_from_positions : The reverse: a pose from positions.
+
+        Examples
+        --------
+        >>> ligand.pose_to_positions(ligand.input_pose).shape  # (n_atoms, 3)
+        >>> ligand.pose_to_positions(poses).shape  # (n_poses, n_atoms, 3)
         """
         if isinstance(poses, Pose | Poses):
             assert poses.layout == self.layout, "Pose and molecule layout do not match."
@@ -774,6 +995,12 @@ class Mol:
         numpy.ndarray
             Shape ``(n_dims,)``, in the layout of this molecule.
 
+        See Also
+        --------
+        pyrite.scoring.ScoringFunction.get_score_and_gradient : The score of a pose and its
+            gradient.
+        pose_to_positions : The positions of a pose.
+
         Examples
         --------
         In a scoring function:
@@ -798,6 +1025,9 @@ class Mol:
     def rotatable_torsions(self):
         """The rotatable torsions of the molecule.
 
+        Which side of a torsion moves depends on the center atom: the side with the center atom
+        stays fixed. Setting :attr:`center_atom` orients them again.
+
         Returns
         -------
         list
@@ -806,6 +1036,14 @@ class Mol:
             ``[i, j, k, l]``, where the rotated bond is between
             ``j`` and ``k``, and all atoms attached to ``k`` are moved.
 
+        See Also
+        --------
+        torsions : The values of the torsions.
+        n_tors : The number of torsions.
+
+        Examples
+        --------
+        >>> a, b, c, d = ligand.rotatable_torsions[0]  # the bond b-c turns the atoms beyond c
         """
         return self.__rotatable_torsions
 
@@ -820,6 +1058,15 @@ class Mol:
         -------
         numpy.ndarray
             Shape ``(n_tors,)``, the angles in radians.
+
+        See Also
+        --------
+        input_pose : The pose of the input geometry, with its torsions.
+        rotatable_torsions : The atoms that define every torsion.
+
+        Examples
+        --------
+        >>> ligand.torsions.shape  # (n_tors,)
         """
         conformer = self._rdkit.GetConformer()
         return np.array(
@@ -831,8 +1078,59 @@ class Mol:
         )
 
     @property
+    def layout(self) -> PoseLayout:
+        """The layout of the poses of this molecule.
+
+        It follows from the molecule: the rotation type it was made with, and its number of
+        torsions. Every pose and scoring function of this molecule uses it.
+
+        See Also
+        --------
+        PoseLayout : How the variables of a pose are laid out.
+        n_tors : The number of torsions.
+
+        Examples
+        --------
+        >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+        >>> ligand.layout  # PoseLayout(rot_type='euler', n_tors=...)
+        """
+        return self._layout
+
+    @property
+    def scoring_mask(self) -> NDArray[np.bool_]:
+        """Which atoms scoring functions take into account, one boolean per atom.
+
+        By default every atom but the hydrogens (``ignore_hydrogens=True``): polar hydrogens still
+        decide which atoms are donors, but are not scored themselves. It is computed once, so
+        every scoring function of this molecule agrees on it.
+
+        See Also
+        --------
+        atom_types : The atom type of every atom.
+
+        Examples
+        --------
+        >>> ligand.scoring_mask.sum()  # the scored atoms
+        """
+        return self._scoring_mask
+
+    @property
     def n_tors(self):
-        """The number of torsions in the molecule."""
+        """The number of torsions in the molecule.
+
+        Zero for a molecule that is not ``flexible``. Every torsion is one variable of a pose, after
+        the rotation and the translation.
+
+        See Also
+        --------
+        rotatable_torsions : The atoms that define every torsion.
+        PoseLayout.n_dims : The number of variables of a pose.
+
+        Examples
+        --------
+        >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+        >>> ligand.n_tors
+        """
         return self.layout.n_tors
 
     def pose_to_conformer(self, pose: Pose | NDArray, new_conf: bool = False) -> int:
@@ -860,6 +1158,15 @@ class Mol:
             Conformer id of the new conformer. If no new conformer is created, returns -1,
             which is the id of the global conformer.
 
+        See Also
+        --------
+        pose_to_positions : The positions of a pose, without a conformer.
+        to_sdf : Write poses to an SDF file.
+
+        Examples
+        --------
+        >>> conf_id = ligand.pose_to_conformer(pose, new_conf=True)
+        >>> ligand.viewer
         """
         if isinstance(pose, Pose):
             assert pose.layout == self.layout, "Pose and molecule layout do not match."
@@ -883,9 +1190,23 @@ class Mol:
     def center_atom(self):
         """The index of the atom used as center of the molecule.
 
+        Rotations are about the center atom, the translation of a pose is its position, and it is on
+        the fixed side of every torsion. Setting it orients the torsions again and puts the global
+        conformer back in its input orientation; existing poses keep their meaning.
+
         Returns
         -------
         int
+
+        See Also
+        --------
+        position : The position of the center atom.
+        rotatable_torsions : The torsions, oriented from the center atom.
+
+        Examples
+        --------
+        >>> ligand.center_atom
+        >>> ligand.center_atom = 10  # another atom
         """
         return self._center_atom
 
@@ -915,20 +1236,40 @@ class Mol:
         -------
         list
             A list of shape (3,) containing the x, y, and z coordinates of the center atom.
+
+        See Also
+        --------
+        center_atom : The index of the center atom.
+        Pose : The translation of a pose is the position of the center atom.
+
+        Examples
+        --------
+        >>> x, y, z = ligand.position
         """
         center_atom_coords = self._rdkit.GetConformer().GetAtomPosition(self._center_atom)
         return [center_atom_coords.x, center_atom_coords.y, center_atom_coords.z]
 
     @property
     def rotation(self):
-        """The current rotation of the molecule.
+        """The rotation of the global conformer.
 
-        This is the roll, pitch, and yaw angles of global conformer of the molecule.
+        The rotation of the last pose put on the global conformer with :meth:`pose_to_conformer`,
+        in the representation of the layout; no rotation for the input geometry.
 
         Returns
         -------
-        list
-            A list of shape (3,) containing the roll, pitch, and yaw angles of the molecule.
+        numpy.ndarray
+            Shape ``(rot_dim,)``.
+
+        See Also
+        --------
+        pose_to_conformer : Put a pose on the global conformer.
+        PoseLayout.identity_rotation : No rotation.
+
+        Examples
+        --------
+        >>> ligand.rotation
+        array([0., 0., 0.])
         """
         return self.__cur_rotation
 
@@ -959,6 +1300,16 @@ class Mol:
         numpy.ndarray
             An array of shape ``(n_conformers, n_tors)`` with the torsion angles of every
             conformer, in radians.
+
+        See Also
+        --------
+        PoseLayout.sample_random_torsions : Independent random torsions.
+        pyrite.search.place_in : Place a molecule in a pocket with these torsions.
+
+        Examples
+        --------
+        >>> torsions = ligand.get_n_conformer_torsion_configurations(10)
+        >>> torsions.shape  # (10, n_tors)
         """
         params = Chem.AllChem.ETKDGv3()
         params.randomSeed = seed
@@ -1013,6 +1364,16 @@ class Mol:
         ------
         ValueError
             When both `poses` and a `conf_id` are given.
+
+        See Also
+        --------
+        poses_from_sdf : Read the poses back.
+        pose_to_conformer : Put a pose on a conformer.
+
+        Examples
+        --------
+        >>> ligand.to_sdf("docked.sdf", poses=best_poses)
+        >>> ligand.to_sdf("input.sdf")
         """
         if poses is not None and conf_id != -1:
             raise ValueError("Give either `poses` or a `conf_id`, not both.")
@@ -1055,6 +1416,16 @@ class Mol:
         Pose
             In the layout of this molecule; ``pose_to_positions(mol.input_pose)`` gives the input
             coordinates.
+
+        See Also
+        --------
+        pose_from_positions : A pose from any coordinates of the molecule.
+        pyrite.scoring.RMSD : The RMSD of a pose to the input geometry.
+
+        Examples
+        --------
+        >>> crystal_score = scoring_function.get_score(ligand.input_pose)
+        >>> result = basin_hopping.run(ligand.input_pose, niter=50)
         """
         layout = self.layout
         reference = self._reference_positions
@@ -1090,6 +1461,17 @@ class Mol:
         ValueError
             When `positions` has the wrong shape, is not finite, or cannot be reproduced within
             `rmsd_delta`.
+
+        See Also
+        --------
+        poses_from_sdf : Poses from the conformers of an SDF file.
+        pose_to_positions : The reverse: the positions of a pose.
+
+        Examples
+        --------
+        >>> from rdkit import Chem
+        >>> other = Chem.MolFromMolFile("other_program.sdf", removeHs=False)
+        >>> pose = ligand.pose_from_positions(other.GetConformer().GetPositions())
         """
         positions = np.asarray(positions, dtype=float)
         if positions.shape != (self.n_atoms, 3):
@@ -1165,6 +1547,16 @@ class Mol:
             reproduced within `rmsd_delta`.
         OSError
             When the file is missing or empty (RDKit's own error).
+
+        See Also
+        --------
+        to_sdf : Write poses to an SDF file.
+        pose_from_positions : A pose from coordinates.
+
+        Examples
+        --------
+        >>> poses = ligand.poses_from_sdf("docked.sdf")
+        >>> scores = scoring_function.batch_scores(poses)
         """
         layout = self.layout
         template = self._rdkit
@@ -1234,11 +1626,26 @@ class Mol:
     def set_draw_options(self, options):
         """Set draw options.
 
+        The options are used by :attr:`png`, :attr:`svg`, :attr:`viewer` and
+        :class:`~pyrite.Viewer`.
+
         Parameters
         ----------
-        options : dictionary
-            The options to apply.
+        options : dict
+            The options to apply, on top of the current ones. For a ligand: ``size`` (width and
+            height in pixels), ``colorPalette``, ``colorscheme``, ``highlight`` and ``note``; for a
+            protein also ``color``, ``style``, ``surfacetype``, ``surfacecolor``,
+            ``surfaceopacity``, ``stickresidues`` and ``hideprotein``.
 
+        See Also
+        --------
+        viewer : Show the molecule in 3D.
+        pyrite.Viewer : Show several objects together.
+
+        Examples
+        --------
+        >>> ligand.set_draw_options({"size": (600, 400), "note": "type"})
+        >>> receptor.set_draw_options({"surfaceopacity": 0.5, "stickresidues": [57, 102]})
         """
         # unknown = set(options) - set(self.draw_options)
         # if unknown:
@@ -1339,31 +1746,64 @@ class Mol:
 
     @property
     def png(self):
-        """A png of this ligand for use in jupyter notebooks.
+        """A png of this molecule for use in jupyter notebooks.
+
+        A 2D drawing, of the size in the draw options.
 
         Returns
         -------
         ~IPython.display.Image
+
+        See Also
+        --------
+        svg : The same as svg.
+        set_draw_options : Set the size.
+
+        Examples
+        --------
+        >>> ligand.png
         """
         return Image(self._repr_png_(), embed=True)
 
     @property
     def svg(self):
-        """A svg of this ligand for use in jupyter notebooks.
+        """A svg of this molecule for use in jupyter notebooks.
+
+        A 2D drawing, of the size in the draw options.
 
         Returns
         -------
         ~IPython.display.SVG
+
+        See Also
+        --------
+        png : The same as png.
+        set_draw_options : Set the size.
+
+        Examples
+        --------
+        >>> ligand.svg
         """
         return SVG(self._repr_svg_())
 
     @property
     def viewer(self):
-        """A viewer containing this ligand.
+        """A viewer containing this molecule.
+
+        A 3D view of the global conformer, with the draw options of this molecule.
 
         Returns
         -------
         Viewer
+
+        See Also
+        --------
+        pyrite.Viewer : Show several objects together.
+        set_draw_options : Set how the molecule is drawn.
+
+        Examples
+        --------
+        >>> ligand.viewer
         """
         return Viewer(
             self,
@@ -1414,11 +1854,24 @@ class Mol:
     # region Copying
 
     def copy(self) -> Mol:
-        """A full, independent copy: the RDKit molecule with all its conformers, and every
-        derived value (reference geometry, torsions, atom types, layout, center atom).
+        """Return a full, independent copy of this molecule.
 
-        Nothing is re-derived, so unlike ``Mol(mol.rdkit)`` the copy also keeps the current
-        state of the global conformer and the custom settings of this molecule.
+        The copy has the RDKit molecule with all its conformers, and every derived value, as they
+        are: unlike ``Mol(mol.rdkit)``, nothing is computed again.
+
+        Returns
+        -------
+        Mol
+            The copy.
+
+        See Also
+        --------
+        to_rdkit : An RDKit copy of the molecule.
+
+        Examples
+        --------
+        >>> other = ligand.copy()
+        >>> other.center_atom = 0  # does not change ligand
         """
         return copy.deepcopy(self)
 
@@ -1464,6 +1917,52 @@ def _as_array(values: NDArray, dtype, copy) -> NDArray:
 
 @dataclass(frozen=True)
 class PoseLayout:
+    """
+    Describes how the variables of a pose are laid out.
+
+    A pose is a single vector ``[rotation, translation, torsions]``. The layout holds how many
+    variables every part has, and where they are in the vector.
+
+    Parameters
+    ----------
+    rot_type : {'euler', 'quat'}
+        The representation of the rotation: Euler angles ``(roll, pitch, yaw)``, or a quaternion
+        ``(w, x, y, z)``.
+    n_tors : int
+        The number of torsions.
+
+    Attributes
+    ----------
+    rot_dim : int
+        The number of rotation variables: 3 for Euler angles, 4 for a quaternion.
+    rot_slice, trans_slice, tors_slice : slice
+        Where the rotation, translation and torsions are in a pose vector.
+    n_dims : int
+        The number of variables of a pose: ``rot_dim + 3 + n_tors``.
+    identity_rotation : numpy.ndarray
+        The rotation that does not rotate, in this layout's representation.
+
+    Raises
+    ------
+    ValueError
+        If `rot_type` is not ``'euler'`` or ``'quat'``.
+
+    See Also
+    --------
+    Pose : A pose, laid out as described by a layout.
+    Mol.layout : The layout of the poses of a molecule.
+
+    Examples
+    --------
+    >>> layout = PoseLayout("euler", n_tors=6)
+    >>> layout.n_dims
+    12
+    >>> layout.trans_slice
+    slice(3, 6, None)
+    >>> PoseLayout("quat", n_tors=6).n_dims
+    13
+    """
+
     rot_type: Literal["euler", "quat"]  # 'euler' | 'quat'
     n_tors: int
 
@@ -1485,11 +1984,38 @@ class PoseLayout:
 
     @property
     def n_dims(self) -> int:
-        """The length of a pose vector in this layout."""
+        """The length of a pose vector in this layout.
+
+        ``rot_dim + 3 + n_tors``: 3 or 4 rotation variables, the translation, and the torsions.
+
+        See Also
+        --------
+        rot_dim : The number of rotation variables.
+
+        Examples
+        --------
+        >>> PoseLayout("euler", n_tors=6).n_dims
+        12
+        """
         return self.rot_dim + 3 + self.n_tors
 
     @property
     def identity_rotation(self) -> NDArray[np.float32]:
+        """The rotation that does not rotate, in this layout's representation.
+
+        Zeros for Euler angles, ``(1, 0, 0, 0)`` for a quaternion.
+
+        See Also
+        --------
+        compose_rotation : Rotate a rotation.
+
+        Examples
+        --------
+        >>> PoseLayout("euler", 0).identity_rotation
+        array([0., 0., 0.])
+        >>> PoseLayout("quat", 0).identity_rotation
+        array([1., 0., 0., 0.], dtype=float32)
+        """
         if self.rot_type == "euler":
             return np.zeros(3)
         return np.array([1, 0, 0, 0], dtype=np.float32)
@@ -1513,6 +2039,16 @@ class PoseLayout:
         -------
         ndarray
             The perturbed rotation(s), same shape as `rotation`.
+
+        See Also
+        --------
+        pyrite.search.random_hop : The hop of BasinHopping, which uses this.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> small_turn = np.array([0.0, 0.0, 0.1])  # 0.1 radian about the z axis
+        >>> new_rotation = layout.compose_rotation(pose.rotation, small_turn)
         """
         rotation = np.asarray(rotation)
         d_r = Rotation.from_rotvec(delta_rotvec)
@@ -1527,6 +2063,9 @@ class PoseLayout:
     def rotation_matrix(self, rotation: NDArray) -> NDArray:
         """Return the rotation matrix of a rotation in this layout's representation.
 
+        For Euler angles ``(roll, pitch, yaw)``, ``R = Rz(yaw) @ Ry(pitch) @ Rx(roll)``; a
+        quaternion is normalised first.
+
         Parameters
         ----------
         rotation : ndarray
@@ -1536,6 +2075,17 @@ class PoseLayout:
         -------
         ndarray
             Shape ``(3, 3)`` or ``(n, 3, 3)``. It acts on column vectors: ``x' = R @ x``.
+
+        See Also
+        --------
+        rotation_from_matrix : The reverse.
+
+        Examples
+        --------
+        >>> layout.rotation_matrix(layout.identity_rotation)
+        array([[1., 0., 0.],
+               [0., 1., 0.],
+               [0., 0., 1.]])
         """
         rotation = np.asarray(rotation)
         if self.rot_type == "euler":
@@ -1557,6 +2107,14 @@ class PoseLayout:
         -------
         ndarray
             Shape ``(rot_dim,)`` or ``(n, rot_dim)``.
+
+        See Also
+        --------
+        rotation_matrix : The reverse.
+
+        Examples
+        --------
+        >>> rotation = layout.rotation_from_matrix(np.eye(3))
         """
         rotation = Rotation.from_matrix(np.asarray(matrix))
         if self.rot_type == "euler":
@@ -1582,6 +2140,17 @@ class PoseLayout:
         -------
         numpy.ndarray
             An array of shape ``(n, rot_dim)``.
+
+        See Also
+        --------
+        sample_random_torsions : Random torsions.
+        Poses.from_parts : Assemble poses.
+
+        Examples
+        --------
+        >>> rotations = layout.sample_random_rotations(100, rng=np.random.default_rng(0))
+        >>> rotations.shape
+        (100, 3)
         """
         rng = np.random.default_rng() if rng is None else rng
         # A unit quaternion uniform on the 3-sphere is a uniform rotation; its normalised
@@ -1610,12 +2179,63 @@ class PoseLayout:
         -------
         numpy.ndarray
             An array of shape ``(n, n_tors)`` with angles in ``[-π, π)``.
+
+        See Also
+        --------
+        Mol.get_n_conformer_torsion_configurations : Realistic torsions, from conformers.
+
+        Examples
+        --------
+        >>> torsions = layout.sample_random_torsions(100, rng=np.random.default_rng(0))
+        >>> torsions.shape
+        (100, 6)
         """
         rng = np.random.default_rng() if rng is None else rng
         return rng.uniform(-np.pi, np.pi, size=(n, self.n_tors))
 
 
 class Pose:
+    """
+    Represents a single pose of a molecule.
+
+    A pose is a vector ``[rotation, translation, torsions]``, laid out as described by `layout`.
+    The translation is the position of the center atom of the :class:`Mol`. A pose can be used
+    wherever a numpy array is expected.
+
+    Parameters
+    ----------
+    v : array_like
+        The pose vector, of shape ``(n_dims,)``. It is not copied.
+    layout : PoseLayout
+        The layout of `v`.
+
+    Attributes
+    ----------
+    rotation, translation, torsions : numpy.ndarray
+        Views of the parts of the pose vector.
+
+    Raises
+    ------
+    ValueError
+        If `v` does not have the shape of the layout.
+
+    See Also
+    --------
+    Poses : A batch of poses.
+    PoseLayout : How the variables of a pose are laid out.
+    Mol.pose_to_positions : The atom positions of a pose.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+    >>> pose = ligand.input_pose
+    >>> pose.translation  # the position of the center atom
+    >>> shifted = np.asarray(pose).copy()
+    >>> shifted[ligand.layout.trans_slice] += [1.0, 0.0, 0.0]  # 1 A along x
+    >>> moved = Pose(shifted, ligand.layout)
+    """
+
     __slots__ = ("_v", "layout", "rotation", "translation", "torsions")
 
     def __init__(self, v: NDArray, layout: PoseLayout):
@@ -1648,10 +2268,78 @@ class Pose:
 
     @classmethod
     def from_array(cls, v: NDArray, layout: PoseLayout):
+        """Create a pose from a copy of `v`.
+
+        Unlike ``Pose(v, layout)``, the pose does not share its values with `v`.
+
+        Parameters
+        ----------
+        v : array_like
+            The pose vector, of shape ``(n_dims,)``.
+        layout : PoseLayout
+            The layout of `v`.
+
+        Returns
+        -------
+        Pose
+
+        See Also
+        --------
+        Poses.from_array : The same, for a batch.
+
+        Examples
+        --------
+        >>> pose = Pose.from_array(values, ligand.layout)
+        """
         return cls(np.asarray(v).copy(), layout)
 
 
 class Poses:
+    """
+    Represents a batch of poses of a molecule.
+
+    The poses are the rows of an array of shape ``(n, n_dims)``, laid out as described by
+    `layout`. Indexing with an integer gives a :class:`Pose`, with a slice or an index array a
+    :class:`Poses`. A batch of poses can be used wherever a numpy array is expected.
+
+    Parameters
+    ----------
+    vs : array_like
+        The pose vectors, of shape ``(n, n_dims)``. They are not copied.
+    layout : PoseLayout
+        The layout of the poses.
+
+    Attributes
+    ----------
+    rotation, translation, torsions : numpy.ndarray
+        Views of the parts of the pose vectors, every one with ``n`` rows.
+
+    Raises
+    ------
+    ValueError
+        If `vs` does not have the shape of the layout.
+
+    See Also
+    --------
+    Pose : A single pose.
+    pyrite.scoring.ScoringFunction.batch_scores : Score many poses at once.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> rng = np.random.default_rng(0)
+    >>> layout = ligand.layout
+    >>> poses = Poses.from_parts(
+    ...     layout.sample_random_rotations(10, rng),
+    ...     rng.normal(ligand.position, 1.0, (10, 3)),
+    ...     ligand.get_n_conformer_torsion_configurations(10),
+    ...     layout=layout,
+    ... )
+    >>> len(poses), poses[0].translation.shape
+    (10, (3,))
+    >>> scores = scoring_function.batch_scores(poses)
+    """
+
     __slots__ = ("_vs", "layout", "rotation", "translation", "torsions")
 
     def __init__(self, vs: NDArray, layout: PoseLayout):
@@ -1692,26 +2380,104 @@ class Poses:
 
     @classmethod
     def from_array(cls, vs: NDArray, layout: PoseLayout):
+        """Create poses from a copy of `vs`.
+
+        Unlike ``Poses(vs, layout)``, the poses do not share their values with `vs`.
+
+        Parameters
+        ----------
+        vs : array_like
+            The pose vectors, of shape ``(n, n_dims)``.
+        layout : PoseLayout
+            The layout of the poses.
+
+        Returns
+        -------
+        Poses
+
+        See Also
+        --------
+        Poses.from_parts : Assemble poses from their parts.
+        Poses.from_list : Combine single poses.
+
+        Examples
+        --------
+        >>> poses = Poses.from_array(values, ligand.layout)
+        """
         return cls(np.asarray(vs).copy(), layout)
 
     @classmethod
     def from_parts(
-        cls, layout: PoseLayout, rotation: NDArray, translation: NDArray, torsions: NDArray
+        cls,
+        rotation: NDArray,
+        translation: NDArray,
+        torsions: NDArray | None = None,
+        layout: PoseLayout | None = None,
     ):
         """Assemble poses from their rotations, translations and torsions.
 
+        The usual way to make poses for a search: random rotations from the layout, positions in the
+        binding site, and torsions from conformers. The layout follows from the parts: 3 rotation
+        variables are Euler angles, 4 a quaternion, and the number of torsions is the number of
+        columns of `torsions`.
+
         Parameters
         ----------
-        layout : PoseLayout
-            The layout of the poses.
         rotation : array_like
-            Shape ``(n, rot_dim)``, in the representation of the layout.
+            Shape ``(n, 3)`` for Euler angles, or ``(n, 4)`` for quaternions.
         translation : array_like
             Shape ``(n, 3)``.
-        torsions : array_like
-            Shape ``(n, n_tors)``.
+        torsions : array_like, optional
+            Shape ``(n, n_tors)``. By default no torsions, for a rigid molecule.
+        layout : PoseLayout, optional
+            The layout of the poses. By default inferred from the parts; if given, the parts must
+            fit it, for example ``mol.layout`` to make sure the poses fit a molecule.
+
+        Returns
+        -------
+        Poses
+
+        Raises
+        ------
+        ValueError
+            If the parts do not have the same number of poses, `rotation` does not have 3 or 4
+            columns, or the parts do not fit `layout`.
+
+        See Also
+        --------
+        PoseLayout.sample_random_rotations : Uniformly random rotations.
+        Mol.get_n_conformer_torsion_configurations : Realistic torsions.
+        pyrite.search.place_in : Place a molecule in a pocket.
+
+        Examples
+        --------
+        >>> poses = Poses.from_parts(rotations, translations, torsions)
+        >>> poses = Poses.from_parts(rotations, translations, torsions, layout=ligand.layout)
+        >>> rigid = Poses.from_parts(rotations, translations)
         """
-        vs = np.empty((len(translation), layout.n_dims))
+        rotation = np.atleast_2d(np.asarray(rotation, dtype=float))
+        translation = np.atleast_2d(np.asarray(translation, dtype=float))
+        n = len(translation)
+        torsions = np.empty((n, 0)) if torsions is None else np.asarray(torsions, dtype=float)
+        torsions = torsions.reshape(n, -1) if torsions.ndim < 2 else torsions  # one torsion
+        if not len(rotation) == n == len(torsions):
+            raise ValueError(
+                f"The parts have {len(rotation)}, {n} and {len(torsions)} poses: they must agree."
+            )
+        if layout is None:
+            rot_type = {3: "euler", 4: "quat"}.get(rotation.shape[1])
+            if rot_type is None:
+                raise ValueError(
+                    f"A rotation has 3 (Euler angles) or 4 (a quaternion) variables, "
+                    f"got {rotation.shape[1]}."
+                )
+            layout = PoseLayout(rot_type, torsions.shape[1])
+        elif rotation.shape[1] != layout.rot_dim or torsions.shape[1] != layout.n_tors:
+            raise ValueError(
+                f"The parts do not fit {layout}: {rotation.shape[1]} rotation variables and "
+                f"{torsions.shape[1]} torsions."
+            )
+        vs = np.empty((n, layout.n_dims))
         vs[:, layout.rot_slice] = rotation
         vs[:, layout.trans_slice] = translation
         vs[:, layout.tors_slice] = torsions
@@ -1719,4 +2485,28 @@ class Poses:
 
     @classmethod
     def from_list(cls, poses: list[Pose], layout: PoseLayout | None = None):
+        """Create a batch from a list of poses.
+
+        For example to collect the results of separate searches into one batch.
+
+        Parameters
+        ----------
+        poses : list of Pose
+            The poses. They are copied into one array.
+        layout : PoseLayout, optional
+            The layout of the poses. Defaults to the layout of the first pose.
+
+        Returns
+        -------
+        Poses
+
+        See Also
+        --------
+        Poses.from_array : Create poses from an array.
+
+        Examples
+        --------
+        >>> results = [basin_hopping.run(pose, niter=50) for pose in starts]
+        >>> poses = Poses.from_list([result.x for result in results])
+        """
         return cls(np.stack([np.asarray(p) for p in poses]), layout or poses[0].layout)

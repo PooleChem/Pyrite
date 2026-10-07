@@ -7,9 +7,17 @@ from rdkit import Chem
 
 
 def _rotation_matrix_to_euler(r: NDArray):
-    """
-    Extract ZYX (yaw-pitch-roll) Euler angles from a 3×3 rotation matrix R.
-    Returns (phi, theta, psi) = (roll, pitch, yaw) in radians.
+    """Extract ZYX (yaw-pitch-roll) Euler angles from a 3x3 rotation matrix.
+
+    Parameters
+    ----------
+    r : numpy.ndarray
+        The rotation matrix, of shape ``(3, 3)``.
+
+    Returns
+    -------
+    tuple of float
+        ``(roll, pitch, yaw)``, in radians.
     """
     # # clamp to handle numerical errors outside [-1,1]
     sy = -r[2, 0]

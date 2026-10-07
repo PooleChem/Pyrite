@@ -34,7 +34,6 @@ def _with_hydrogens(**kwargs) -> Mol:
 def _poses(mol: Mol, n: int, seed: int = 0) -> Poses:
     layout, rng = mol.layout, np.random.default_rng(seed)
     return Poses.from_parts(
-        layout,
         layout.sample_random_rotations(n, rng),
         rng.uniform(-5, 5, (n, 3)),
         rng.uniform(-np.pi, np.pi, (n, layout.n_tors)),

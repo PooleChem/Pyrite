@@ -1,7 +1,4 @@
-:html_theme.sidebar_secondary.remove: true
-
-
-pyrite documentation
+Pyrite documentation
 ====================
 
 API definition
@@ -14,6 +11,12 @@ API definition
 * :mod:`pyrite.scoring`
 
   - :mod:`pyrite.scoring.dependencies`
+
+* :mod:`pyrite.search`
+
+* :mod:`pyrite.cluster`
+
+* :mod:`pyrite.io`
 
 
 User Guide

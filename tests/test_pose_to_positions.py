@@ -71,7 +71,6 @@ def _random_poses(mol: Mol, n: int, seed: int = 0) -> Poses:
     rng = np.random.default_rng(seed)
     layout = mol.layout
     return Poses.from_parts(
-        layout,
         layout.sample_random_rotations(n, rng),
         rng.uniform(-8, 8, (n, 3)),
         rng.uniform(-3 * np.pi, 3 * np.pi, (n, layout.n_tors)),  # also beyond ±π

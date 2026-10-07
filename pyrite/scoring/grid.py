@@ -249,47 +249,117 @@ def _spline_coefficients(values: np.ndarray) -> np.ndarray:
 
 class GridScore(ScoringFunction):
     """
-    Approximates a KNN-based scoring function with a precomputed 3D grid,
-    replacing live neighbor search + kernel evaluation with trilinear
-    interpolation during a search.
+    🚀 — Approximates a KNN-based scoring function with a precomputed 3D grid.
 
-    Only meaningful for scoring functions built entirely from KNN-based
-    terms — every leaf in `scoring_function`'s tree must implement
-    `_score_field()` (the `_KNNScoringFunction` subclasses in `protein.py`
-    do; terms that depend on the ligand's own internal conformation, like
-    `InternalEnergy` or `NumTors`, don't and can't meaningfully be
-    grid-approximated). Combine those separately, after the fact:
-    ``grid_score(ligand, receptor) + 1e-2 * InternalEnergy(ligand)``.
+    The score of every atom type is computed once, on the vertices of a regular grid, and is
+    interpolated during a search: no neighbor search and no kernels at score time. A score costs
+    about as much as computing the atom positions, and its gradient is analytic, see
+    :meth:`~pyrite.scoring.ScoringFunction.get_score_and_gradient`.
+
+    Only scoring functions built from KNN-based terms can be put on a grid: every term must
+    depend on the position of one ligand atom relative to the fixed receptor. Terms that depend on
+    the ligand's own conformation, like :class:`~pyrite.scoring.InternalOverlap` or :class:`~pyrite.scoring.NumTors`, are combined
+    afterwards: ``GridScore(knn_terms, site) + 0.5 * InternalOverlap(ligand)``.
+
+    Below, a cut through what a grid stores: the score of one ligand atom moving towards a
+    surface of random receptor atoms (at protein density), summed over all of them, on a grid
+    with a spacing of 1.0 A. Trilinear interpolation scores the well, where good poses sit, too
+    high everywhere between the vertices; tricubic follows the exact score closely.
+
+    .. plot::
+       :width: 80%
+       :alt: Grid interpolation example
+
+       import numpy as np
+       import matplotlib.pyplot as plt
+       from scipy import ndimage
+
+       rng = np.random.default_rng(1)
+       atoms = rng.uniform([0, -12, -12], [12, 12, 12], (345, 3))  # 0.05 atoms per A^3
+
+
+       def score(x):
+           r = np.linalg.norm(atoms[None] - np.stack([x, 0 * x, 0 * x], 1)[:, None], axis=2)
+           d = r - 3.6
+           pair = -0.0356 * np.exp(-((d / 0.5) ** 2)) - 0.0052 * np.exp(-(((d - 3) / 2) ** 2))
+           return (pair + 0.84 * np.minimum(d, 0.0) ** 2).sum(axis=1)
+
+
+       vertices = np.arange(-6.0, -0.5, 1.0)
+       values = score(vertices)
+       x = np.linspace(-6.0, -1.5, 500)
+       coefficients = ndimage.spline_filter1d(values, order=3, mode="mirror")
+       tricubic = ndimage.map_coordinates(
+           coefficients, [x - vertices[0]], order=3, mode="mirror", prefilter=False
+       )
+
+       plt.figure()
+       plt.grid(visible=True)
+       plt.plot(x, score(x), linewidth=2, color="black", label="exact")
+       plt.plot(x, np.interp(x, vertices, values), linewidth=2, linestyle="--", label="trilinear")
+       plt.plot(x, tricubic, linewidth=2, label="tricubic")
+       plt.plot(vertices[:-1], values[:-1], "o", color="black", label="grid vertices")
+       plt.ylim(-0.3, 0.4)
+       plt.xlabel("Position (Angstrom)")
+       plt.ylabel("Score")
+       plt.legend()
 
     .. note::
-        The grid's spatial extent is `binding_site`'s translation bounds,
-        padded by the reference ligand's own maximum reach from its center
-        atom (independent of rotation), plus `padding`. This is cheaper than
-        the prototype notebook's approach (sampling many actual placements
-        and taking the empirical envelope) but covers the same thing it was
-        trying to guarantee — a ligand can extend well outside a bounding
-        box that only constrains its *center*, once rotated.
+        The grid covers the translation bounds of `binding_site`, padded by the largest distance
+        of any ligand atom to its center atom (so every rotation fits), plus `padding`. An atom
+        outside the grid scores 0, with a gradient of 0.
+
+    .. warning::
+        Building the grid is the expensive part: the scoring function is evaluated on every
+        vertex, and it all has to fit in memory. The number of vertices grows with the cube of
+        ``1 / spacing``: halving the spacing makes the grid 8 times as expensive to build, and a
+        larger ``k`` makes every vertex more expensive.
+
+    **Speed**: 🚀, after building.
 
     Parameters
     ----------
     scoring_function : ScoringFunction
-        The (KNN-based) scoring function to approximate.
+        The KNN-based scoring function to approximate.
     binding_site : Bounds
-        The region the ligand will actually be searched within — the grid
-        must cover this, not wherever the ligand's conformer happens to sit
-        when `GridScore` is constructed.
+        The region the ligand will be searched within. The grid covers this, not wherever the
+        ligand happens to be when the ``GridScore`` is made.
     spacing : float, default 0.5
-        Grid spacing, in the same units as atomic coordinates (Angstrom).
+        The distance between the grid vertices, in Angstrom.
     padding : float, default 4.0
-        Extra padding added on top of the binding site + ligand-reach extent.
+        Extra padding around the binding site and the reach of the ligand, in Angstrom.
     interpolation : {'tricubic', 'trilinear'}, default 'tricubic'
-        How the grid is interpolated between its vertices. Tricubic (a cubic B-spline: exact at the
-        vertices, smooth, with an error that falls with the fourth power of the spacing) is close
-        to the exact score even on a coarse grid, and costs about 1.5 us more per score than
-        trilinear (which is itself far below the cost of the exact function). Trilinear's error
-        falls only with the square of the spacing and is systematic: it scores the wells of the
-        potentials, where good poses sit, as worse than they are (+3.3 on average at spacing 1.0
-        on the factor_x complex, against -0.03 for tricubic), so a search on it finds worse poses.
+        How the grid is interpolated between its vertices. Tricubic (a cubic B-spline) is exact at
+        the vertices and its error falls with the fourth power of the spacing, so even 1.0 A is
+        close to the exact score. Trilinear is slightly cheaper, but its error falls with the
+        square of the spacing and is systematic: the wells of the potentials, where good poses
+        sit, score too high, so a search finds worse poses.
+
+    Raises
+    ------
+    ValueError
+        If `interpolation` is unknown.
+    TypeError
+        If a term of `scoring_function` cannot be put on a grid (it has no ``_score_field``).
+
+    See Also
+    --------
+    pyrite.scoring.ScoringFunction.get_score_and_gradient : The score and its (analytic) gradient.
+    pyrite.search.BasinHopping : A search that can use the gradient.
+
+    Examples
+    --------
+    >>> from pyrite import Mol
+    >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+    >>> receptor = Mol.from_pdb("receptor.pdb")
+    >>> from pyrite.bounds import RectangularBounds
+    >>> from pyrite.scoring import Gaussian, InternalOverlap, NumTors, Repulsion
+    >>> from pyrite.scoring.grid import GridScore
+    >>> site = RectangularBounds.autobox(ligand, padding=1.0)
+    >>> receptor_terms = Gaussian(ligand, receptor) + 0.84 * Repulsion(ligand, receptor)
+    >>> grid = GridScore(receptor_terms, site, spacing=0.5)
+    >>> scoring_function = (grid + 0.5 * InternalOverlap(ligand)) / (1 + 0.0585 * NumTors(ligand))
+    >>> score, gradient = scoring_function.get_score_and_gradient(ligand.input_pose)
     """
 
     def __init__(

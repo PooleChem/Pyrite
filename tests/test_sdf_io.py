@@ -17,7 +17,6 @@ def _molecule(rotation_type: str = "euler", flexible: bool = True) -> Mol:
 def _poses(mol: Mol, n: int, seed: int = 5) -> Poses:
     layout, rng = mol.layout, np.random.default_rng(seed)
     return Poses.from_parts(
-        layout,
         layout.sample_random_rotations(n, rng),
         rng.uniform(-5, 5, (n, 3)),
         rng.uniform(-3 * np.pi, 3 * np.pi, (n, layout.n_tors)),  # also beyond +-pi

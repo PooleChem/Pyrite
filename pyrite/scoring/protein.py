@@ -108,7 +108,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
     fixed_mol : Mol
         The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+        The maximum distance between two atoms (center to center) to take into account.
     k : int, default 100
         The number of neighbors to consider.
 
@@ -117,6 +117,13 @@ class _KNNScoringFunction(ScoringFunction, ABC):
     _ChargeScoringFunction
         Abstract charge-dependent scoring function.
 
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from pyrite.scoring.protein import _KNNScoringFunction
+    >>> class Flat(_KNNScoringFunction):
+    ...     def _kernel(self, dist):
+    ...         return np.where(dist < 0.0, 1.0, 0.0)  # 1 for every overlapping neighbor
     """
 
     def __init__(
@@ -168,16 +175,64 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         return radii + fixed_radii + offset
 
     def _kernel(self, dist: NDArray) -> NDArray:
-        """The elementwise score for each neighbor, as a function of
-        ``(distance - optimal_distance - offset)``. The only thing a
-        concrete ``_KNNScoringFunction`` needs to implement.
+        """Score every neighbor, from its distance beyond the optimal distance.
+
+        The only thing a concrete ``_KNNScoringFunction`` needs to implement. Write it with numpy
+        operations on the whole array: it is called with the distances of all atoms and neighbors
+        at once, and of many poses in ``batch_scores``.
+
+        :meta public:
+
+        Parameters
+        ----------
+        dist : numpy.ndarray
+            ``distance - (optimal_distance + offset)`` for every neighbor, of any shape.
+
+        Returns
+        -------
+        numpy.ndarray
+            The score of every neighbor, of the same shape as `dist`.
+
+        See Also
+        --------
+        pyrite.scoring.protein._KNNScoringFunction._score_field : Uses the kernel for many points at
+            once.
+
+        Examples
+        --------
+        >>> def _kernel(self, dist):
+        ...     return np.exp(-((dist / self.width) ** 2))
         """
         raise NotImplementedError
 
     def _mask(self, idx, mask):
-        """Optional extra neighbor-pairing constraint (e.g. hydrophobic/hbond
-        pairing), on top of plain neighbor validity. Default: no extra
-        restriction.
+        """Return which neighbors count, on top of the neighbors that were found.
+
+        Optional: a term that only scores certain pairs (hydrophobic, hydrogen bonding) restricts
+        the mask here. By default, all neighbors that were found count.
+
+        Parameters
+        ----------
+        idx : numpy.ndarray
+            The indices of the neighbors in the fixed molecule.
+        mask : numpy.ndarray
+            Which neighbors were found (within the cutoff).
+
+        Returns
+        -------
+        numpy.ndarray
+            Which neighbors count, of the same shape as `mask`.
+
+        See Also
+        --------
+        pyrite.scoring.Hydrophobic : Scores hydrophobic pairs only, with this.
+        pyrite.scoring.protein._KNNScoringFunction._score_field : Uses ``_mask_field``, the same for
+            points of a given atom type.
+
+        Examples
+        --------
+        >>> def _mask(self, idx, mask):
+        ...     return self.probe_is_polar[:, None] & self.fixed_is_polar[idx] & mask
         """
         return mask
 
@@ -197,6 +252,41 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         return np.sum(s)
 
     def _score_field(self, r, idx, atom_type: AtomType, mask=None) -> NDArray[np.float64]:
+        """Score points of a given atom type, from their nearest neighbors in the fixed molecule.
+
+        The score of every point is summed over its neighbors, as ``_score`` does for the atoms of
+        the probe. This is what :class:`~pyrite.scoring.grid.GridScore` evaluates on its vertices
+        (one atom type at a time), and what ``_batch_scores`` uses for many poses at once (an atom
+        type per atom).
+
+        :meta public:
+
+        Parameters
+        ----------
+        r, idx : numpy.ndarray
+            The distances to, and indices of, the nearest neighbors of every point, as
+            :class:`~pyrite.scoring.dependencies.KNNDependency` returns them: shape
+            ``(..., n_points, k)``.
+        atom_type : AtomType or numpy.ndarray
+            One atom type for all points, or one per point.
+        mask : numpy.ndarray, optional
+            Which neighbors are valid. By default, all neighbors that were found. Pass the mask of
+            a narrowed search: computing it from `idx` would undo the cutoff of this term.
+
+        Returns
+        -------
+        numpy.ndarray
+            The score of every point, of shape ``(..., n_points)``.
+
+        See Also
+        --------
+        pyrite.scoring.grid.GridScore : Evaluates this on the vertices of a grid.
+
+        Examples
+        --------
+        >>> r, idx, mask = knn_dependency.compute(realization)
+        >>> scores = term._score_field(r, idx, AtomType.AromaticCarbonHydrophobe, mask=mask)
+        """
         # mask defaults to None (recomputed from idx) for the grid-construction
         # caller (GridScore builds r/idx directly from a raw KDTree query, with no
         # pre-existing narrowed mask to inherit). _batch_scores (below) passes its
@@ -277,12 +367,29 @@ class Gaussian(_KNNScoringFunction):
         The offset from `optimal_distance` that is considered as ideal.
     width : float, default 0.5
         The width of the Gaussian.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + offset + e * width``, where the Gaussian has fallen to almost zero.
+        Only the `k` nearest neighbors are seen, whatever the cutoff: with ``width=2.0`` and
+        ``offset=3.0`` the default is 12.4 A, and a protein has more atoms than the default `k`
+        within that distance of most points, so increase `k` to reach it.
     k : int, default 100
         The number of neighbors to consider. It is necessary to increase this number if a wider or
         higher offset Gaussian is used.
 
+    See Also
+    --------
+    Repulsion : The repulsion of overlapping atoms.
+    pyrite.scoring.grid.GridScore : Precompute KNN-based terms on a grid.
+
+    Examples
+    --------
+    >>> from pyrite import Mol
+    >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+    >>> receptor = Mol.from_pdb("receptor.pdb")
+    >>> from pyrite.scoring import Gaussian
+    >>> steric = Gaussian(ligand, receptor, offset=0.0, width=0.5)
+    >>> wide = Gaussian(ligand, receptor, offset=3.0, width=2.0, k=500)  # see `cutoff`
     """
 
     def __init__(
@@ -351,10 +458,20 @@ class Repulsion(_KNNScoringFunction):
         The fixed molecule to be used for the calculation.
     offset : float, default 0.0
         The offset that is added to `optimal_distance`.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + offset``, beyond which the repulsion is zero for any common atom pair.
     k : int, default 100
         The number of neighbors to consider.
+
+    See Also
+    --------
+    Gaussian : The attraction at the optimal distance.
+
+    Examples
+    --------
+    >>> from pyrite.scoring import Repulsion
+    >>> repulsion = 0.840245 * Repulsion(ligand, receptor)
     """
 
     def __init__(
@@ -420,8 +537,9 @@ class _SlopeStep(_KNNScoringFunction):
         The `good` distance. Distance values lower than this value are scored :math:`1`.
     bad : float, default 1.5
         The `bad` distance. Distance values higher than this value are scored :math:`0`.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + bad``, beyond which the term is zero for any common atom pair.
     k : int, default 100
         The number of neighbors to consider.
 
@@ -430,6 +548,14 @@ class _SlopeStep(_KNNScoringFunction):
     _ChargeScoringFunction
         Abstract charge-dependent scoring function.
 
+    Examples
+    --------
+    >>> import numpy as np
+    >>> class HalogenContacts(_SlopeStep):
+    ...     def _mask(self, idx, neighbor_mask):
+    ...         types = self.probe_mol.atom_types[self.probe_mask]
+    ...         halogen = np.isin(types, HALOGEN_TYPES)  # only these probe atoms count
+    ...         return halogen[:, None] & neighbor_mask
     """
 
     def __init__(
@@ -516,8 +642,9 @@ class Hydrophobic(_SlopeStep):
         The start of the `slope-step`.
     bad : float, default 1.5
         The end of the `slope-step`.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + bad``, beyond which the term is zero for any common atom pair.
     k : int, default 100
         The number of neighbors to consider.
 
@@ -526,6 +653,10 @@ class Hydrophobic(_SlopeStep):
     NonHydrophobic
         For hydrophilic interactions.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import Hydrophobic
+    >>> hydrophobic = -0.035069 * Hydrophobic(ligand, receptor, good=0.5, bad=1.5)
     """
 
     def __init__(
@@ -627,8 +758,9 @@ class NonHydrophobic(Hydrophobic):
         The start of the `slope-step`.
     bad : float, default 1.5
         The end of the `slope-step`.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + bad``, beyond which the term is zero for any common atom pair.
     k : int, default 100
         The number of neighbors to consider.
 
@@ -637,6 +769,10 @@ class NonHydrophobic(Hydrophobic):
     Hydrophobic
         For hydrophobic interactions.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import NonHydrophobic
+    >>> non_hydrophobic = NonHydrophobic(ligand, receptor)
     """
 
     def _mask(self, idx, neighbor_mask):
@@ -714,8 +850,9 @@ class NonDirHBond(_SlopeStep):
         The start of the `slope-step`.
     bad : float, default 0
         The end of the `slope-step`.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + bad``, beyond which the term is zero for any common atom pair.
     k : int, default 100
         The number of neighbors to consider.
 
@@ -724,6 +861,10 @@ class NonDirHBond(_SlopeStep):
     NonDirHBondLJ
         For a hydrogen bond implementation using a Lennard-Jones potential.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import NonDirHBond
+    >>> hbond = -0.587439 * NonDirHBond(ligand, receptor, good=-0.7, bad=0.0)
     """
 
     def __init__(
@@ -859,11 +1000,21 @@ class LJ(_KNNScoringFunction):
         The maximum score for a single atom-atom interaction.
     depth : float, default 1.0
         The depth of the LJ-potential minimum.
-    cutoff : float, default 8.0
-        Maximum distance to consider in the nearest neighbor search.
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``8 + offset``.
     k : int, default 100
         The number of neighbors to consider.
 
+    See Also
+    --------
+    VDW : A 4-8 Lennard-Jones potential.
+    NonDirHBondLJ : A 10-12 potential for hydrogen bonds.
+
+    Examples
+    --------
+    >>> from pyrite.scoring import LJ
+    >>> lennard_jones = LJ(ligand, receptor, i=6, j=12)
     """
 
     def __init__(
@@ -1013,8 +1164,9 @@ class VDW(LJ):
         optimal will be set to the optimal distance.
     cap : float, default 100.0
         The maximum score for a single atom-atom interaction.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to 8.0.
     k : int, default 100
         The number of neighbors to consider.
 
@@ -1023,6 +1175,10 @@ class VDW(LJ):
     LJ
         For the Lennard-Jones potential.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import VDW
+    >>> vdw = VDW(ligand, receptor)
     """
 
     def __init__(
@@ -1120,8 +1276,9 @@ class NonDirHBondLJ(LJ):
         The offset from the optimal distance.
     cap : float, default 100.0
         The maximum score for a single atom-atom interaction.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``8 + offset``.
     k : int, default 100
         The number of neighbors to consider.
 
@@ -1130,6 +1287,10 @@ class NonDirHBondLJ(LJ):
     NonDirHBond
         For a hydrogen bond implementation using a slope-step.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import NonDirHBondLJ
+    >>> hbond = NonDirHBondLJ(ligand, receptor)
     """
 
     def __init__(
@@ -1182,13 +1343,13 @@ class NonDirHBondLJ(LJ):
 
 class _ChargeScoringFunction(_KNNScoringFunction, ABC):
     r"""
-    ⚙️ — Gasteiger-charge based scoring
+    ⚙️ — Gasteiger-charge based scoring.
 
     This abstract scoring function can be used to implement scoring functions that make use of the
     distance of `probe_mol` atoms to the closest `k` protein atoms, and the charge of these atoms.
 
     These charges are calculated using the Gasteiger [1]_ method, using
-    :func:`~rdkit.Chem.rdPartialCharges.ComputeGasteigerCharges`.
+    `ComputeGasteigerCharges <https://www.rdkit.org/docs/source/rdkit.Chem.rdPartialCharges.html>`_.
 
     .. note::
         This is an abstract base class and should thus be subclassed. Please refer to TODO
@@ -1204,7 +1365,7 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
     fixed_mol : Mol
         The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+        The maximum distance between two atoms (center to center) to take into account.
     k : int, default 100
         The number of neighbors to consider.
 
@@ -1221,7 +1382,15 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
        Rapid Access to Atomic Charges.” Tetrahedron 36, no. 22 (January 1, 1980): 3219–28.
        https://doi.org/10.1016/0040-4020(80)80168-2.
 
-
+    Examples
+    --------
+    >>> import numpy as np
+    >>> class ChargeProduct(_ChargeScoringFunction):
+    ...     def _score(self, pose, computed):
+    ...         r, idx, mask = computed[self.nn_dep]
+    ...         safe_idx = np.where(mask, idx, 0)
+    ...         q = self._probe_mol_charges[:, None] * self._fixed_mol_charges[safe_idx]
+    ...         return float(np.sum(np.where(mask, q / r, 0.0)))
     """
 
     def __init__(
@@ -1274,7 +1443,7 @@ class ElectroStatic(_ChargeScoringFunction):
     result in negative scores.
 
     These charges are calculated using the Gasteiger [1]_ method, using
-    :func:`~rdkit.Chem.rdPartialCharges.ComputeGasteigerCharges`.
+    `ComputeGasteigerCharges <https://www.rdkit.org/docs/source/rdkit.Chem.rdPartialCharges.html>`_.
 
     This results in the following function, where in this example the `power` is 1
     and `cap` is 10.0. The blue line shows two atoms with differently signed charges, and the red
@@ -1324,9 +1493,13 @@ class ElectroStatic(_ChargeScoringFunction):
     cap : float, default 100.0
         The maximum score for a single atom-atom interaction.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+        The maximum distance between two atoms (center to center) to take into account.
     k : int, default 100
         The number of neighbors to consider.
+
+    See Also
+    --------
+    AD4Solvation : Solvation, also from Gasteiger charges.
 
     References
     ----------
@@ -1335,7 +1508,10 @@ class ElectroStatic(_ChargeScoringFunction):
        Rapid Access to Atomic Charges.” Tetrahedron 36, no. 22 (January 1, 1980): 3219–28.
        https://doi.org/10.1016/0040-4020(80)80168-2.
 
-
+    Examples
+    --------
+    >>> from pyrite.scoring import ElectroStatic
+    >>> electrostatics = ElectroStatic(ligand, receptor, power=2)
     """
 
     def __init__(
@@ -1408,7 +1584,7 @@ class AD4Solvation(_ChargeScoringFunction):
         u(r) + a(r) + b(r)
 
     Here :math:`c_a` and :math:`c_b` are the gasteiger charges [1]_ of the two atoms, calculated
-    using :func:`~rdkit.Chem.rdPartialCharges.ComputeGasteigerCharges`. :math:`q` determines
+    using `ComputeGasteigerCharges <https://www.rdkit.org/docs/source/rdkit.Chem.rdPartialCharges.html>`_. :math:`q` determines
     how charge-dependent the value is, and :math:`\sigma` describes the the width of the gaussian
     used.
 
@@ -1466,9 +1642,13 @@ class AD4Solvation(_ChargeScoringFunction):
     s_q : float, default 0.01097
         Describes how charge-dependent the score is.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+        The maximum distance between two atoms (center to center) to take into account.
     k : int, default 100
         The number of neighbors to consider.
+
+    See Also
+    --------
+    ElectroStatic : Electrostatics from Gasteiger charges.
 
     References
     ----------
@@ -1477,6 +1657,10 @@ class AD4Solvation(_ChargeScoringFunction):
        Rapid Access to Atomic Charges.” Tetrahedron 36, no. 22 (January 1, 1980): 3219–28.
        https://doi.org/10.1016/0040-4020(80)80168-2.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import AD4Solvation
+    >>> solvation = AD4Solvation(ligand, receptor)
     """
 
     def __init__(
@@ -1614,7 +1798,7 @@ class _PLP(_KNNScoringFunction, ABC):
     fixed_mol : Mol
         The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+        The maximum distance between two atoms (center to center) to take into account.
     k : int, default 100
         The number of neighbors to consider.
 
@@ -1623,6 +1807,11 @@ class _PLP(_KNNScoringFunction, ABC):
     PlantsPLP
         For a piecewise linear potential implementation like in the PLANTS docking suite.
 
+    Examples
+    --------
+    >>> import numpy as np
+    >>> r = np.linspace(0.0, 7.0, 8)
+    >>> _PLP.potential_two_piece(r, (2.0, 6.0, 1.0, 5.0))  # a, b, c, d
     """
 
     def __init__(
@@ -1646,7 +1835,7 @@ class _PLP(_KNNScoringFunction, ABC):
 
     @staticmethod
     def potential_four_piece(r, values):
-        r"""Calculates a four-piece linear potential based on `values`.
+        r"""Calculate a four-piece linear potential based on `values`.
 
         The potential is calculated as follows:
 
@@ -1703,14 +1892,23 @@ class _PLP(_KNNScoringFunction, ABC):
         Returns
         -------
         numpy.ndarray
+            The potential of every value, of the same shape as `values`.
 
+        See Also
+        --------
+        potential_two_piece : The two-piece potential.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> _PLP.potential_four_piece(np.array([1.0, 3.5, 5.0]), (3.4, 3.6, 4.5, 5.5, -0.4, 20.0))
         """
         a, b, c, d, e, f = values
         return _four_piece_kernel(r, a, b, c, d, e, f)
 
     @staticmethod
     def potential_two_piece(r, values):
-        r"""Calculates a two-piece linear potential based on `values`.
+        r"""Calculate a two-piece linear potential based on `values`.
 
         The potential is calculated as follows:
 
@@ -1761,7 +1959,16 @@ class _PLP(_KNNScoringFunction, ABC):
         Returns
         -------
         numpy.ndarray
+            The potential of every value, of the same shape as `values`.
 
+        See Also
+        --------
+        potential_four_piece : The four-piece potential.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> _PLP.potential_two_piece(np.array([1.0, 3.0, 7.0]), (2.0, 6.0, 1.0, 5.0))
         """
         a, b, c, d = values
         return _two_piece_kernel(r, a, b, c, d)
@@ -1847,9 +2054,13 @@ class PlantsPLP(_PLP):
     weights : array_like, default (-4.0, -7.0, -0.05, -0.40, 0.50)
         A tuple or list containing the weights for each interaction type.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
+        The maximum distance between two atoms (center to center) to take into account.
     k : int, default 100
         The number of neighbors to consider.
+
+    See Also
+    --------
+    Gaussian : The Vina-like terms, an alternative to PLP.
 
     References
     ----------
@@ -1858,6 +2069,10 @@ class PlantsPLP(_PLP):
         Journal of Chemical Information and Modeling 49, no. 1 (January 26, 2009): 84–96.
         https://doi.org/10.1021/ci800298z.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import PlantsPLP
+    >>> plp = PlantsPLP(ligand, receptor)
     """
 
     def __init__(

@@ -8,4 +8,5 @@ Pyrite User Guide
     ligand
     receptor
     scoring_function
+    writing_scoring_functions
     example_workflow

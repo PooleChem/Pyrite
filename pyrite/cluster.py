@@ -1,4 +1,19 @@
-"""Clustering of poses by RMSD, and selection of a representative of every cluster."""
+"""
+==================================
+Clustering (:mod:`pyrite.cluster`)
+==================================
+
+.. currentmodule:: pyrite.cluster
+
+Clustering of poses by RMSD, and selection of a representative of every cluster: for
+example the distinct, best-scoring poses at the end of a search.
+
+.. autosummary::
+   :toctree: generated/
+
+   rmsd_matrix
+   cluster_and_select
+"""
 
 from __future__ import annotations
 
@@ -46,6 +61,17 @@ def rmsd_matrix(
     numpy.ndarray
         A symmetric array of shape ``(n_poses, n_poses)`` with the RMSD in Angstrom, and zeros on
         the diagonal.
+
+    See Also
+    --------
+    cluster_and_select : Cluster poses with this matrix.
+    pyrite.scoring.RMSD : The RMSD to one reference pose.
+
+    Examples
+    --------
+    >>> distances = rmsd_matrix(ligand, poses)
+    >>> distances.shape  # for 32 poses
+    (32, 32)
     """
     positions = mol.pose_to_positions(poses)
     n, n_atoms, _ = positions.shape
@@ -123,6 +149,10 @@ def cluster_and_select(
     numpy.ndarray
         The indices into `poses` of the selected poses, ordered from the lowest to the highest
         score. Use ``poses[indices]`` and ``scores[indices]`` to get them.
+
+    See Also
+    --------
+    rmsd_matrix : The RMSD between all pairs of poses.
 
     Examples
     --------

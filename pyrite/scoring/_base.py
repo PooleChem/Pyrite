@@ -33,6 +33,61 @@ class ScoringFunction(ABC):
         This is an abstract base class and should thus be subclassed. Please refer to the Notes
         section for more information on how to do this.
 
+    See Also
+    --------
+    pyrite.Mol : The molecule whose poses are scored.
+    pyrite.scoring.grid.GridScore : A fast approximation of KNN-based scoring functions.
+    pyrite.search.BasinHopping : Search for the pose with the lowest score.
+
+    Notes
+    -----
+    A scoring function implements ``_score(pose, computed)``, which returns the score of one pose
+    as a float. The simplest one computes everything itself, from the pose, with
+    ``self.mol.pose_to_positions(pose)`` or ``self.mol.to_rdkit(pose)``. Everything else is
+    optional:
+
+    * ``get_dependencies()`` lists :class:`~pyrite.scoring.dependencies.Dependency` objects whose
+      results ``_score`` reads from `computed`. Use these to share an expensive computation
+      between terms, such as one nearest neighbor search for all terms on the same receptor.
+    * ``_batch_scores(poses, computed_batch)`` scores many poses at once. The default calls
+      ``_score`` for every pose.
+    * ``_score_and_gradient(pose, computed)`` returns the score and its gradient with respect to
+      the pose. The default uses finite differences. With the gradient per atom position, use
+      :meth:`Mol.pose_gradient <pyrite.Mol.pose_gradient>`.
+
+    The conformance tests in ``tests/test_contracts.py`` check a new scoring function
+    automatically once it is registered there, including its gradient. The user guide page
+    :doc:`/user_guide/writing_scoring_functions` walks through all of this with examples.
+
+    Examples
+    --------
+    Scoring functions are combined with arithmetic, into one scoring function that shares its
+    work (one nearest neighbor search for all terms on the same receptor):
+
+    >>> from pyrite import Mol
+    >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+    >>> receptor = Mol.from_pdb("receptor.pdb")
+    >>> from pyrite.scoring import Gaussian, Hydrophobic, NonDirHBond, NumTors, Repulsion
+    >>> vina_like = (
+    ...     -0.035579 * Gaussian(ligand, receptor, offset=0.0, width=0.5)
+    ...     - 0.005156 * Gaussian(ligand, receptor, offset=3.0, width=2.0)
+    ...     + 0.840245 * Repulsion(ligand, receptor)
+    ...     - 0.035069 * Hydrophobic(ligand, receptor)
+    ...     - 0.587439 * NonDirHBond(ligand, receptor)
+    ... ) / (1 + 0.0585 * NumTors(ligand))
+    >>> vina_like.get_score(ligand.input_pose)
+
+    A new scoring function implements ``_score``:
+
+    >>> import numpy as np
+    >>> from pyrite.scoring import ScoringFunction
+    >>> class RadiusOfGyration(ScoringFunction):
+    ...     def __init__(self, mol):
+    ...         self.mol = mol
+    ...
+    ...     def _score(self, pose, computed):
+    ...         positions = self.mol.pose_to_positions(pose)
+    ...         return float(np.sqrt(((positions - positions.mean(axis=0)) ** 2).sum(axis=1).mean()))
     """
 
     def __init__(
@@ -41,8 +96,9 @@ class ScoringFunction(ABC):
         pass
 
     def _resolved_dependencies(self) -> list[Dependency]:
-        """The merged dependencies. Cached: this only depends on the (fixed) composition of the
-        scoring function.
+        """Return the merged dependencies of this scoring function.
+
+        Cached: this only depends on the (fixed) composition of the scoring function.
         """
         opt_deps = getattr(self, "_opt_deps_cache", None)
         if opt_deps is None:
@@ -53,7 +109,7 @@ class ScoringFunction(ABC):
     def get_score(
         self, pose: Pose | NDArray, subscores: dict[ScoringFunction, float] | None = None
     ) -> float:
-        """Retrieves the score of a pose.
+        """Retrieve the score of a pose.
 
         This method first retrieves all dependencies of this ``ScoringFunction`` instance, merges
         them, and then resolves them for the pose. It then calls the ``_score`` function, which
@@ -77,8 +133,19 @@ class ScoringFunction(ABC):
 
         Returns
         -------
-        score : float
+        float
             The score associated with the pose.
+
+        See Also
+        --------
+        batch_scores : Score many poses at once.
+        get_score_and_gradient : The score and its gradient.
+
+        Examples
+        --------
+        >>> score = scoring_function.get_score(ligand.input_pose)
+        >>> subscores = {}
+        >>> score = scoring_function.get_score(pose, subscores=subscores)  # the score of every term
         """
         realized = Realization(pose, batched=False)
         # _NarrowingComputed, not a plain dict: opt_deps holds one representative
@@ -110,6 +177,16 @@ class ScoringFunction(ABC):
         -------
         NDArray
             One score per pose, same order as `poses`.
+
+        See Also
+        --------
+        get_score : Score one pose.
+        pyrite.Poses : A batch of poses.
+
+        Examples
+        --------
+        >>> scores = scoring_function.batch_scores(poses)
+        >>> best = poses[np.argmin(scores)]
         """
         realized = Realization(poses, batched=True)
         computed_batch = _NarrowingComputed(
@@ -137,6 +214,23 @@ class ScoringFunction(ABC):
         gradient : ndarray
             Shape ``(n_dims,)``: the derivative of the score with respect to every pose variable,
             in the layout of the pose.
+
+        See Also
+        --------
+        get_score : Only the score.
+        pyrite.search.BasinHopping : Takes this function with ``jac=True``.
+        pyrite.Mol.pose_gradient : For terms with an analytic gradient.
+
+        Examples
+        --------
+        >>> score, gradient = scoring_function.get_score_and_gradient(pose)
+        >>> from scipy.optimize import minimize
+        >>> result = minimize(
+        ...     lambda v: scoring_function.get_score_and_gradient(Pose(v, ligand.layout)),
+        ...     np.asarray(pose),
+        ...     jac=True,
+        ...     method="L-BFGS-B",
+        ... )
         """
         realized = Realization(pose, batched=False)
         computed = _NarrowingComputed(
@@ -160,11 +254,33 @@ class ScoringFunction(ABC):
         known; with the gradient per atom position (``dS/dx``), ``self.mol.pose_gradient`` gives
         the gradient with respect to the pose.
 
+        Parameters
+        ----------
+        pose : Pose, ndarray
+            The pose for which to calculate the score and gradient.
+        computed : dict[Dependency, Any]
+            The computed dependencies, as for ``_score``.
+
         Returns
         -------
         score : float
+            The score of `pose`.
         gradient : ndarray
-            Shape ``(n_dims,)``.
+            The gradient with respect to the pose variables, of shape ``(n_dims,)``.
+
+        See Also
+        --------
+        get_score_and_gradient : The score of a pose and its gradient.
+        pyrite.Mol.pose_gradient : Turn a gradient per atom into a gradient per pose variable.
+
+        Examples
+        --------
+        >>> def _score_and_gradient(self, pose, computed):
+        ...     positions = self.mol.pose_to_positions(pose)
+        ...     offsets = positions - self.target
+        ...     score = float((offsets**2).sum())
+        ...     forces = 2 * offsets  # dS/dx of every atom
+        ...     return score, self.mol.pose_gradient(pose, positions, forces)
         """
         values = np.asarray(pose, dtype=np.float64)
         layout = getattr(pose, "layout", None)
@@ -191,15 +307,26 @@ class ScoringFunction(ABC):
         poses : Poses, ndarray
             The poses to score.
         computed_batch : dict[Dependency, Any]
-            The batched equivalent of ``_score``'s `computed` — supplied by
-            ``batch_scores``, with a leading ``n_poses`` axis on everything. The default
-            implementation calls ``_score`` for every pose on its own entry of it
-            (``computed_batch.row(i)``), so the dependencies are still computed once for the
-            whole batch; subclasses override this method to do better than one-at-a-time.
+            The computed dependencies of the whole batch, supplied by ``batch_scores``: like
+            `computed` of ``_score``, with a leading ``n_poses`` axis on everything. The default
+            calls ``_score`` for every pose, on ``computed_batch.row(i)``, so the dependencies are
+            still computed once for the whole batch.
 
         Returns
         -------
-        NDArray
+        numpy.ndarray
+            One score per pose, of shape ``(n_poses,)``.
+
+        See Also
+        --------
+        batch_scores : Score many poses at once.
+        _score : Score one pose.
+
+        Examples
+        --------
+        >>> def _batch_scores(self, poses, computed_batch):
+        ...     positions = self.mol.pose_to_positions(poses)  # (n_poses, n_atoms, 3)
+        ...     return np.linalg.norm(positions - self.target, axis=2).sum(axis=1)
         """
         return np.array([self._score(pose, computed_batch.row(i)) for i, pose in enumerate(poses)])
 
@@ -223,6 +350,15 @@ class ScoringFunction(ABC):
         Returns
         -------
         Clamp
+            A scoring function that clamps the scores of this one.
+
+        See Also
+        --------
+        pyrite.scoring.Clamp : The same, as a class.
+
+        Examples
+        --------
+        >>> repulsion = Repulsion(ligand, receptor).clamp(max_score=10.0)
         """
         return Clamp(self, min_score, max_score)
 
@@ -258,27 +394,43 @@ class ScoringFunction(ABC):
         Returns
         -------
         float
+            The score of `pose`.
+
+        See Also
+        --------
+        get_score : Score a pose.
+        _batch_scores : Score many poses at once (optional).
+        _score_and_gradient : The score and its gradient (optional).
+
+        Examples
+        --------
+        >>> def _score(self, pose, computed):
+        ...     positions = self.mol.pose_to_positions(pose)
+        ...     return float(np.linalg.norm(positions - self.target, axis=1).sum())
         """
 
     def get_dependencies(self) -> list[Dependency]:
         """Get the dependencies of this scoring function.
 
-        This method returns a list of the :class:`~pyrite.scoring.dependencies.Dependency` that are
-        used in this scoring function.
-
-        When combining scoring functions, this method returns every dependency of every combined
-        scoring function — deliberately a ``list``, not a ``set``: two dependencies can compare
-        equal (same ``group_key``, e.g. same point cloud/query — enough to be merged into one
-        shared computation) while still being different instances with different parameters (e.g.
-        ``k``/cutoff) that each need their own narrowed view back (see
-        :meth:`~pyrite.scoring.dependencies.Dependency.narrow`). A ``set`` would silently collapse
-        those down to one arbitrary survivor before :meth:`~pyrite.scoring.dependencies.Dependency.merge_all`
-        ever saw the others. ``merge_all`` does its own grouping/deduplication downstream and works
-        fine with a list that has such "duplicates" in it.
+        A composite returns the dependencies of all its terms, in a ``list``. Two dependencies
+        that compare equal are merged into one computation, but can still need different results
+        back (another ``k`` or cutoff, see
+        :meth:`~pyrite.scoring.dependencies.Dependency.narrow`): a ``set`` would silently keep
+        only one of them.
 
         Returns
         -------
-        list
+        list of Dependency
+            The dependencies, possibly with ones that compare equal.
+
+        See Also
+        --------
+        pyrite.scoring.dependencies.Dependency : Shared, expensive computations.
+
+        Examples
+        --------
+        >>> def get_dependencies(self):
+        ...     return [self.nn_dep]
         """
         return []
 
@@ -415,6 +567,30 @@ class _CombinedScoringFunction(ScoringFunction):  # pylint: disable=too-few-publ
         return total
 
     def _score_field(self, r, idx, atom_type):
+        """Score points of a given atom type, see ``_KNNScoringFunction._score_field``.
+
+        :meta public:
+
+        Parameters
+        ----------
+        r, idx : numpy.ndarray
+            The distances to, and indices of, the nearest neighbors of every point.
+        atom_type : AtomType or numpy.ndarray
+            One atom type for all points, or one per point.
+
+        Returns
+        -------
+        numpy.ndarray
+            The score of every point.
+
+        See Also
+        --------
+        pyrite.scoring.grid.GridScore : Evaluates this on the vertices of a grid.
+
+        Examples
+        --------
+        >>> scores = composite._score_field(r, idx, AtomType.NitrogenAcceptor)
+        """
         # pylint: disable=protected-access
         total = np.zeros(len(r))
         for func in self.funcs:
@@ -549,6 +725,30 @@ class _ScaledScoringFunction(ScoringFunction):
         return score
 
     def _score_field(self, r, idx, atom_type):
+        """Score points of a given atom type, see ``_KNNScoringFunction._score_field``.
+
+        :meta public:
+
+        Parameters
+        ----------
+        r, idx : numpy.ndarray
+            The distances to, and indices of, the nearest neighbors of every point.
+        atom_type : AtomType or numpy.ndarray
+            One atom type for all points, or one per point.
+
+        Returns
+        -------
+        numpy.ndarray
+            The score of every point.
+
+        See Also
+        --------
+        pyrite.scoring.grid.GridScore : Evaluates this on the vertices of a grid.
+
+        Examples
+        --------
+        >>> scores = composite._score_field(r, idx, AtomType.NitrogenAcceptor)
+        """
         # pylint: disable=protected-access
 
         left_val = self.left
@@ -599,6 +799,9 @@ class Clamp(ScoringFunction):
     """
     Clamps the output of a scoring function.
 
+    Use it to keep one term from dominating a composite, for example a repulsion that explodes when
+    two atoms overlap. The gradient is zero where the score is clamped.
+
     Parameters
     ----------
     scoring_function : ScoringFunction
@@ -614,6 +817,14 @@ class Clamp(ScoringFunction):
     ValueError
         If `min_score` is greater than `max_score`.
 
+    See Also
+    --------
+    ScoringFunction.clamp : The same, as a method.
+
+    Examples
+    --------
+    >>> from pyrite.scoring import Clamp, Repulsion
+    >>> repulsion = Clamp(Repulsion(ligand, receptor), max_score=10.0)
     """
 
     def __init__(
@@ -659,6 +870,30 @@ class Clamp(ScoringFunction):
         return score
 
     def _score_field(self, r, idx, atom_type):
+        """Score points of a given atom type, see ``_KNNScoringFunction._score_field``.
+
+        :meta public:
+
+        Parameters
+        ----------
+        r, idx : numpy.ndarray
+            The distances to, and indices of, the nearest neighbors of every point.
+        atom_type : AtomType or numpy.ndarray
+            One atom type for all points, or one per point.
+
+        Returns
+        -------
+        numpy.ndarray
+            The score of every point.
+
+        See Also
+        --------
+        pyrite.scoring.grid.GridScore : Evaluates this on the vertices of a grid.
+
+        Examples
+        --------
+        >>> scores = composite._score_field(r, idx, AtomType.NitrogenAcceptor)
+        """
         # pylint: disable=protected-access
         return np.clip(
             self.scoring_function._score_field(r, idx, atom_type),
@@ -691,6 +926,15 @@ class ConstantTerm(ScoringFunction):
     constant : float
         The value of the constant term.
 
+    See Also
+    --------
+    ScoringFunction : Scoring functions are combined with ``+``, ``-``, ``*``, ``/`` and ``**``.
+
+    Examples
+    --------
+    >>> from pyrite.scoring import ConstantTerm, Gaussian
+    >>> shifted = Gaussian(ligand, receptor) + 1.5  # makes a ConstantTerm(1.5)
+    >>> explicit = Gaussian(ligand, receptor) + ConstantTerm(1.5)
     """
 
     def __init__(self, constant: float):
@@ -703,6 +947,30 @@ class ConstantTerm(ScoringFunction):
         return self.constant, np.zeros(len(np.asarray(pose)))
 
     def _score_field(self, r, idx, atom_type):
+        """Score points of a given atom type, see ``_KNNScoringFunction._score_field``.
+
+        :meta public:
+
+        Parameters
+        ----------
+        r, idx : numpy.ndarray
+            The distances to, and indices of, the nearest neighbors of every point.
+        atom_type : AtomType or numpy.ndarray
+            One atom type for all points, or one per point.
+
+        Returns
+        -------
+        numpy.ndarray
+            The score of every point.
+
+        See Also
+        --------
+        pyrite.scoring.grid.GridScore : Evaluates this on the vertices of a grid.
+
+        Examples
+        --------
+        >>> scores = composite._score_field(r, idx, AtomType.NitrogenAcceptor)
+        """
         return np.full(len(r), self.constant)
 
     def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
@@ -713,7 +981,7 @@ class _RDKitScoringFunction(ScoringFunction, ABC):
     """Base class for scoring functions that need a real RDKit conformer of the molecule.
 
     Implement ``_score(pose, computed)`` as for any scoring function, and read the posed molecule
-    with ``computed[self.rdkit_dep]``: an :class:`~rdkit.Chem.rdchem.Mol` copy of ``self.mol`` with
+    with ``computed[self.rdkit_dep]``: an :class:`rdkit.Chem.rdchem.Mol` copy of ``self.mol`` with
     the pose as its only conformer (``confId=-1``), which is private to this call and may be used
     freely. It is made by a shared :class:`~pyrite.scoring.dependencies.RDKitDependency`, so any
     number of these terms in one composite share one copy per pose, and ``self.mol`` is never
@@ -723,6 +991,19 @@ class _RDKitScoringFunction(ScoringFunction, ABC):
     ----------
     mol : Mol
         The molecule to make a conformer of.
+
+    See Also
+    --------
+    pyrite.scoring.dependencies.RDKitDependency : Makes the posed copy.
+    pyrite.Mol.to_rdkit : An RDKit copy with a pose, outside scoring.
+
+    Examples
+    --------
+    >>> from rdkit.Chem import Descriptors3D
+    >>> class RadiusOfGyrationRDKit(_RDKitScoringFunction):
+    ...     def _score(self, pose, computed):
+    ...         posed = computed[self.rdkit_dep]
+    ...         return Descriptors3D.RadiusOfGyration(posed)
     """
 
     def __init__(self, mol: Mol):

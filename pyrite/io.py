@@ -1,4 +1,18 @@
-"""Reading and preparing input files."""
+"""
+==============================
+Input files (:mod:`pyrite.io`)
+==============================
+
+.. currentmodule:: pyrite.io
+
+Reading and preparing input files. Molecules themselves are loaded with
+:meth:`Mol.from_pdb <pyrite.Mol.from_pdb>`, :meth:`~pyrite.Mol.from_sdf` and friends.
+
+.. autosummary::
+   :toctree: generated/
+
+   fix_receptor_pdb
+"""
 
 import os
 import tempfile
@@ -27,6 +41,17 @@ def fix_receptor_pdb(pdb_file: str, out_file: str | None = None, keep_water: boo
     -------
     str
         The path of the repaired PDB file.
+
+    See Also
+    --------
+    pyrite.Mol.from_pdb : Load the repaired file.
+
+    Examples
+    --------
+    >>> import os
+    >>> fixed = fix_receptor_pdb("receptor.pdb")
+    >>> receptor = Mol.from_pdb(fixed)
+    >>> os.unlink(fixed)
     """
     try:
         from openmm.app import PDBFile

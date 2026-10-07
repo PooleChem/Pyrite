@@ -82,7 +82,18 @@ class Bounds(ABC):
         The rotation of the bounding box in Euler angles or a 3x3 rotation matrix. Defaults to
         no rotation.
 
+    See Also
+    --------
+    RectangularBounds : A box.
+    Pocket : A binding pocket of alpha spheres.
+    pyrite.search.place_in : Place a molecule in bounds.
 
+    Examples
+    --------
+    >>> from pyrite.bounds import RectangularBounds
+    >>> box = RectangularBounds(10.0, at=(5.0, 8.0, 23.0))
+    >>> box.is_within((5.0, 8.0, 23.0))
+    True
     """
 
     # Bounding box centered at the origin. Smallest box that contains the whole bounds.
@@ -173,7 +184,7 @@ class Bounds(ABC):
         )
 
     def get_translation_bounds(self) -> list[tuple[float, float]]:
-        """Returns the translation bounds of the ``Bounds`` object.
+        """Return the translation bounds of the ``Bounds`` object.
 
         This method determines the minimum and maximum coordinates for the translation
         bounds within the bounding box, considering its current alignment and rotation.
@@ -185,6 +196,14 @@ class Bounds(ABC):
             A list of tuples where each tuple represents the minimum and
             maximum bounds along a coordinate axis.
 
+        See Also
+        --------
+        get_bounds : The bounds of every pose variable.
+        pyrite.search.random_hop : Keeps hops inside these.
+
+        Examples
+        --------
+        >>> (x_min, x_max), (y_min, y_max), (z_min, z_max) = box.get_translation_bounds()
         """
         self.__compute_rotated_boundingbox()
         return list(
@@ -195,7 +214,10 @@ class Bounds(ABC):
         )
 
     def is_within(self, p: tuple[float, float, float]) -> bool:
-        """Checks if a given point lies within the bounding box of the object.
+        """Check if a given point lies within the bounds.
+
+        Points on the surface are within. The position of a pose is the position of its center atom,
+        so a ligand whose center atom is within can still reach outside.
 
         Parameters
         ----------
@@ -205,7 +227,16 @@ class Bounds(ABC):
         Returns
         -------
         bool
+            Whether `p` lies within the bounds.
 
+        See Also
+        --------
+        distance : How far outside a point is.
+
+        Examples
+        --------
+        >>> box.is_within(ligand.position)
+        True
         """
         p = self._world_to_bounds(p)
 
@@ -231,7 +262,16 @@ class Bounds(ABC):
         Returns
         -------
         float
+            The squared distance from `p` to the surface of the bounds, 0 inside them.
 
+        See Also
+        --------
+        distance : The distance.
+
+        Examples
+        --------
+        >>> RectangularBounds(10.0).squared_distance((7.0, 0.0, 0.0))
+        4.0
         """
 
     def distance(self, p: tuple[float, float, float]) -> float:
@@ -248,13 +288,24 @@ class Bounds(ABC):
         Returns
         -------
         float
+            The distance from `p` to the surface of the bounds, 0 inside them.
 
+        See Also
+        --------
+        squared_distance : The squared distance.
+        is_within : Whether a point is inside.
+
+        Examples
+        --------
+        >>> box = RectangularBounds(10.0)  # from -5 to 5 on every axis
+        >>> box.distance((7.0, 0.0, 0.0))
+        2.0
         """
         return np.sqrt(self.squared_distance(p))
 
     @abstractmethod
     def transform_sample_to_bounds(self, v: NDArray) -> NDArray:
-        """Transforms a sample point to the specified bounds.
+        """Transform a sample point to the specified bounds.
 
         This method maps a sample point `v`, with shape ``(3,)`` or a list of sample points `v`,
         with shape ``(3,n)`` onto the target bounds, ensuring that the transformation adheres to
@@ -271,6 +322,14 @@ class Bounds(ABC):
         -------
         numpy.ndarray
             An array with a shape equal to `v` representing the transformed sample points.
+
+        See Also
+        --------
+        place_random_uniform : Uses this.
+
+        Examples
+        --------
+        >>> points = box.transform_sample_to_bounds(rng.uniform(size=(100, 3)))
         """
 
     # einsum instead of matmul: these are 3x3 rotations, for which a BLAS matrix product gains
@@ -284,6 +343,9 @@ class Bounds(ABC):
     def place_random_uniform(self, n: int = 1, rng: np.random.Generator | None = None) -> NDArray:
         """Sample `n` positions uniformly at random within the bounds.
 
+        Uniform in the volume of the shape: for a sphere, more positions far from the center than
+        close to it.
+
         Parameters
         ----------
         n : int, default 1
@@ -296,12 +358,27 @@ class Bounds(ABC):
         numpy.ndarray
             An array of shape ``(n, 3)`` with the positions.
 
+        See Also
+        --------
+        place_grid : A regular grid.
+        pyrite.Poses.from_parts : Combine positions with rotations and torsions.
+
+        Examples
+        --------
+        >>> positions = box.place_random_uniform(100, rng=np.random.default_rng(0))
+        >>> positions.shape
+        (100, 3)
         """
         rng = np.random.default_rng() if rng is None else rng
         return self.transform_sample_to_bounds(rng.random((n, 3)))
 
     def place_grid(self, n: int = 1) -> NDArray:
         """Generate a regular grid of positions within the bounds.
+
+        `n` is the number of points along every axis, so the result has ``n ** 3`` positions:
+        ``place_grid(10)`` gives 1000, ``place_grid(1000)`` a billion. For shapes other than a box,
+        the regular grid of the unit cube is mapped into the shape, so the positions are not evenly
+        spaced there.
 
         Parameters
         ----------
@@ -313,6 +390,15 @@ class Bounds(ABC):
         numpy.ndarray
             An array of shape ``(n ** 3, 3)`` with the positions.
 
+        See Also
+        --------
+        place_random_uniform : Random positions.
+        pyrite.search.place_in : Place a molecule.
+
+        Examples
+        --------
+        >>> box.place_grid(10).shape
+        (1000, 3)
         """
         axes = [np.linspace(0, 1, n)] * 3
         x, y, z = np.meshgrid(*axes, indexing="ij")
@@ -369,6 +455,15 @@ class Bounds(ABC):
             One ``(min, max)`` tuple for each of the ``layout.n_dims`` variables, in the order of
             the layout.
 
+        See Also
+        --------
+        get_translation_bounds : Only the translation.
+        pyrite.search.BasinHopping : Passes these to L-BFGS-B.
+
+        Examples
+        --------
+        >>> bounds = box.get_bounds(ligand.layout)
+        >>> minimize(score, x0, method="L-BFGS-B", bounds=bounds)
         """
         if rotation_bounds is None:
             rotation_bounds = (-1.0, 1.0) if layout.rot_type == "quat" else (-2 * np.pi, 2 * np.pi)
@@ -383,6 +478,9 @@ class Bounds(ABC):
 class RectangularBounds(Bounds):
     """Represents a rectangular bounding box in a 3D coordinate system.
 
+    The usual docking box. :meth:`autobox` makes one around a molecule, for example the crystal
+    ligand.
+
     Parameters
     ----------
     s : array_like, float
@@ -394,7 +492,14 @@ class RectangularBounds(Bounds):
         The rotation of the rectangle in Euler angles or a 3x3 rotation matrix. Defaults to
         no rotation.
 
+    See Also
+    --------
+    autobox : A box around a molecule.
+    SphericalBounds : A sphere.
 
+    Examples
+    --------
+    >>> box = RectangularBounds((20.0, 20.0, 24.0), at=(5.2, 8.0, 23.2))
     """
 
     def __init__(
@@ -415,7 +520,7 @@ class RectangularBounds(Bounds):
     # TODO: consider rotation. Ja?
     @classmethod
     def autobox(cls, mol: Mol, padding: float = 0.0):
-        """Creates an instance of the class based on the given molecule with optional padding.
+        """Create an instance of the class based on the given molecule with optional padding.
 
         .. warning::
             The created bounding box is always aligned to the world axes.
@@ -432,7 +537,14 @@ class RectangularBounds(Bounds):
         -------
         RectangularBounds
 
+        See Also
+        --------
+        Pocket.intersect : Restrict a pocket to the box.
 
+        Examples
+        --------
+        >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+        >>> box = RectangularBounds.autobox(ligand, padding=4.0)
         """
         # conf = mol.GetConformer()
         # points = np.empty((mol.GetNumAtoms(), 3))
@@ -465,6 +577,8 @@ class RectangularBounds(Bounds):
 class SphericalBounds(Bounds):
     """Represents a spherical bounding 'box' in a 3D coordinate system.
 
+    The `rotation` does not change the sphere, but it is kept, as for the other shapes.
+
     Parameters
     ----------
     r : float
@@ -475,6 +589,14 @@ class SphericalBounds(Bounds):
         The rotation of the rectangle in Euler angles or a 3x3 rotation matrix. Defaults to
         no rotation.
 
+    See Also
+    --------
+    RectangularBounds : A box.
+    CylindricalBounds : A cylinder.
+
+    Examples
+    --------
+    >>> sphere = SphericalBounds(8.0, at=ligand.position)
     """
 
     r = 0
@@ -525,6 +647,8 @@ class SphericalBounds(Bounds):
 class CylindricalBounds(Bounds):
     """Represents a cylindrical bounding 'box' in a 3D coordinate system.
 
+    The axis of the cylinder is the y axis of the bounds, turned by `rotation`.
+
     Parameters
     ----------
     h : float
@@ -537,6 +661,14 @@ class CylindricalBounds(Bounds):
         The rotation of the rectangle in Euler angles or a 3x3 rotation matrix. Defaults to
         no rotation.
 
+    See Also
+    --------
+    RectangularBounds : A box.
+    SphericalBounds : A sphere.
+
+    Examples
+    --------
+    >>> channel = CylindricalBounds(h=20.0, r=4.0, at=(0.0, 0.0, 0.0), rotation=[0.0, 0.0, np.pi / 2])
     """
 
     r = 0
@@ -604,9 +736,17 @@ class Pocket(Bounds):
         The radii of the alpha spheres.
     charges : array_like, default None
         The charges of the alpha spheres. This can be used to assign weights to specific alpha
-        spheres in a :class:`ScoringFunction`. Defaults to zeros.
+        spheres in a :class:`~pyrite.scoring.ScoringFunction`. Defaults to zeros.
 
+    See Also
+    --------
+    Pocket.from_mol : Detect a pocket on a receptor.
+    pyrite.scoring.DistanceToPocket : Keep a ligand in a pocket.
 
+    Examples
+    --------
+    >>> pocket = Pocket.from_mol(receptor).intersect(box, padding=2.0)
+    >>> pocket.to_pqr("pocket.pqr")
     """
 
     __default_draw_options = {
@@ -654,7 +794,7 @@ class Pocket(Bounds):
         weight_cap: int = 12,
         solvent_accessible: bool = True,
     ):
-        """Creates a ``Pocket`` from a :class:`~pyrite.Mol`.
+        """Create a ``Pocket`` from a :class:`~pyrite.Mol`.
 
         This method creates a grid, and fills the space with alpha spheres. These spheres are
         optionally assigned a weight based on their distance to certain residues. The closer to the
@@ -755,8 +895,8 @@ class Pocket(Bounds):
             If `weigh_center` is ``True``, spheres that are further away from the protein (read:
             closer to the pocket center), will get a higher weight.
         weigh_depth : bool, default True
-            If `weight_depth` is ``True``, spheres that are further away from the outside shell
-            (read: deeper inside the pocket), will get a higher weight. TODO: multiplier
+            If `weigh_depth` is ``True``, spheres that are further away from the outside shell
+            (read: deeper inside the pocket), will get a higher weight.
         leq_distance_to_protein : int, default 4
             A filter for the distance to the protein. Spheres that are further away will be removed.
         gt_distance_to_outside : int, default 8
@@ -776,6 +916,16 @@ class Pocket(Bounds):
         Returns
         -------
         Pocket
+
+        See Also
+        --------
+        intersect : Keep the part near the binding site.
+        from_pqr : Load a pocket from a file.
+
+        Examples
+        --------
+        >>> receptor = Mol.from_pdb("receptor.pdb")
+        >>> pocket = Pocket.from_mol(receptor, gt_distance_to_outside=10, solvent_accessible=False)
         """
         tree = KDTree(mol.positions)
 
@@ -957,7 +1107,7 @@ class Pocket(Bounds):
 
     @classmethod
     def from_pqr(cls, pqr_file: str):
-        """Loads a ``Pocket`` from a PQR file.
+        """Load a ``Pocket`` from a PQR file.
 
         The centers of the spheres, their radii and charges are read from the PQR file.
 
@@ -969,6 +1119,14 @@ class Pocket(Bounds):
         Returns
         -------
         Pocket
+
+        See Also
+        --------
+        to_pqr : Write a pocket.
+
+        Examples
+        --------
+        >>> pocket = Pocket.from_pqr("pocket.pqr")
         """
         centers, radii, charges = cls.__parse_pqr(pqr_file)
         return cls(centers, radii, charges)
@@ -979,11 +1137,21 @@ class Pocket(Bounds):
     ):
         """Write the ``Pocket`` to a PQR file.
 
+        A PQR file can be read back with :meth:`from_pqr`, and shown in molecular viewers such as
+        PyMOL: the weights are written as charges.
+
         Parameters
         ----------
         pqr_file : str
             The path of the PQR file to write to.
 
+        See Also
+        --------
+        from_pqr : Read a pocket.
+
+        Examples
+        --------
+        >>> pocket.to_pqr("pocket.pqr")
         """
         atom_name = "SPH"
         res_name = "SPH"
@@ -1099,6 +1267,16 @@ class Pocket(Bounds):
         Returns
         -------
         Pocket
+            A new pocket with only the alpha spheres within `bounds` (plus `padding`).
+
+        See Also
+        --------
+        RectangularBounds.autobox : A box around a molecule.
+
+        Examples
+        --------
+        >>> site = RectangularBounds.autobox(ligand, padding=1.0)
+        >>> pocket = Pocket.from_mol(receptor).intersect(site, padding=2.0)
         """
         i_to_remove = []
         for i, c in enumerate(self.centers):
@@ -1119,6 +1297,8 @@ class Pocket(Bounds):
     def place_random_uniform(self, n: int = 1, rng: np.random.Generator | None = None) -> NDArray:
         """Sample `n` positions uniformly at random within the pocket.
 
+        Uniform in the volume of the alpha spheres.
+
         Parameters
         ----------
         n : int, default 1
@@ -1131,6 +1311,13 @@ class Pocket(Bounds):
         numpy.ndarray
             An array of shape ``(n, 3)`` with the positions.
 
+        See Also
+        --------
+        pyrite.search.place_in : Place a molecule in a pocket.
+
+        Examples
+        --------
+        >>> positions = pocket.place_random_uniform(1000, rng=np.random.default_rng(0))
         """
         rng = np.random.default_rng() if rng is None else rng
         bounding_box = RectangularBounds(self._bounding_box_at_origin, self._at)

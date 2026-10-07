@@ -12,16 +12,16 @@ class DistanceToPocket(ScoringFunction):
     """
     🚄 — Calculates the distance between all atoms of the ligand and a pocket.
 
-    This class uses a :class:`~pyrite.Pocket` object, which contains a number of alpha spheres describing
+    This class uses a :class:`~pyrite.bounds.Pocket` object, which contains a number of alpha spheres describing
     the pocket. The distances to these alpha spheres are determined using a
-    :class:`~scipy.spatial.KDTree` via a :class:`~pyrite.scoring.KNNDependency`.
+    :class:`~scipy.spatial.KDTree` via a :class:`~pyrite.scoring.dependencies.KNNDependency`.
 
     The score of this class is the sum of distances of all atoms of the ligand to the nearest
     alpha sphere in the pocket.
 
     .. warning::
-        Currently, this class only supports :class:`~pyrite.Pocket` where the radius of each alpha
-        sphere is equal. Using a :class:`~pyrite.Pocket` where this is not the case may result in
+        Currently, this class only supports :class:`~pyrite.bounds.Pocket` where the radius of each alpha
+        sphere is equal. Using a :class:`~pyrite.bounds.Pocket` where this is not the case may result in
         unwanted results.
 
 
@@ -35,7 +35,20 @@ class DistanceToPocket(ScoringFunction):
     pocket : Pocket
         The pocket to be used for the calculation.
 
+    See Also
+    --------
+    pyrite.bounds.Pocket : A binding pocket made of alpha spheres.
+    WeightedBoundsOverlap : The overlap with a pocket, weighted.
 
+    Examples
+    --------
+    >>> from pyrite.bounds import Pocket
+    >>> from pyrite.scoring import DistanceToPocket
+    >>> from pyrite import Mol
+    >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+    >>> receptor = Mol.from_pdb("receptor.pdb")
+    >>> pocket = Pocket.from_mol(receptor)
+    >>> stay_in_pocket = DistanceToPocket(ligand, pocket)
     """
 
     def __init__(
@@ -75,8 +88,7 @@ class DistanceToPocket(ScoringFunction):
 
 class WeightedBoundsOverlap(ScoringFunction):
     """
-    🚗 — Calculates the overlap between a ligand and a pocket. The overlap is weighted by the
-    weights of the alpha spheres.
+    🚗 — Calculates the overlap between a ligand and a pocket, weighted by the alpha spheres.
 
     This class uses a :class:`~pyrite.bounds.Pocket` object, which contains a number of alpha spheres
     describing the pocket. When the :class:`~pyrite.bounds.Pocket` is acquired from a ``pqr`` file,
@@ -104,6 +116,15 @@ class WeightedBoundsOverlap(ScoringFunction):
         This value is an optional multiplier of the maximum charge of the pocket. Any point outside
         the pocket is assigned this weight.
 
+    See Also
+    --------
+    DistanceToPocket : The distance to a pocket.
+    pyrite.bounds.Pocket : A binding pocket made of alpha spheres.
+
+    Examples
+    --------
+    >>> from pyrite.scoring import WeightedBoundsOverlap
+    >>> overlap = WeightedBoundsOverlap(ligand, pocket, outside_penalty=1.0)
     """
 
     def __init__(
@@ -179,6 +200,12 @@ class OutOfBoundsPenalty(ScoringFunction):
     DistanceToPocket
         To calculate the distance to a :class:`~pyrite.bounds.Pocket`.
 
+    Examples
+    --------
+    >>> from pyrite.bounds import RectangularBounds
+    >>> from pyrite.scoring import OutOfBoundsPenalty
+    >>> box = RectangularBounds.autobox(ligand, padding=4.0)
+    >>> stay_in_box = OutOfBoundsPenalty(ligand, box)
     """
 
     def __init__(self, molecule: Mol, bounds: Bounds):

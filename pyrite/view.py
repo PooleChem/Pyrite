@@ -17,17 +17,28 @@ from pyrite.atom_consts import AtomType
 class Viewer:
     """Visualisation class.
 
-    Allows for the easy visualization of pyrite objects.
+    Allows for the easy visualization of pyrite objects in a Jupyter notebook (also in VSCode
+    and PyCharm), using py3Dmol.
 
     Parameters
     ----------
     *args : Mol, Bounds
         All arguments are considered as objects to show.
     width : int, default 400
-        The width of the viewer.
+        The width of the viewer, in pixels.
     height : int, default 400
-        The height of the viewer.
+        The height of the viewer, in pixels.
+    options : dict, optional
+        The draw options for all objects in `args`, see :meth:`add`.
 
+    See Also
+    --------
+    pyrite.Mol.viewer : A viewer of one molecule.
+    pyrite.Mol.set_draw_options : How a molecule is drawn.
+
+    Examples
+    --------
+    >>> Viewer(receptor, ligand, pocket).show()
     """
 
     _HOVER_LABEL_IDX_JS_CALLBACK = """function(atom,viewer,event,container) {
@@ -66,7 +77,7 @@ class Viewer:
         self._view_state_key = f"pyrite_view_state_{id(self)}"
 
     def add(self, *args, options=None):
-        """Adds all positional arguments to the viewer.
+        """Add all positional arguments to the viewer.
 
         This method adds all arguments to the viewer, optionally with draw options `options`.
 
@@ -79,13 +90,29 @@ class Viewer:
         ----------
         *args : Mol, Bounds
             The objects to add.
-        options : dictionary
-            The draw options to apply.
+        options : dict, optional
+            The draw options to apply, on top of the object's own ``draw_options``. The key
+            ``"note"`` adds a label when hovering over an atom: ``"idx"`` (the atom index),
+            ``"type"`` (the Pyrite atom type) or ``"res"`` (the residue).
 
         Returns
         -------
         Viewer
+            This viewer, so calls can be chained.
 
+        Raises
+        ------
+        ValueError
+            If an argument cannot be shown (it has no ``_viewer_add_`` method).
+
+        See Also
+        --------
+        add_v : Add a molecule with poses.
+
+        Examples
+        --------
+        >>> viewer = Viewer(receptor)
+        >>> viewer.add(ligand, pocket, options={"note": "idx"}).show()
         """
         for arg in args:
             if not callable(getattr(arg, "_viewer_add_", None)):
@@ -124,28 +151,36 @@ class Viewer:
         # self.view.update()
 
     def add_v(self, mol: Mol, v: NDArray, slider: bool = True, options=None):
-        """Adds a molecule with poses, and an optional pose selection slider, to the viewer.
+        """Add a molecule with poses, and an optional pose selection slider, to the viewer.
 
-        This method adds a molecule, with poses `v`, to the viewer,
-        optionally with draw options `options`. Optionally, a `slider` can be added, which allows
-        for the selection of the displayed pose. If `slider` is ``False``, all poses are shown.
+        This method adds a molecule, with poses `v`, to the viewer, optionally with draw options
+        `options`. Optionally, a `slider` can be added, which allows for the selection of the
+        displayed pose. If `slider` is ``False``, all poses are shown.
 
         Parameters
         ----------
         mol : Mol
-            The objects to add.
-        v : numpy.ndarray
-            The poses to show.
+            The molecule the poses belong to.
+        v : Poses or numpy.ndarray
+            The poses to show, in the layout of `mol`.
         slider : bool, default True
-            Whether the pose selection slider is shown. If `slider` is ``False``,
-            all poses are shown.
-        options : dictionary
-            The draw options to apply.
+            Whether the pose selection slider is shown. If `slider` is ``False``, all poses are
+            shown at once.
+        options : dict, optional
+            The draw options to apply, see :meth:`add`.
 
         Returns
         -------
         Viewer
+            This viewer, so calls can be chained.
 
+        See Also
+        --------
+        add : Add objects.
+
+        Examples
+        --------
+        >>> Viewer(receptor).add_v(ligand, docked_poses).show()
         """
         if options is None:
             options = {}
@@ -248,10 +283,45 @@ class Viewer:
             )
 
     def show(self):
-        """Return a displayable widget (works in Jupyter, VSCode, and PyCharm)."""
+        """Return a displayable widget (works in Jupyter, VSCode, and PyCharm).
+
+        In a notebook, the viewer also shows itself when it is the last expression of a cell.
+
+        Returns
+        -------
+        ipywidgets.Widget
+            The viewer, with the pose slider if there is one.
+
+        See Also
+        --------
+        as_widget : The widget, to place in a layout.
+
+        Examples
+        --------
+        >>> Viewer(receptor, ligand).show()
+        """
         return self.as_widget()
 
     def as_widget(self):
+        """Return the viewer as an ipywidgets widget, to place in a layout of your own.
+
+        The widget is built once and then reused, so the pose slider keeps updating the same
+        viewer.
+
+        Returns
+        -------
+        ipywidgets.Widget
+            The viewer, with the pose slider if there is one.
+
+        See Also
+        --------
+        show : Show the viewer.
+
+        Examples
+        --------
+        >>> import ipywidgets
+        >>> ipywidgets.HBox([Viewer(ligand).as_widget(), Viewer(receptor).as_widget()])
+        """
         # Build once, then reuse so slider callbacks update the same viewer instance
         if self._widget is None:
             self._render_iframe()

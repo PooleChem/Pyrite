@@ -26,7 +26,6 @@ def _poses(mol: Mol, n_groups: int = 6, per_group: int = 5, seed: int = 0) -> Po
     rng = np.random.default_rng(seed)
     layout = mol.layout
     base = Poses.from_parts(
-        layout,
         layout.sample_random_rotations(n_groups, rng),
         rng.uniform(-6, 6, (n_groups, 3)),
         layout.sample_random_torsions(n_groups, rng),

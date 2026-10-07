@@ -21,7 +21,7 @@ def _random_poses(mol: Mol, n: int = 10) -> Poses:
     rotations = mol.layout.sample_random_rotations(n, rng=rng)
     translations = rng.uniform(-5, 5, (n, 3))
     torsions = mol.layout.sample_random_torsions(n, rng=rng)
-    return Poses.from_parts(mol.layout, rotations, translations, torsions)
+    return Poses.from_parts(rotations, translations, torsions, layout=mol.layout)
 
 
 def test_the_input_pose_puts_every_atom_where_the_input_had_it(mol):

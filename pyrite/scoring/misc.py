@@ -12,7 +12,7 @@ class RMSD(_RDKitScoringFunction):
     """
     🚗 — Used to calculate the RMSD between two poses.
 
-    The RMSD is calculated using :func:`~rdkit.Chem.rdMolAlign.CalcRMS`, over the heavy atoms
+    The RMSD is calculated using `CalcRMS <https://www.rdkit.org/docs/source/rdkit.Chem.rdMolAlign.html>`_, over the heavy atoms
     only (the convention for docking poses): the hydrogens the molecule has, which depend on how it
     was loaded, do not change it. The poses are compared in place, without aligning them.
 
@@ -32,6 +32,18 @@ class RMSD(_RDKitScoringFunction):
         a flipped phenyl ring is not far from the pose it is a flip of. A warning is issued when
         the limit is reached, as the RMSD can then be overestimated.
 
+    See Also
+    --------
+    pyrite.cluster.rmsd_matrix : The RMSD between all pairs of poses.
+    pyrite.Mol.input_pose : The pose of the input geometry.
+
+    Examples
+    --------
+    >>> from pyrite.scoring import RMSD
+    >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)  # the crystal pose
+    >>> rmsd = RMSD(ligand)
+    >>> rmsds = rmsd.batch_scores(docked_poses)
+    >>> success = rmsds.min() < 2.0
     """
 
     def __init__(self, probe_mol: Mol, ref_mol: Mol = None, max_matches: int = 1000):
@@ -70,7 +82,7 @@ class Crowding(_RDKitScoringFunction):
 
     New poses can be registered using :meth:`register_pose`. When :meth:`get_score` is called,
     the RMSD of the :class:`~pyrite.Mol` pose to each registered pose will be calculated using
-    :func:`rdkit.Chem.rdMolAlign.CalcRMS`.
+    `CalcRMS <https://www.rdkit.org/docs/source/rdkit.Chem.rdMolAlign.html>`_.
 
     The score is calculated using the following formula:
 
@@ -102,9 +114,9 @@ class Crowding(_RDKitScoringFunction):
 
     Parameters
     ----------
-    mol : Mol
-        The mol to be used for the calculation. This is the probe molecule, i.e., the molecule
-        whose pose changes.
+    molecule : Mol
+        The molecule to be used for the calculation. This is the probe molecule, i.e., the
+        molecule whose pose changes.
     offset : float, default 4.0
         The offset used in the exponential score calculation.
     register_initial : bool, default False
@@ -114,6 +126,16 @@ class Crowding(_RDKitScoringFunction):
     max_matches : int, default 1000
         The maximum number of symmetry-equivalent atom mappings to consider, see :class:`RMSD`.
 
+    See Also
+    --------
+    RMSD : The RMSD to one reference pose.
+
+    Examples
+    --------
+    >>> from pyrite.scoring import Crowding
+    >>> crowding = Crowding(ligand, offset=4.0)
+    >>> crowding.register_pose(previous_best)
+    >>> diverse = scoring_function + crowding
     """
 
     def __init__(
@@ -143,12 +165,23 @@ class Crowding(_RDKitScoringFunction):
     def register_pose(self, v):
         """Register a new :class:`~pyrite.Mol` pose.
 
+        Every registered pose adds a term to the score, so a search is pushed away from poses that
+        were already found.
+
         Parameters
         ----------
-        v : array_like, int
-            Either a list containing the variables used to create the new pose using
-            :meth:`~pyrite.Mol.pose_to_conformer`, or a `conf_id`.
+        v : Pose, array_like or int
+            A pose (or its values), which is put on a new conformer of the reference copy with
+            :meth:`~pyrite.Mol.pose_to_conformer`, or the id of a conformer of that copy. Pass a
+            conformer id as a Python ``int``: a numpy integer is taken as a pose.
 
+        See Also
+        --------
+        Crowding : The scoring function.
+
+        Examples
+        --------
+        >>> crowding.register_pose(result.x)
         """
         if not isinstance(v, int):
             conf_id = self._ref_mol.pose_to_conformer(v, new_conf=True)
@@ -183,6 +216,9 @@ class NumProteinAtomsWithinA(ScoringFunction):
     The search is executed using a :class:`~scipy.spatial.KDTree`, on each atom of the ligand.
     Therefore, the same protein atom can be counted multiple times.
 
+    Only the atoms in the ``scoring_mask`` of the two molecules take part (by default the hydrogens
+    are left out, so the count does not depend on whether the files contain them).
+
     **Speed**: 🚶 -- 🚄, depending on ``A`` and the size of the ligand.
 
     Parameters
@@ -194,9 +230,14 @@ class NumProteinAtomsWithinA(ScoringFunction):
     a : float, default 4.0
         The radius (in Angstroms) within which to search for protein atoms.
 
-    Only the atoms in the ``scoring_mask`` of the two molecules take part (by default the hydrogens
-    are left out, so the count does not depend on whether the files contain them).
+    See Also
+    --------
+    pyrite.scoring.dependencies.KNNDependency : The nearest neighbor search of the KNN-based terms.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import NumProteinAtomsWithinA
+    >>> contacts = NumProteinAtomsWithinA(ligand, receptor, a=4.0)
     """
 
     def __init__(
@@ -223,7 +264,7 @@ class NumProteinAtomsWithinA(ScoringFunction):
 
 class NumTors(ScoringFunction):
     """
-     🚀 — Returns the number of torsions (torsion angles) in the ligand.
+    🚀 — Returns the number of torsions (torsion angles) in the ligand.
 
     **Speed**: 🚀
 
@@ -232,6 +273,15 @@ class NumTors(ScoringFunction):
     molecule : Mol
         The ligand to be used.
 
+    See Also
+    --------
+    NumAtoms : The number of atoms.
+    pyrite.Mol.n_tors : The number of torsions of a molecule.
+
+    Examples
+    --------
+    >>> from pyrite.scoring import NumTors
+    >>> vina_like = receptor_terms / (1 + 0.0585 * NumTors(ligand))  # Vina's torsion penalty
     """
 
     def __init__(self, molecule: Mol):
@@ -249,7 +299,9 @@ class NumTors(ScoringFunction):
 
 class NumAtoms(ScoringFunction):
     """
-     🚀 — Returns the number of atoms in the ligand.
+    🚀 — Returns the number of atoms in the ligand.
+
+    Only the atoms in the molecule's ``scoring_mask`` are counted: by default the heavy atoms.
 
     **Speed**: 🚀
 
@@ -258,7 +310,14 @@ class NumAtoms(ScoringFunction):
     molecule : Mol
         The ligand to be used.
 
-    Only the atoms in the molecule's ``scoring_mask`` are counted: by default the heavy atoms.
+    See Also
+    --------
+    NumTors : The number of torsions.
+
+    Examples
+    --------
+    >>> from pyrite.scoring import NumAtoms
+    >>> per_atom = scoring_function / NumAtoms(ligand)
     """
 
     def __init__(self, molecule: Mol):

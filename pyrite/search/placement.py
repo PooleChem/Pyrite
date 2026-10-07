@@ -45,7 +45,7 @@ def place_in(
         orientation.
     conformations : {'conformer', 'random'}, default 'conformer'
         The conformer generation method to use. ``conformer`` will create conformers using
-        RDKit :func:`~rdkit.Chem.rdDistGeom.EmbedMultipleConfs`. ``random`` will set
+        RDKit `EmbedMultipleConfs <https://www.rdkit.org/docs/source/rdkit.Chem.rdDistGeom.html>`_. ``random`` will set
         all torsion angles to random values, see
         :meth:`~pyrite.PoseLayout.sample_random_torsions`. This is faster, but can create
         physically impossible configurations.
@@ -68,6 +68,16 @@ def place_in(
         ``(n_positions * n_conformations, n_dims)`` when `combine` is ``grid``, in the layout
         of `mol`. RDKit can return fewer conformers than asked for, in which case the number of
         conformations is smaller.
+
+    See Also
+    --------
+    boltzmann_diversity_filter : Select starting poses from the placements.
+    pyrite.Poses.from_parts : Assemble poses yourself.
+
+    Examples
+    --------
+    >>> pocket = Pocket.from_mol(receptor).intersect(RectangularBounds.autobox(ligand, 1.0), padding=2.0)
+    >>> placements = place_in(ligand, pocket, n_positions=2000, n_conformations=20, rng=np.random.default_rng(0))
     """
     if placement not in {"random", "grid"}:
         raise ValueError("placement must be either 'random' or 'grid'")
@@ -105,7 +115,7 @@ def place_in(
         out_positions = np.repeat(positions, n_torsions, axis=0)
         out_torsions = np.tile(torsions, (n_placements, 1))
 
-    return Poses.from_parts(layout, out_rotations, out_positions, out_torsions)
+    return Poses.from_parts(out_rotations, out_positions, out_torsions, layout=layout)
 
 
 def boltzmann_diversity_filter(
@@ -150,6 +160,15 @@ def boltzmann_diversity_filter(
         At most `k` poses, in the order they were picked. Fewer than `k` are returned if
         fewer than `k` poses have a Boltzmann weight that does not underflow to zero, which can
         happen with a small explicit `T`.
+
+    See Also
+    --------
+    place_in : Make the placements to filter.
+
+    Examples
+    --------
+    >>> energies = (DistanceToPocket(ligand, pocket) + InternalOverlap(ligand)).batch_scores(placements)
+    >>> starts = boltzmann_diversity_filter(placements, energies, k=32)
     """
     energies = np.asarray(energies, dtype=float)
     n = len(poses)

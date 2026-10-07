@@ -42,6 +42,17 @@ class AtomType(IntEnum):
 
     .. note::
         ``AtomType`` is derived from `gnina <https://github.com/gnina/gnina>`_.
+
+    See Also
+    --------
+    pyrite.Mol.atom_types : The atom type of every atom of a molecule.
+
+    Examples
+    --------
+    >>> from pyrite import AtomType
+    >>> AtomType.OxygenDonorAcceptor.name
+    'OxygenDonorAcceptor'
+    >>> [AtomType(t).name for t in ligand.atom_types[:3]]
     """
 
     # pylint: disable=invalid-name
@@ -77,18 +88,31 @@ class AtomType(IntEnum):
     Boron = 27
 
     def adjust(self, hbonded: bool, heterobonded: bool):
-        """
+        """Return the atom type adjusted for the bonds of the atom, as AutoDock Vina does.
+
+        A carbon bonded to a heteroatom (N, O, ...) is not hydrophobic, and a nitrogen or oxygen
+        bonded to a hydrogen is a donor. Other atom types are returned unchanged.
 
         Parameters
         ----------
-        hbonded: bool :
-
-        heterobonded: bool :
-
+        hbonded : bool
+            Whether the atom is bonded to a polar hydrogen.
+        heterobonded : bool
+            Whether the atom is bonded to a heteroatom.
 
         Returns
         -------
+        AtomType
+            The adjusted atom type.
 
+        See Also
+        --------
+        pyrite.Mol.atom_types : Uses this to type every atom.
+
+        Examples
+        --------
+        >>> AtomType.AliphaticCarbonHydrophobe.adjust(hbonded=False, heterobonded=True)
+        <AtomType.AliphaticCarbonNonHydrophobe: 3>
         """
         # Adjust aro/ali etc.
         if (

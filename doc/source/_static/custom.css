@@ -1,0 +1,12 @@
+/* No right-hand sidebar: html_sidebars is empty, so hide its column and the button that opens it. */
+.sy-rside,
+.rside-overlay,
+.sy-breadcrumbs button[aria-controls="rside"] {
+  display: none !important;
+}
+
+/* Show the project name next to the logo (Shibuya hides it when there is a logo). */
+.sy-head-brand img + strong {
+  display: inline;
+  margin-left: 0.5rem;
+}

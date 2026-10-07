@@ -17,7 +17,7 @@ def random_hop(
 
     The rotation is perturbed on SO(3) by a Gaussian rotation vector with standard deviation
     `stepsize`, composed on the left of the current rotation (see
-    :meth:`~pyrite._common.PoseLayout.compose_rotation`), so the step does not depend on the
+    :meth:`~pyrite.PoseLayout.compose_rotation`), so the step does not depend on the
     current orientation. Translation and torsions each get independent uniform noise in
     ``[-stepsize, stepsize]``. Torsions are not wrapped, since the score is periodic in them.
 
@@ -32,8 +32,19 @@ def random_hop(
 
     Returns
     -------
-    hop : callable
+    callable
         ``hop(pose, rng, stepsize) -> pose_new``. Returns a new pose, `pose` is not modified.
+
+    See Also
+    --------
+    BasinHopping : Uses the hop.
+    pyrite.bounds.Bounds.get_translation_bounds : The translation bounds.
+
+    Examples
+    --------
+    >>> box = RectangularBounds.autobox(ligand, padding=1.0)
+    >>> hop = random_hop(box.get_translation_bounds())
+    >>> new_pose = hop(pose, np.random.default_rng(0), 0.5)
     """
     bounds = None if translation_bounds is None else np.asarray(translation_bounds, dtype=float)
 
@@ -64,8 +75,18 @@ def geometric_annealing(T_start: float, T_end: float) -> Callable[[int, int], fl
 
     Returns
     -------
-    T : callable
+    callable
         ``T(i, niter) -> float``, the temperature of hop `i` (0-based) in a run of `niter` hops.
+
+    See Also
+    --------
+    BasinHopping : Takes the schedule as `T`.
+
+    Examples
+    --------
+    >>> T = geometric_annealing(2.0, 0.1)
+    >>> T(0, 50)  # the first hop; the last, T(49, 50), is 0.1
+    2.0
     """
 
     def T(i: int, niter: int) -> float:
@@ -106,10 +127,18 @@ def adaptive_stepsize(
 
     Returns
     -------
-    adapt : callable
+    callable
         ``adapt(stepsize, accepted, i) -> stepsize``, where `accepted` is the boolean acceptance
         history of the hops before hop `i`. It is a pure function; the state lives in
         :meth:`BasinHopping.run`, so one rule can be shared between runs.
+
+    See Also
+    --------
+    BasinHopping : Takes the rule as `adapt_stepsize`.
+
+    Examples
+    --------
+    >>> hopping = BasinHopping(func, hop, T=1.0, stepsize=0.5, adapt_stepsize=adaptive_stepsize(target_rate=0.4))
     """
 
     def adapt(stepsize: float, accepted: NDArray, i: int) -> float:
@@ -141,7 +170,7 @@ class BasinHopping:
     Parameters
     ----------
     func : callable
-        The objective, ``func(pose) -> float``, taking a :class:`~pyrite._common.Pose`. Lower
+        The objective, ``func(pose) -> float``, taking a :class:`~pyrite.Pose`. Lower
         is better. For example ``scoring_function.get_score``.
     hop : callable
         The hop, ``hop(pose, rng, stepsize) -> pose_new``. It must return a new pose rather than
@@ -163,6 +192,13 @@ class BasinHopping:
         The single source of randomness, passed to `hop` and used for acceptance, so one
         seed reproduces a whole run. Defaults to a fresh generator (which, unlike the global
         ``np.random`` state, is not duplicated across forked worker processes).
+
+    See Also
+    --------
+    random_hop : The standard hop.
+    geometric_annealing : A temperature schedule.
+    adaptive_stepsize : A step size rule.
+    pyrite.search.place_in : Make starting poses.
 
     Examples
     --------
@@ -202,6 +238,10 @@ class BasinHopping:
     def run(self, x0: Pose, niter: int) -> OptimizeResult[str, Any]:
         """Run `niter` hops from `x0`.
 
+        The starting pose is minimized first. The step size and the acceptance history start afresh
+        in every run, so one ``BasinHopping`` can be used for many starting poses; the random
+        generator is shared, so the runs differ.
+
         Parameters
         ----------
         x0 : Pose
@@ -213,7 +253,7 @@ class BasinHopping:
         Returns
         -------
         scipy.optimize.OptimizeResult
-            With ``x`` (a :class:`~pyrite._common.Pose`) and ``fun`` of the best minimum found,
+            With ``x`` (a :class:`~pyrite.Pose`) and ``fun`` of the best minimum found,
             ``nit`` (the number of hops), and one entry per hop, each an array of length
             `niter`, so that the run can be inspected afterwards:
 
@@ -222,8 +262,20 @@ class BasinHopping:
             - ``temperatures``: the temperature used in the hop's acceptance test.
             - ``scores``: the score of the minimum reached from the hop, whether or not it was
               accepted. (The score of the starting minimum is not included.)
-            - ``poses``: the minimum reached from the hop, as a :class:`~pyrite._common.Poses`
+            - ``poses``: the minimum reached from the hop, as a :class:`~pyrite.Poses`
               in the layout of `x0`, row for row with ``scores``.
+
+        See Also
+        --------
+        pyrite.Poses.from_list : Collect the results of several runs.
+        pyrite.cluster.cluster_and_select : Select the best distinct poses.
+
+        Examples
+        --------
+        >>> results = [hopping.run(pose, niter=50) for pose in starts]
+        >>> best = min(results, key=lambda result: result.fun)
+        >>> best.x, best.fun
+        >>> accepted_fraction = results[0].accepted.mean()
         """
         layout = x0.layout
 

@@ -402,7 +402,6 @@ def _clustered_poses(n: int, layout: PoseLayout, seed: int = 0):
     translation = centers[rng.integers(0, 6, n)] + rng.normal(scale=1.0, size=(n, 3))
     energies = rng.gamma(2.0, 3.0, n) - 10 + 0.7 * np.linalg.norm(translation, axis=1)
     poses = Poses.from_parts(
-        layout,
         layout.sample_random_rotations(n, rng),
         translation,
         layout.sample_random_torsions(n, rng),
@@ -504,7 +503,6 @@ def test_diversity_filter_selects_on_translation_for_every_layout():
     euler, energies = _clustered_poses(300, PoseLayout("euler", 3), seed=4)
     quat_layout = PoseLayout("quat", 3)
     quat = Poses.from_parts(
-        quat_layout,
         quat_layout.sample_random_rotations(300, np.random.default_rng(9)),
         euler.translation,
         euler.torsions,

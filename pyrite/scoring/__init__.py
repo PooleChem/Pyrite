@@ -5,85 +5,32 @@ Scoring Functions (:mod:`pyrite.scoring`)
 
 .. currentmodule:: pyrite.scoring
 
-The ``pyrite.scoring`` namespace holds all objects related to the scoring of ligand poses, as well
-as utilities that can be used to manipulate, create, and implement new scoring functions.
+The ``pyrite.scoring`` namespace holds all objects related to the scoring of poses, as well as
+utilities that can be used to manipulate, create, and implement new scoring functions.
+
+Combining scoring functions
+---------------------------
+
+Every scoring function is a :class:`ScoringFunction`. They are combined with ``+``, ``-``,
+``*``, ``/`` and ``**`` into one scoring function, which shares the work of its terms.
 
 .. autosummary::
    :toctree: generated/
 
    ScoringFunction
-   ConstantTerm
    Clamp
-
-.. _ligand_scoring_functions:
-
-Singular molecule Scoring Functions
-------------------------
-
-This class of functions scores based on just the :class:`~pyrite.Mol` pose.
-
-.. autosummary::
-   :toctree: generated/
-
-   InternalOverlap
-   InternalEnergy
-
-
-.. _bounds_scoring_functions:
-
-Bounds Scoring Functions
-------------------------
-
-These functions are based on the position of the atoms in the :class:`~pyrite.Mol`
-relative to indicated :class:`~pyrite.bounds.Bounds`.
-
-.. autosummary::
-   :toctree: generated/
-
-   OutOfBoundsPenalty
-   DistanceToPocket
-   WeightedBoundsOverlap
-
+   ConstantTerm
 
 .. _protein_scoring_functions:
 
-Protein based Scoring Functions
--------------------------------
+Ligand-receptor scoring functions
+---------------------------------
 
-These functions are based on the position of the atoms in one :class:`~pyrite.Mol`
-relative to a different :class:`~pyrite.Mol`. This class of functions can lead to biochemically more
-accurate representations, but in turn require more computational power. Currently, these scoring
-functions only operate on molecule pairs where one molecule is fixed.
+These functions score the atoms of one :class:`~pyrite.Mol` (the ligand, whose pose changes)
+against their nearest neighbors in a fixed :class:`~pyrite.Mol` (the receptor). The terms on the
+same receptor share one nearest neighbor search.
 
-.. autosummary::
-   :toctree: generated/
-
-   LJ
-   PlantsPLP
-
-
-Abstract Functions
-++++++++++++++++++
-
-These functions implement commonly used distance functions, that can be used to create new
-scoring functions. They are abstract, and thus can/should not be used without subclassing.
-
-.. autosummary::
-   :toctree: generated/
-
-   ~protein._KNNScoringFunction
-   ~protein._SlopeStep
-   ~protein._PLP
-   ~protein._ChargeScoringFunction
-
-
-Vina based Scoring Functions
-++++++++++++++++++++++++++++
-
-These functions are based on the vina scoring function, specifically, the
-`gnina <https://github.com/gnina/gnina>`_ implementation. Currently, these scoring
-functions only operate on molecule pairs where one molecule is fixed.
-
+Vina-like terms, after the `gnina <https://github.com/gnina/gnina>`_ implementation of Vina:
 
 .. autosummary::
    :toctree: generated/
@@ -93,43 +40,109 @@ functions only operate on molecule pairs where one molecule is fixed.
    Hydrophobic
    NonHydrophobic
    NonDirHBond
-   VDW
-   NonDirHBondLJ
-   ElectroStatic
-   AD4Solvation
 
-
-
-Constants
----------
+Lennard-Jones terms:
 
 .. autosummary::
    :toctree: generated/
 
+   LJ
+   VDW
+   NonDirHBondLJ
+
+Terms based on Gasteiger charges:
+
+.. autosummary::
+   :toctree: generated/
+
+   ElectroStatic
+   AD4Solvation
+
+The PLANTS piecewise linear potential, and a count of receptor contacts:
+
+.. autosummary::
+   :toctree: generated/
+
+   PlantsPLP
+   NumProteinAtomsWithinA
+
+Grid scoring
+------------
+
+A KNN-based scoring function can be computed once on a grid around the binding site, and
+interpolated during a search: much faster, with an analytic gradient. Import it from
+``pyrite.scoring.grid``.
+
+.. autosummary::
+   :toctree: generated/
+
+   ~grid.GridScore
+
+.. _ligand_scoring_functions:
+
+Ligand-only scoring functions
+-----------------------------
+
+These functions only depend on the pose of the ligand itself: its internal clashes and energy, or
+a count that is the same for every pose.
+
+.. autosummary::
+   :toctree: generated/
+
+   InternalOverlap
+   InternalEnergy
    NumTors
    NumAtoms
 
+.. _bounds_scoring_functions:
+
+Binding site scoring functions
+------------------------------
+
+These functions keep the ligand in a binding site: they depend on the position of its atoms
+relative to :class:`~pyrite.bounds.Bounds` or a :class:`~pyrite.bounds.Pocket`.
+
+.. autosummary::
+   :toctree: generated/
+
+   DistanceToPocket
+   WeightedBoundsOverlap
+   OutOfBoundsPenalty
 
 .. _misc_scoring_functions:
 
-Miscellaneous
--------------
+Comparing poses
+---------------
 
 .. autosummary::
    :toctree: generated/
 
    RMSD
    Crowding
-   NumProteinAtomsWithinA
 
+Building blocks for new scoring functions
+-----------------------------------------
+
+These abstract classes implement what a family of scoring functions shares, so that a new one
+only implements what is different: a kernel of the distance, which atom pairs count, or a score
+from an RDKit molecule. They cannot be used without subclassing. How to write a new scoring
+function, with these or from scratch, is explained in :doc:`/user_guide/writing_scoring_functions`.
+
+.. autosummary::
+   :toctree: generated/
+
+   ~protein._KNNScoringFunction
+   ~protein._SlopeStep
+   ~protein._ChargeScoringFunction
+   ~protein._PLP
+   ~_base._RDKitScoringFunction
 
 Dependencies
 ------------
 
 The :mod:`~pyrite.scoring.dependencies` module holds all objects related to
-:class:`~pyrite.scoring.dependencies.Dependency`, which
-is used to limit the number of expensive operations performed during scoring.
-
+:class:`~pyrite.scoring.dependencies.Dependency`, which is used to share expensive computations
+between scoring functions, so that they are only done once.
 
 """
 

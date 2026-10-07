@@ -118,7 +118,7 @@ def test_from_parts_round_trip():
     translation = rng.normal(size=(6, 3))
     torsions = layout.sample_random_torsions(6, rng)
 
-    poses = Poses.from_parts(layout, rotation, translation, torsions)
+    poses = Poses.from_parts(rotation, translation, torsions, layout=layout)
 
     assert len(poses) == 6 and poses.layout == layout
     assert np.array_equal(poses.rotation, rotation)
@@ -172,3 +172,34 @@ def test_conformer_torsions_are_embedded_with_temporary_hydrogens():
     assert np.all(np.abs(configurations) <= np.pi + 1e-9)
     assert mol.rdkit.ToBinary() == before and mol.n_atoms == mol.rdkit.GetNumAtoms()
     assert not np.allclose(configurations, mol.torsions)  # genuinely different conformers
+
+
+@pytest.mark.parametrize("rot_dim, rot_type", [(3, "euler"), (4, "quat")])
+def test_from_parts_infers_the_layout(rot_dim, rot_type):
+    rng = np.random.default_rng(0)
+    rotation, translation, torsions = (
+        rng.normal(size=(5, rot_dim)),
+        rng.normal(size=(5, 3)),
+        rng.normal(size=(5, 2)),
+    )
+
+    poses = Poses.from_parts(rotation, translation, torsions)
+
+    assert poses.layout == PoseLayout(rot_type, 2)
+    assert np.array_equal(poses.rotation, rotation) and np.array_equal(poses.torsions, torsions)
+    assert Poses.from_parts(rotation, translation).layout == PoseLayout(rot_type, 0)  # rigid
+
+
+def test_from_parts_rejects_parts_that_do_not_fit():
+    rng = np.random.default_rng(0)
+    with pytest.raises(ValueError, match="3 .Euler angles. or 4"):
+        Poses.from_parts(rng.normal(size=(5, 5)), rng.normal(size=(5, 3)))
+    with pytest.raises(ValueError, match="agree"):
+        Poses.from_parts(rng.normal(size=(5, 3)), rng.normal(size=(4, 3)))
+    with pytest.raises(ValueError, match="do not fit"):
+        Poses.from_parts(
+            rng.normal(size=(5, 3)),
+            rng.normal(size=(5, 3)),
+            rng.normal(size=(5, 2)),
+            layout=PoseLayout("euler", 3),
+        )

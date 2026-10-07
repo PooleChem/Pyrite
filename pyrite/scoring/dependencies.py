@@ -40,16 +40,16 @@ Notes
 -----
 To subclass ``Dependency``, the following methods should be implemented:
 
-:meth:`~Dependency.compute(realized)`
+:meth:`~Dependency.compute`
     In this method the expensive operation should be executed. `realized` is a
     :class:`Realization` of the pose (or batch of poses) being scored, which hands out the atom
     positions (:meth:`Realization.positions`) or a private RDKit copy
     (:meth:`Realization.rdkit`) of any :class:`~pyrite.Mol`, computed at most once per
     scoring call.
-:meth:`~Dependency.group_key(dep)`
+:meth:`~Dependency.group_key`
     This method should map a group of dependencies to the same key, i.e., all dependencies that
     return the same `group_key` are combined by :meth:`~Dependency.merge_group`.
-:meth:`~Dependency.merge_group(deps)`
+:meth:`~Dependency.merge_group`
     This method is responsible for merging a group of dependencies. The input is a group of
     dependencies that are deemed equal by :meth:`~Dependency.group_key`. The output should be
     a single dependency.
@@ -88,7 +88,28 @@ class Dependency(ABC):
         implementations. To implement a new :class:`Dependency`,
         please refer to :mod:`~pyrite.scoring.dependencies`.
 
+    See Also
+    --------
+    KNNDependency : A shared nearest neighbor search.
+    PositionDependency : The atom positions of a molecule.
+    RDKitDependency : An RDKit copy of a molecule with the pose as its conformer.
 
+    Examples
+    --------
+    >>> class CentroidDependency(Dependency):
+    ...     def __init__(self, mol):
+    ...         self.mol = mol
+    ...
+    ...     def compute(self, realized):
+    ...         return realized.positions(self.mol).mean(axis=-2)
+    ...
+    ...     @classmethod
+    ...     def group_key(cls, dep):
+    ...         return dep.mol  # one computation per molecule
+    ...
+    ...     @classmethod
+    ...     def merge_group(cls, deps):
+    ...         return deps[0]
     """
 
     @abstractmethod
@@ -105,41 +126,46 @@ class Dependency(ABC):
         Returns
         -------
         Any
+            The result, which scoring functions read as ``computed[dependency]``.
+
+        See Also
+        --------
+        Realization : The pose(s) being scored.
+        narrow : The part of a merged result that one dependency asked for.
+
+        Examples
+        --------
+        >>> def compute(self, realized):
+        ...     return realized.positions(self.mol).mean(axis=-2)
         """
         pass
 
     def narrow(self, computed: Any) -> Any:
-        """Narrow a computed result down to what *this* dependency instance asked for.
+        """Narrow a computed result down to what this dependency asked for.
 
-        Dependencies that share a ``group_key`` are merged (see :meth:`merge_all`)
-        into one shared computation, run at whichever parameters cover every member
-        of the group (e.g. the widest ``k``/cutoff among them, for
-        :class:`KNNDependency`) — so the raw result handed back by that shared
-        computation can be wider than what any *individual* dependency in the group
-        actually needs. ``narrow`` is called with that raw, possibly-wider result
-        and should return the view specific to ``self`` — the default here is the
-        identity (nothing to narrow), correct for any dependency type that doesn't
-        have this "computed once, wide; used many times, narrower" shape.
-
-        .. note::
-            This must be resolved per dependency *instance*, not once per merged
-            group — two dependencies in the same group can have the same
-            ``group_key`` (so they merge and share one computation) while still
-            wanting different narrowed views back (e.g. different ``k``/cutoff).
-            A plain ``dict`` can't hold two different values under two keys that
-            compare equal, so this can't be precomputed into a dict keyed by
-            ``group_key`` — it has to be called per instance, on demand (see
-            ``_NarrowingComputed``).
+        Dependencies that compare equal are merged into one computation, at parameters that
+        cover all of them (for :class:`KNNDependency`: the largest ``k`` and cutoff). Every
+        dependency then gets its own view of that result back through this method. The default
+        returns the result unchanged, which is right for dependencies without such parameters.
 
         Parameters
         ----------
         computed : Any
-            The raw result from ``compute``/``compute_batch``, for this
-            dependency's merged group.
+            The result of ``compute`` for the merged group.
 
         Returns
         -------
         Any
+            The part of `computed` that this dependency asked for.
+
+        See Also
+        --------
+        KNNDependency.narrow : Keeps a term's own `k` and cutoff.
+
+        Examples
+        --------
+        >>> def narrow(self, computed):
+        ...     return computed[..., : self.k]
         """
         return computed
 
@@ -160,6 +186,15 @@ class Dependency(ABC):
         Returns
         -------
         Any
+            The result for pose `i`.
+
+        See Also
+        --------
+        pyrite.scoring.ScoringFunction._batch_scores : Its default uses this.
+
+        Examples
+        --------
+        >>> first = dependency.row(batch_result, 0)
         """
         if isinstance(computed, tuple):
             return tuple(part[i] for part in computed)
@@ -182,6 +217,16 @@ class Dependency(ABC):
         Returns
         -------
         object
+
+        See Also
+        --------
+        merge_all : Groups dependencies by this key.
+
+        Examples
+        --------
+        >>> @classmethod
+        ... def group_key(cls, dep):
+        ...     return dep.mol
         """
         pass
 
@@ -202,6 +247,18 @@ class Dependency(ABC):
         Returns
         -------
         Dependency
+
+        See Also
+        --------
+        merge_all : Calls this for every group.
+        narrow : Gives every dependency its own part back.
+
+        Examples
+        --------
+        >>> @classmethod
+        ... def merge_group(cls, deps):
+        ...     widest = max(deps, key=lambda dep: dep.k)
+        ...     return cls(widest.mol, k=widest.k)
         """
         pass
 
@@ -226,6 +283,16 @@ class Dependency(ABC):
         Returns
         -------
         Set[Dependency]
+
+        See Also
+        --------
+        group_key : Decides which dependencies are merged.
+        merge_group : Merges one group.
+
+        Examples
+        --------
+        >>> deps = scoring_function.get_dependencies()
+        >>> merged = Dependency.merge_all(deps)  # one per computation
         """
         type_key = defaultdict(list)
         for dep in deps:
@@ -238,21 +305,25 @@ class Dependency(ABC):
 
 
 class _NarrowingComputed:
-    """Wraps a ``{Dependency: raw_result}`` dict so ``computed[dep]`` returns
-    ``dep``'s own narrowed view (:meth:`Dependency.narrow`) rather than the
-    raw, possibly wider-scoped result a merged group actually computed.
+    """Hand every dependency its own view of the merged results, see :meth:`Dependency.narrow`.
 
-    This has to be resolved lazily, per lookup, not precomputed into a plain
-    dict — two dependencies in the same merged group compare equal (that's
-    what lets them share one computation) but can still want different
-    narrowed views back, and a plain dict can't hold two different values
-    under two keys that compare equal. Narrowing on each ``__getitem__`` call,
-    using the exact instance passed in (not its equivalence class), is what
-    makes ``computed[self.nn_dep]`` correct for every dependent instance
-    sharing a merged group, not just whichever happened to be computed last.
+    ``computed[dep]`` narrows on every lookup, for the exact instance asked for: a plain ``dict``
+    cannot, as dependencies that compare equal are the same key. Made by
+    :meth:`~pyrite.scoring.ScoringFunction.get_score` and ``batch_scores``; a scoring function
+    only reads from it.
 
-    Used by :meth:`~pyrite.scoring.ScoringFunction.get_score`/``batch_scores``
-    — not something a scoring function author constructs directly.
+    Parameters
+    ----------
+    raw : dict[Dependency, Any]
+        The result of every merged group, keyed by its representative.
+
+    See Also
+    --------
+    Dependency.narrow : Called on every lookup.
+
+    Examples
+    --------
+    >>> r, idx, mask = computed[self.nn_dep]  # in a scoring function's _score
     """
 
     def __init__(self, raw: dict):
@@ -262,7 +333,29 @@ class _NarrowingComputed:
         return dep.narrow(self._raw[dep])
 
     def row(self, i: int) -> _NarrowingComputed:
-        """The computed dependencies of pose `i` of a batch, as ``get_score`` would see them."""
+        """Return the computed dependencies of pose `i` of a batch, as ``get_score`` sees them.
+
+        Used by the default ``_batch_scores``, which scores a batch one pose at a time on the
+        results computed once for the whole batch.
+
+        Parameters
+        ----------
+        i : int
+            The index of the pose in the batch.
+
+        Returns
+        -------
+        _NarrowingComputed
+            The computed dependencies of that pose.
+
+        See Also
+        --------
+        Dependency.row : The result of one dependency for one pose.
+
+        Examples
+        --------
+        >>> scores = [self._score(pose, computed_batch.row(i)) for i, pose in enumerate(poses)]
+        """
         return _NarrowingComputed({dep: dep.row(value, i) for dep, value in self._raw.items()})
 
 
@@ -287,6 +380,16 @@ class Realization:
         The pose(s) to realise.
     batched : bool
         Whether `poses` is a batch (``Poses``, or a 2D array), rather than one pose.
+
+    See Also
+    --------
+    Dependency.compute : Receives this.
+    pyrite.scoring.ScoringFunction.get_score : Creates this.
+
+    Examples
+    --------
+    >>> realized = Realization(pose, batched=False)
+    >>> realized.positions(ligand).shape  # (n_atoms, 3)
     """
 
     def __init__(self, poses, batched: bool):
@@ -296,23 +399,58 @@ class Realization:
         self._rdkit: dict[Mol, Chem.Mol | list[Chem.Mol]] = {}
 
     def positions(self, mol: Mol) -> NDArray:
-        """The atom positions of `mol` for the pose(s).
+        """Return the atom positions of `mol` for the pose(s), computed once per molecule.
+
+        Every dependency that asks for the same molecule gets the same array, so it is computed once
+        per call.
+
+        Parameters
+        ----------
+        mol : Mol
+            The molecule the pose(s) belong to.
 
         Returns
         -------
-        NDArray
+        numpy.ndarray
             Shape ``(n_atoms, 3)``, or ``(n_poses, n_atoms, 3)`` for a batch.
+
+        See Also
+        --------
+        rdkit : An RDKit copy with the pose.
+        pyrite.Mol.pose_to_positions : Computes the positions.
+
+        Examples
+        --------
+        >>> positions = realized.positions(ligand)
         """
         if mol not in self._positions:
             self._positions[mol] = mol.pose_to_positions(self.poses)
         return self._positions[mol]
 
     def rdkit(self, mol: Mol) -> Chem.Mol | list[Chem.Mol]:
-        """A private RDKit copy of `mol` that has the pose as its (only) conformer.
+        """Return a private RDKit copy of `mol` with the pose as its only conformer.
 
-        One :class:`~rdkit.Chem.rdchem.Mol` for a single pose, or a list of them for a batch. The
-        copies are the caller's to use freely: they are not shared with anything else, and the
+        The copies are the caller's to use freely: they are not shared with anything else, and the
         molecule being scored is not touched.
+
+        Parameters
+        ----------
+        mol : Mol
+            The molecule the pose(s) belong to.
+
+        Returns
+        -------
+        rdkit.Chem.rdchem.Mol or list of rdkit.Chem.rdchem.Mol
+            One copy for a single pose, or a list of them for a batch.
+
+        See Also
+        --------
+        positions : Only the positions, without RDKit.
+
+        Examples
+        --------
+        >>> posed = realized.rdkit(ligand)
+        >>> posed.GetConformer().GetPositions().shape  # (n_atoms, 3)
         """
         if mol not in self._rdkit:
             positions = self.positions(mol)
@@ -338,6 +476,15 @@ class PositionQuery:
         The molecule to get the positions of.
     mask : array_like[bool], optional
         Only the atoms where this is true. All atoms by default.
+
+    See Also
+    --------
+    KNNDependency : Queries with this.
+
+    Examples
+    --------
+    >>> query = PositionQuery(ligand, mask=ligand.scoring_mask)
+    >>> query(realization).shape  # the positions of the scored atoms
     """
 
     def __init__(self, mol: Mol, mask=None):
@@ -363,13 +510,23 @@ class PositionQuery:
 class PositionDependency(Dependency):
     """The atom positions of a molecule, for scoring functions that need them directly.
 
-    Computed in numpy from the pose, or read from the RDKit conformer if some other term already
-    made one. Shape ``(n_atoms, 3)``, or ``(n_poses, n_atoms, 3)`` for a batch.
+    Computed in numpy from the pose, once per molecule and call, however many terms ask. Shape
+    ``(n_atoms, 3)``, or ``(n_poses, n_atoms, 3)`` for a batch.
 
     Parameters
     ----------
     mol : Mol
         The molecule to get the positions of.
+
+    See Also
+    --------
+    Realization.positions : Where the positions come from.
+    pyrite.Mol.pose_to_positions : Computes them.
+
+    Examples
+    --------
+    >>> self.position_dep = PositionDependency(self.mol)  # in __init__
+    >>> positions = computed[self.position_dep]  # in _score
     """
 
     def __init__(self, mol: Mol):
@@ -388,10 +545,11 @@ class PositionDependency(Dependency):
 
 
 class RDKitDependency(Dependency):
-    """A private RDKit copy of a molecule with the pose as its conformer, for scoring functions
-    that need RDKit itself.
+    """A private RDKit copy of a molecule with the pose as its conformer.
 
-    The result is an :class:`~rdkit.Chem.rdchem.Mol` with one conformer (the default one,
+    For scoring functions that need RDKit itself.
+
+    The result is an :class:`rdkit.Chem.rdchem.Mol` with one conformer (the default one,
     ``confId=-1``): a list of them for a batch. It is shared by every term that depends on the
     same molecule, so a composite of several RDKit-based terms makes one copy per pose. It is a
     copy, so a term may do anything to it, and the scored :class:`~pyrite.Mol` is never touched.
@@ -400,6 +558,16 @@ class RDKitDependency(Dependency):
     ----------
     mol : Mol
         The molecule to make the posed copy of.
+
+    See Also
+    --------
+    pyrite.scoring._base._RDKitScoringFunction : The base class of RDKit-based terms.
+    pyrite.Mol.to_rdkit : An RDKit copy with a pose, outside scoring.
+
+    Examples
+    --------
+    >>> self.rdkit_dep = RDKitDependency(self.mol)  # in __init__
+    >>> posed = computed[self.rdkit_dep]  # in _score: an RDKit molecule with the pose
     """
 
     def __init__(self, mol: Mol):
@@ -423,6 +591,14 @@ class KDTreeCache:  # pylint: disable=too-few-public-methods
 
     Can be used to store KDTrees and access them globally.
 
+    See Also
+    --------
+    KNNDependency : Builds its tree through this cache.
+
+    Examples
+    --------
+    >>> tree = KDTreeCache.get_tree(hash(points.tobytes()), points)
+    >>> distances, indices = tree.query(query_points, k=10)
     """
 
     _trees: dict[int | str, KDTree] = {}
@@ -444,6 +620,14 @@ class KDTreeCache:  # pylint: disable=too-few-public-methods
         Returns
         -------
         KDTree
+
+        See Also
+        --------
+        scipy.spatial.KDTree : The tree.
+
+        Examples
+        --------
+        >>> tree = KDTreeCache.get_tree(key, receptor.get_positions())
         """
         tree = cls._trees.get(key)
         if tree is None:
@@ -454,7 +638,7 @@ class KDTreeCache:  # pylint: disable=too-few-public-methods
 
 class KNNDependency(Dependency):
     """
-    k-Nearest Neighbors Dependency.
+    K-nearest neighbors dependency.
 
     This :class:`Dependency` is used to retrieve the nearest neighbors of a given list of points,
     based on a :class:`~scipy.spatial.KDTree` build from a point cloud.
@@ -470,9 +654,6 @@ class KNNDependency(Dependency):
 
     Parameters
     ----------
-    tree_id : int, str
-        A unique identifier for the point cloud used in the dependency. This is
-        combined with the `query_f` to create the ``group_key``.
     point_cloud : NDArray
         The point cloud used to build the ``KDTree``.
     query_f : Callable[[Realization], NDArray]
@@ -485,7 +666,16 @@ class KNNDependency(Dependency):
     distance_upper_bound : float
         The upper bound of distance to consider when retrieving neighbors.
 
+    See Also
+    --------
+    PositionQuery : The points to query, from a pose.
+    pyrite.scoring.protein._KNNScoringFunction : The scoring functions built on it.
 
+    Examples
+    --------
+    >>> query = PositionQuery(ligand, mask=ligand.scoring_mask)
+    >>> nn_dep = KNNDependency(receptor.get_positions(), query, k=100, distance_upper_bound=8.0)
+    >>> r, idx, mask = computed[nn_dep]  # in a scoring function's _score
     """
 
     def __init__(
@@ -517,6 +707,10 @@ class KNNDependency(Dependency):
     ]:
         """Execute the nearest neighbor search, for one pose or for a batch at once.
 
+        All query points are searched in one call to the tree, for a batch of poses too. Neighbors
+        beyond `distance_upper_bound` are not found: their index is the number of points in the
+        tree, and the mask is false.
+
         Parameters
         ----------
         realized : Realization
@@ -531,6 +725,16 @@ class KNNDependency(Dependency):
             The indices of the nearest neighbors, same shape.
         mask : NDArray
             A boolean mask indicating which neighbors are valid, same shape.
+
+        See Also
+        --------
+        narrow : Keep the k nearest within a term's cutoff.
+        scipy.spatial.KDTree.query : The search.
+
+        Examples
+        --------
+        >>> r, idx, mask = nn_dep.compute(Realization(pose, batched=False))
+        >>> r.shape  # (n_query_points, k)
         """
         positions = self.querying(realized)
         r, idx = self.tree.query(
@@ -544,27 +748,29 @@ class KNNDependency(Dependency):
         return r, idx, (idx != self.tree.n)
 
     def narrow(self, computed):
-        """Narrow a merged group's shared query result down to this instance's
-        own `k`/`distance_upper_bound`.
+        """Keep the `k` nearest neighbors, within `distance_upper_bound`, of a merged search.
 
-        The merged/shared query (see `merge_group`) runs at the *widest* `k` and
-        `distance_upper_bound` across every dependency in the group, so a member
-        with a smaller `k` gets back extra, farther-out neighbor columns it never
-        asked for, and a member with a smaller cutoff gets back neighbors beyond
-        its own configured distance. Both need trimming back down per instance —
-        slicing to `self.k` neighbor columns (already sorted nearest-first by the
-        KDTree query, so this keeps exactly the `k` nearest) and masking out
-        anything beyond `self.distance_upper_bound`.
+        The merged search runs at the largest `k` and cutoff of its group. The neighbors are
+        sorted nearest first, so the first `k` columns are kept, and neighbors beyond this
+        dependency's cutoff are masked out.
 
         Parameters
         ----------
         computed : tuple[NDArray, NDArray, NDArray]
-            The group's raw `(r, idx, mask)`, shape `(..., k_group)` on the last
-            axis, `k_group` >= `self.k`.
+            The ``(r, idx, mask)`` of the merged search, with at least `k` neighbors.
 
         Returns
         -------
         tuple[NDArray, NDArray, NDArray]
+            The ``(r, idx, mask)`` of this dependency.
+
+        See Also
+        --------
+        merge_group : Makes the merged search.
+
+        Examples
+        --------
+        >>> r, idx, mask = nn_dep.narrow(merged_result)
         """
         r, idx, mask = computed
         r, idx, mask = r[..., : self.k], idx[..., : self.k], mask[..., : self.k]
@@ -573,7 +779,7 @@ class KNNDependency(Dependency):
 
     @classmethod
     def group_key(cls, dep):
-        """Returns the group_key identifier of a dependency.
+        """Return the group_key identifier of a dependency.
 
         The ``group_key`` of ``KNNDependency`` is a tuple containing the `tree_hash` and `querying`.
 
@@ -586,6 +792,15 @@ class KNNDependency(Dependency):
         Returns
         -------
         tuple
+
+        See Also
+        --------
+        merge_group : Merges the dependencies with the same key.
+
+        Examples
+        --------
+        >>> KNNDependency.group_key(nn_dep) == KNNDependency.group_key(other_dep)
+        True
         """
         return dep.tree_hash, dep.querying
 
@@ -605,6 +820,16 @@ class KNNDependency(Dependency):
         Returns
         -------
         Dependency
+
+        See Also
+        --------
+        narrow : Gives every dependency its own part back.
+
+        Examples
+        --------
+        >>> merged = KNNDependency.merge_group([narrow_dep, wide_dep])
+        >>> merged.k == max(narrow_dep.k, wide_dep.k)
+        True
         """
         best_k = max(deps, key=lambda d: d.k)
         best_ub = max(deps, key=lambda d: d.distance_upper_bound)
