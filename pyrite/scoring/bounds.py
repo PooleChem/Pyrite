@@ -10,7 +10,7 @@ from .dependencies import Dependency, KNNDependency, PositionDependency, Positio
 
 class DistanceToPocket(ScoringFunction):
     """
-    🚄 — Calculates the distance between all atoms of the ligand and a pocket.
+    🚗 — Calculates the distance between all atoms of the ligand and a pocket.
 
     This class uses a :class:`~pyrite.bounds.Pocket` object, which contains a number of alpha spheres describing
     the pocket. The distances to these alpha spheres are determined using a
@@ -25,7 +25,7 @@ class DistanceToPocket(ScoringFunction):
         unwanted results.
 
 
-    **Speed**: 🚄–✈️, depending on the number of alpha spheres in the pocket.
+    **Speed**: 🚗, depending on the number of alpha spheres in the pocket.
 
 
     Parameters
@@ -103,7 +103,7 @@ class WeightedBoundsOverlap(ScoringFunction):
         result in unwanted results.
 
 
-    **Speed**: 🚲–🚄, depending on the number of alpha spheres in the pocket.
+    **Speed**: 🚗, depending on the number of alpha spheres in the pocket.
 
 
     Parameters
@@ -171,14 +171,15 @@ class WeightedBoundsOverlap(ScoringFunction):
 
 class OutOfBoundsPenalty(ScoringFunction):
     """
-    🐌 — Calculates the distance between all atoms of the ligand and the bounds.
+    🚗 — Calculates the distance between all atoms of the ligand and the bounds.
 
     .. warning::
-        This class is currently very slow, as the implementation is not vectorized, nor uses a
-        :class:`~scipy.spatial.KDTree`.
+        With a :class:`~pyrite.bounds.Pocket` this class is very slow: the distance to the
+        pocket is not vectorized, nor uses a :class:`~scipy.spatial.KDTree`. For a pocket,
+        :class:`DistanceToPocket` is much faster.
 
 
-    **Speed**: 🐌
+    **Speed**: 🚗 for a box, 🐌 for a pocket.
 
 
     Parameters

@@ -249,7 +249,7 @@ def _spline_coefficients(values: np.ndarray) -> np.ndarray:
 
 class GridScore(ScoringFunction):
     """
-    🚀 — Approximates a KNN-based scoring function with a precomputed 3D grid.
+    ✈️ — Approximates a KNN-based scoring function with a precomputed 3D grid.
 
     The score of every atom type is computed once, on the vertices of a regular grid, and is
     interpolated during a search: no neighbor search and no kernels at score time. A score costs
@@ -305,6 +305,15 @@ class GridScore(ScoringFunction):
        plt.legend()
 
     .. note::
+        Only terms between ligand and receptor whose score depends on nothing but the type and
+        position of every ligand atom can be put on a grid: the terms with a ``_score_field``,
+        today :class:`~pyrite.scoring.Gaussian`, :class:`~pyrite.scoring.Repulsion`,
+        :class:`~pyrite.scoring.Hydrophobic`, :class:`~pyrite.scoring.NonHydrophobic` and
+        :class:`~pyrite.scoring.NonDirHBond`, and sums and multiples of them. The Lennard-Jones,
+        charge and PLANTS terms cannot (yet). Terms of the ligand alone, such as
+        :class:`~pyrite.scoring.InternalOverlap`, are combined with the grid instead.
+
+    .. note::
         The grid covers the translation bounds of `binding_site`, padded by the largest distance
         of any ligand atom to its center atom (so every rotation fits), plus `padding`. An atom
         outside the grid scores 0, with a gradient of 0.
@@ -315,7 +324,7 @@ class GridScore(ScoringFunction):
         ``1 / spacing``: halving the spacing makes the grid 8 times as expensive to build, and a
         larger ``k`` makes every vertex more expensive.
 
-    **Speed**: 🚀, after building.
+    **Speed**: ✈️ | batched: 🚀, after building.
 
     Parameters
     ----------
@@ -340,7 +349,8 @@ class GridScore(ScoringFunction):
     ValueError
         If `interpolation` is unknown.
     TypeError
-        If a term of `scoring_function` cannot be put on a grid (it has no ``_score_field``).
+        If a term of `scoring_function` cannot be put on a grid (it has no ``_score_field``): see
+        the note above.
 
     See Also
     --------

@@ -9,18 +9,8 @@ from numpy.typing import NDArray
 from .._common import Mol, Pose, Poses
 from .dependencies import Dependency, RDKitDependency, Realization, _NarrowingComputed
 
-# speed grade:
-"""
-<= 100 : 🐌
-<= 1000 : 🐢
-<= 6000 : 🚶
-<= 12000 : 🚲
-<= 30000 : 🚗
-<= 60000 : 🚄
-<= 100000 : ✈️
->= 100000 : 🚀
-"""
-# TODO: make more processor independent (relative to ligand transform?)
+# The speed grades in the docstrings (🚀 ✈️ 🚗 🚲 🐢 🐌) are measured with benchmarks/speed_grades.py;
+# the legend is in the docstring of pyrite/scoring/__init__.py.
 
 
 class ScoringFunction(ABC):
@@ -157,16 +147,23 @@ class ScoringFunction(ABC):
         )
 
         if subscores is not None:
-            return self._score_and_store(pose, computed, subscores)
-        return self._score(pose, computed=computed)
+            score = self._score_and_store(pose, computed, subscores)
+            subscores.update({term: float(value) for term, value in subscores.items()})
+            return float(score)
+        return float(self._score(pose, computed=computed))
 
     def batch_scores(self, poses: Poses | NDArray) -> NDArray[np.float64]:
         """Score many poses at once.
 
-        Mirrors ``get_score`` — resolves and merges dependencies once for the whole
-        call, then calls ``_batch_scores``. The default implementation is just a loop
-        over ``get_score`` (correct for every scoring function, no speedup); subclasses
-        that can do better override ``_batch_scores``, not this method.
+        Mirrors ``get_score``: the dependencies are computed once for the whole batch, then
+        ``_batch_scores`` scores the poses. By default that calls ``_score`` for every pose; a
+        scoring function that can do better overrides ``_batch_scores``, not this method.
+
+        How much faster this is than scoring the poses one at a time depends on the scoring
+        function. Cheap terms and grids, where the cost of a call is a large part of the work, are
+        several times faster in a batch. Terms between ligand and receptor are about as fast
+        either way: their work is the neighbor search and the kernel for every atom pair, which a
+        batch does not reduce.
 
         Parameters
         ----------

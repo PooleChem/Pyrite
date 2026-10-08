@@ -176,6 +176,7 @@ pyrightconfig.json
 .idea/
 # Sphinx: autosummary generates these stubs on every build (autosummary_generate = True)
 doc/source/generated/
+doc/source/api/generated/
 
 DONE.md
 TODO.md

@@ -1,12 +1,38 @@
 """
 =========================================
-Scoring Functions (:mod:`pyrite.scoring`)
+Scoring functions (:mod:`pyrite.scoring`)
 =========================================
 
 .. currentmodule:: pyrite.scoring
 
 The ``pyrite.scoring`` namespace holds all objects related to the scoring of poses, as well as
 utilities that can be used to manipulate, create, and implement new scoring functions.
+
+The documentation of every scoring function grades its speed: the time to score one pose, in
+orders of magnitude.
+
+====  =================
+🚀    under 3 µs
+✈️    3 µs to 30 µs
+🚗    30 µs to 300 µs
+🚲    0.3 ms to 3 ms
+🐢    3 ms to 30 ms
+🐌    over 30 ms
+====  =================
+
+The grades were measured on a ligand of 33 heavy atoms in a protein, with the default parameters
+(see ``benchmarks/speed_grades.py`` in the repository). They are a guide, not a promise: they
+depend on the computer, the molecules and the parameters. "batched" is the time per pose in a
+batch (:meth:`ScoringFunction.batch_scores`), given where it is better by a grade.
+
+Ready-made scoring functions
+----------------------------
+
+.. autosummary::
+   :toctree: generated/
+
+   vina_like
+   vina_like_grid
 
 Combining scoring functions
 ---------------------------
@@ -172,6 +198,7 @@ from .misc import (
     NumProteinAtomsWithinA,
     NumTors,
 )
+from .presets import vina_like, vina_like_grid
 from .protein import (
     LJ,
     VDW,
@@ -214,4 +241,6 @@ __all__ = [
     "ScoringFunction",
     "VDW",
     "WeightedBoundsOverlap",
+    "vina_like",
+    "vina_like_grid",
 ]

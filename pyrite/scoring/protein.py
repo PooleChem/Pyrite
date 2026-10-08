@@ -205,18 +205,26 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         """
         raise NotImplementedError
 
-    def _mask(self, idx, mask):
+    def _mask(self, idx, mask, atom_type):
         """Return which neighbors count, on top of the neighbors that were found.
 
         Optional: a term that only scores certain pairs (hydrophobic, hydrogen bonding) restricts
-        the mask here. By default, all neighbors that were found count.
+        the mask here, from the atom type of the probe atom and the neighbors in the fixed
+        molecule. By default, all neighbors that were found count. The same mask is used for one
+        pose, for a batch, and on the points of a :class:`~pyrite.scoring.grid.GridScore`, so the
+        three always agree.
+
+        :meta public:
 
         Parameters
         ----------
         idx : numpy.ndarray
-            The indices of the neighbors in the fixed molecule.
+            The indices of the neighbors in the fixed molecule, shape ``(..., n_points, k)``.
         mask : numpy.ndarray
-            Which neighbors were found (within the cutoff).
+            Which neighbors were found (within the cutoff), same shape.
+        atom_type : AtomType or numpy.ndarray
+            The atom type of the probe atom at every point: one for all points (on a grid), or
+            one per point (the atoms of the probe).
 
         Returns
         -------
@@ -226,30 +234,24 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         See Also
         --------
         pyrite.scoring.Hydrophobic : Scores hydrophobic pairs only, with this.
-        pyrite.scoring.protein._KNNScoringFunction._score_field : Uses ``_mask_field``, the same for
-            points of a given atom type.
+        _score_field : Uses the mask.
 
         Examples
         --------
-        >>> def _mask(self, idx, mask):
-        ...     return self.probe_is_polar[:, None] & self.fixed_is_polar[idx] & mask
+        >>> def _mask(self, idx, mask, atom_type):
+        ...     probe_polar = np.asarray(self.is_polar[atom_type])[..., None]
+        ...     return probe_polar & self.fixed_is_polar[np.where(mask, idx, 0)] & mask
         """
         return mask
 
-    def _mask_field(self, idx, mask, atom_type):
-        return mask
-
     def _score(self, pose, computed) -> float:
+        # The same path as a batch and a grid: _score_field with the probe's own atom types.
         r, idx, mask = computed[self.nn_dep]
-        r = r[self.probe_mask]
-        idx = idx[self.probe_mask]
-        mask = mask[self.probe_mask]
-
-        dist = r - self._optimal_distance(idx, mask, self.probe_radii[:, None], self.offset)
-        s = self._kernel(dist)
-
-        s[~self._mask(idx, mask)] = 0.0
-        return np.sum(s)
+        atom_types = self.probe_mol.atom_types[self.probe_mask]
+        field = self._score_field(
+            r[self.probe_mask], idx[self.probe_mask], atom_types, mask=mask[self.probe_mask]
+        )
+        return float(field.sum())
 
     def _score_field(self, r, idx, atom_type: AtomType, mask=None) -> NDArray[np.float64]:
         """Score points of a given atom type, from their nearest neighbors in the fixed molecule.
@@ -304,7 +306,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         dist = r - self._optimal_distance(idx, mask, radii, self.offset)
         s = self._kernel(dist)
 
-        s[~self._mask_field(idx, mask, atom_type)] = 0.0
+        s[~self._mask(idx, mask, atom_type)] = 0.0
         return s.sum(axis=-1)
 
     def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
@@ -322,7 +324,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
 
 class Gaussian(_KNNScoringFunction):
     r"""
-    🚶 — A Gaussian function of the distance.
+    🚗 — A Gaussian function of the distance.
 
     .. math::
         score = \exp(-\frac{distance - (optimal\_distance + offset)}{width}^2)
@@ -355,7 +357,7 @@ class Gaussian(_KNNScoringFunction):
     This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**: 🐢–🚗, depending on `cutoff` and `k`.
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
@@ -416,7 +418,7 @@ class Gaussian(_KNNScoringFunction):
 
 class Repulsion(_KNNScoringFunction):
     r"""
-    🚲 — Decreases exponentially with the distance.
+    🚗 — Decreases exponentially with the distance.
 
     .. math::
         score = min(distance - (optimal\_distance + offset), 0.0)^2
@@ -448,7 +450,7 @@ class Repulsion(_KNNScoringFunction):
     This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**:🚲
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
@@ -552,10 +554,9 @@ class _SlopeStep(_KNNScoringFunction):
     --------
     >>> import numpy as np
     >>> class HalogenContacts(_SlopeStep):
-    ...     def _mask(self, idx, neighbor_mask):
-    ...         types = self.probe_mol.atom_types[self.probe_mask]
-    ...         halogen = np.isin(types, HALOGEN_TYPES)  # only these probe atoms count
-    ...         return halogen[:, None] & neighbor_mask
+    ...     def _mask(self, idx, mask, atom_type):
+    ...         halogen = np.isin(atom_type, HALOGEN_TYPES)  # only these probe atoms count
+    ...         return halogen[..., None] & mask
     """
 
     def __init__(
@@ -581,7 +582,7 @@ class _SlopeStep(_KNNScoringFunction):
 
 class Hydrophobic(_SlopeStep):
     r"""
-    🚲 — Slope-step between hydrophobic atoms.
+    🚗 — Slope-step between hydrophobic atoms.
 
     .. math::
         delta = distance - optimal\_distance
@@ -630,7 +631,7 @@ class Hydrophobic(_SlopeStep):
     (as defined by `cutoff` and `k`), and then summed. The hydrophobic neighbors are determined
     after the nearest neighbor search.
 
-    **Speed**:🚲
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
@@ -678,18 +679,12 @@ class Hydrophobic(_SlopeStep):
         for _, t in vina_atom_consts.items():
             self.xs_hydrophobic[t.type.value] = t.xs_hydrophobe
 
-        self.probe_mol_hydrophobic = self.xs_hydrophobic[self.probe_mol.atom_types[self.probe_mask]]
         # Precomputed once — see _KNNScoringFunction.__init_radii for why.
         self._fixed_hydrophobic_masked = self.xs_hydrophobic[
             self.fixed_mol._atom_types[self.fixed_mask]
         ]
 
-    def _mask(self, idx, neighbor_mask):
-        safe_idx = np.where(neighbor_mask, idx, 0)
-        fixed_mol_hydrophobic = self._fixed_hydrophobic_masked[safe_idx]
-        return self.probe_mol_hydrophobic[:, None] & fixed_mol_hydrophobic[:, :] & neighbor_mask
-
-    def _mask_field(self, idx, mask, atom_type):
+    def _mask(self, idx, mask, atom_type):
         fixed_hydrophobic = self._fixed_hydrophobic_masked[np.where(mask, idx, 0)]
         hydrophobic = np.asarray(self.xs_hydrophobic[atom_type])[..., None]
         return hydrophobic & fixed_hydrophobic[:, :] & mask
@@ -697,7 +692,7 @@ class Hydrophobic(_SlopeStep):
 
 class NonHydrophobic(Hydrophobic):
     r"""
-    🚲 — Slope-step between non-hydrophobic bonds.
+    🚗 — Slope-step between non-hydrophobic bonds.
 
     .. math::
         delta = distance - optimal\_distance
@@ -746,7 +741,7 @@ class NonHydrophobic(Hydrophobic):
     nonhydrophobic neighbors (as defined by `cutoff` and `k`), and then summed.
     The nonhydrophobic neighbors are determined after the nearest neighbor search.
 
-    **Speed**:🚲
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
@@ -775,12 +770,7 @@ class NonHydrophobic(Hydrophobic):
     >>> non_hydrophobic = NonHydrophobic(ligand, receptor)
     """
 
-    def _mask(self, idx, neighbor_mask):
-        safe_idx = np.where(neighbor_mask, idx, 0)
-        fixed_mol_hydrophobic = self._fixed_hydrophobic_masked[safe_idx]
-        return ~self.probe_mol_hydrophobic[:, None] & ~fixed_mol_hydrophobic & neighbor_mask
-
-    def _mask_field(self, idx, mask, atom_type):
+    def _mask(self, idx, mask, atom_type):
         fixed_hydrophobic = self._fixed_hydrophobic_masked[np.where(mask, idx, 0)]
         hydrophobic = np.asarray(self.xs_hydrophobic[atom_type])[..., None]
         return ~hydrophobic & ~fixed_hydrophobic[:, :] & mask
@@ -788,7 +778,7 @@ class NonHydrophobic(Hydrophobic):
 
 class NonDirHBond(_SlopeStep):
     r"""
-    🚲 — Slope-step within hydrogen bonds.
+    🚗 — Slope-step within hydrogen bonds.
 
     .. math::
         delta = distance - optimal\_distance
@@ -838,7 +828,7 @@ class NonDirHBond(_SlopeStep):
     (as defined by `cutoff` and `k`), and then summed. The hbond neighbors are determined
     after the nearest neighbor search.
 
-    **Speed**:🚲
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
@@ -888,23 +878,11 @@ class NonDirHBond(_SlopeStep):
             self.xs_acceptor[t.type.value] = t.xs_acceptor
             self.xs_donor[t.type.value] = t.xs_donor
 
-        self.probe_mol_acceptor = self.xs_acceptor[self.probe_mol.atom_types[self.probe_mask]]
-        self.probe_mol_donor = self.xs_donor[self.probe_mol.atom_types[self.probe_mask]]
         # Precomputed once — see _KNNScoringFunction.__init_radii for why.
         self._fixed_acceptor_masked = self.xs_acceptor[self.fixed_mol._atom_types[self.fixed_mask]]
         self._fixed_donor_masked = self.xs_donor[self.fixed_mol._atom_types[self.fixed_mask]]
 
-    def _mask(self, idx, neighbor_mask):
-        safe_idx = np.where(neighbor_mask, idx, 0)
-
-        fixed_mol_acceptor = self._fixed_acceptor_masked[safe_idx]
-        fixed_mol_donor = self._fixed_donor_masked[safe_idx]
-        return (
-            (self.probe_mol_donor[:, None] & fixed_mol_acceptor)
-            | (self.probe_mol_acceptor[:, None] & fixed_mol_donor)
-        ) & neighbor_mask
-
-    def _mask_field(self, idx, mask, atom_type):
+    def _mask(self, idx, mask, atom_type):
         safe_idx = np.where(mask, idx, 0)
         fixed_acceptor = self._fixed_acceptor_masked[safe_idx]
         fixed_donor = self._fixed_donor_masked[safe_idx]
@@ -915,7 +893,7 @@ class NonDirHBond(_SlopeStep):
 
 class LJ(_KNNScoringFunction):
     r"""
-    🐢 — Lennard-Jones potential.
+    🚲 — Lennard-Jones potential.
 
     Scores distance based on a Lennard-Jones potential.
 
@@ -979,7 +957,7 @@ class LJ(_KNNScoringFunction):
     This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**: 🐢–🚶, depending on `cutoff` and `k`.
+    **Speed**: 🚲, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
@@ -1053,7 +1031,7 @@ class LJ(_KNNScoringFunction):
         optimal_distance = self._optimal_distance(
             idx, neighbor_mask, self.probe_radii[:, None], self._offset
         )
-        mask = self._mask(idx, neighbor_mask)
+        mask = self._mask(idx, neighbor_mask, self.probe_mol.atom_types[self.probe_mask])
 
         return _lj_kernel(
             r,
@@ -1079,7 +1057,7 @@ class LJ(_KNNScoringFunction):
 
 class VDW(LJ):
     r"""
-    🐢 — Van Der Waals force based on Lennard-Jones potential.
+    🚲 — Van Der Waals force based on Lennard-Jones potential.
 
     Scores distance based on a Lennard-Jones potential with a depth of 1.
 
@@ -1147,7 +1125,7 @@ class VDW(LJ):
     This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**: 🐢–🚶
+    **Speed**: 🚲, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
@@ -1207,7 +1185,7 @@ class VDW(LJ):
 
 class NonDirHBondLJ(LJ):
     r"""
-    🐢 — Hydrogen bonding force based on Lennard-Jones potential.
+    🚗 — Hydrogen bonding force based on Lennard-Jones potential.
 
     Scores distance between hydrogen acceptors and donors based on a Lennard-Jones 10-12 potential
     with a depth of 5.
@@ -1264,7 +1242,7 @@ class NonDirHBondLJ(LJ):
     (as defined by `cutoff` and `k`), and then summed. The hbond neighbors are determined
     after the nearest neighbor search.
 
-    **Speed**: 🐢–🚶
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
@@ -1324,21 +1302,17 @@ class NonDirHBondLJ(LJ):
             self.xs_acceptor[t.type.value] = t.xs_acceptor
             self.xs_donor[t.type.value] = t.xs_donor
 
-        self.probe_mol_acceptor = self.xs_acceptor[self.probe_mol.atom_types[self.probe_mask]]
-        self.probe_mol_donor = self.xs_donor[self.probe_mol.atom_types[self.probe_mask]]
         # Precomputed once — see _KNNScoringFunction.__init_radii for why.
         self._fixed_acceptor_masked = self.xs_acceptor[self.fixed_mol._atom_types[self.fixed_mask]]
         self._fixed_donor_masked = self.xs_donor[self.fixed_mol._atom_types[self.fixed_mask]]
 
-    def _mask(self, idx, neighbor_mask):
-        safe_idx = np.where(neighbor_mask, idx, 0)
-
-        fixed_mol_acceptor = self._fixed_acceptor_masked[safe_idx]
-        fixed_mol_donor = self._fixed_donor_masked[safe_idx]
-        return (
-            (self.probe_mol_donor[:, None] & fixed_mol_acceptor)
-            | (self.probe_mol_acceptor[:, None] & fixed_mol_donor)
-        ) & neighbor_mask
+    def _mask(self, idx, mask, atom_type):
+        safe_idx = np.where(mask, idx, 0)
+        fixed_acceptor = self._fixed_acceptor_masked[safe_idx]
+        fixed_donor = self._fixed_donor_masked[safe_idx]
+        donor = np.asarray(self.xs_donor[atom_type])[..., None]
+        acceptor = np.asarray(self.xs_acceptor[atom_type])[..., None]
+        return ((donor & fixed_acceptor) | (acceptor & fixed_donor)) & mask
 
 
 class _ChargeScoringFunction(_KNNScoringFunction, ABC):
@@ -1428,7 +1402,7 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
 
 class ElectroStatic(_ChargeScoringFunction):
     r"""
-    🚶 — Electrostatic force based on Gasteiger charges.
+    🚗 — Electrostatic force based on Gasteiger charges.
 
     Scores interactions based on a power of the distance and multiplication by atom charges.
 
@@ -1480,7 +1454,7 @@ class ElectroStatic(_ChargeScoringFunction):
     This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**:🚶–🚲
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
@@ -1557,7 +1531,7 @@ class ElectroStatic(_ChargeScoringFunction):
 
 class AD4Solvation(_ChargeScoringFunction):
     r"""
-    🚶 — Solvation force based on the AutoDesk 4 function and Gasteiger charges.
+    🚲 — Solvation force based on the AutoDesk 4 function and Gasteiger charges.
 
     Scores interactions based on a solvation calculation and multiplication by atom charges.
 
@@ -1629,7 +1603,7 @@ class AD4Solvation(_ChargeScoringFunction):
     This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**: 🐢–🚲
+    **Speed**: 🚲, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
@@ -1976,7 +1950,7 @@ class _PLP(_KNNScoringFunction, ABC):
 
 class PlantsPLP(_PLP):
     r"""
-    🐢 — PLANTS piecewise linear potential.
+    🚲 — PLANTS piecewise linear potential.
 
     Piecewise linear potential as implemented in the PLANTS [1]_ docking software.
 
@@ -2043,7 +2017,7 @@ class PlantsPLP(_PLP):
        plt.legend(loc='upper right')
 
 
-    **Speed**: 🐜–🚶
+    **Speed**: 🚲, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------

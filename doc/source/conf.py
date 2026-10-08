@@ -1,9 +1,14 @@
 # pylint: skip-file
 
 import os
+import re
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.abspath("../.."))  # or wherever your module is
+_ROOT = os.path.abspath("../..")
+sys.path.insert(0, _ROOT)
+# The user guide's notebooks run in their own kernel, which inherits the environment.
+os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [_ROOT, os.environ.get("PYTHONPATH")]))
 
 
 # Configuration file for the Sphinx documentation builder.
@@ -15,7 +20,7 @@ sys.path.insert(0, os.path.abspath("../.."))  # or wherever your module is
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
 project = "Pyrite"
-copyright = "2025, M.J. van der Lugt"
+copyright = "2025-2026, M.J. van der Lugt"
 author = "M.J. van der Lugt"
 release = "1.0"
 
@@ -67,7 +72,7 @@ numpydoc_xref_aliases = {
 }
 numpydoc_xref_ignore = {
     "optional", "default", "or", "of", "shape", "same", "type", "any", "None", "inf", "-inf",
-    "ipywidgets.Widget",  # ipywidgets publishes no inventory for intersphinx
+    "ipywidgets.HTML",  # ipywidgets publishes no inventory for intersphinx
 }
 
 # numpydoc validates every documented docstring during the build (warnings in the build output),
@@ -81,7 +86,7 @@ numpydoc_validation_checks = {"all", "GL01", "GL02", "GL03"}
 # - the attributes listed in a class's Attributes section, which get a page of their own;
 # - what AtomType inherits from int, and vina_atom_consts (a dict, which has no docstring).
 _OVERRIDES = (
-    r"_score|_batch_scores|_score_and_gradient|_score_field|_kernel|_mask|_mask_field|get_dependencies"
+    r"_score|_batch_scores|_score_and_gradient|_score_field|_kernel|_mask|get_dependencies"
     r"|is_within|squared_distance|distance|transform_sample_to_bounds|compute|group_key|merge_group|narrow|row"
     r"|__call__"
 )
@@ -120,7 +125,6 @@ html_baseurl = "https://poolechem.github.io/Pyrite/"
 sitemap_url_scheme = "{link}"
 html_favicon = "_static/favicon.png"
 html_css_files = ["custom.css"]
-html_js_files = ["custom.js"]
 html_theme_options = {
     "light_logo": "_static/pyrite_logo.png",
     "dark_logo": "_static/pyrite_logo_dark.png",
@@ -128,15 +132,16 @@ html_theme_options = {
     "github_url": "https://github.com/PooleChem/Pyrite",
 }
 # Algolia DocSearch replaces the search box when its keys are set; without them the built-in search is
-# used (custom.js gives it the same Cmd+K shortcut). Apply at https://docsearch.algolia.com/.
+# used. Apply at https://docsearch.algolia.com/.
 if os.getenv("DOCSEARCH_APP_ID"):
     extensions.append("sphinx_docsearch")
     docsearch_app_id = os.environ["DOCSEARCH_APP_ID"]
     docsearch_api_key = os.environ["DOCSEARCH_API_KEY"]
     docsearch_index_name = os.environ["DOCSEARCH_INDEX_NAME"]
 
-# No right-hand sidebar ("On this page"): custom.css hides the empty column and its toggle.
-html_sidebars = {"**": []}
+# The right-hand sidebar: "On this page" only (no repository stats, edit link or ads). custom.css
+# hides it where it is empty.
+html_sidebars = {"**": ["sidebars/localtoc.html"]}
 
 autodoc_default_options = {
     "inherited-members": None,
@@ -193,5 +198,33 @@ def _hide_ai_links_on_api_pages(app, pagename, templatename, context, doctree):
             context["meta"] = {**(context.get("meta") or {}), "hide_ai_links": "true"}
 
 
+_SIDEBAR_MODULE = re.compile(r'\((<code [^>]*><span class="pre">)([^<]*)(</span></code>)\)')
+
+
+def _wrap_sidebar_module_names(app, exception):
+    """Keep "(pyrite.scoring.dependencies)" together in the left sidebar, breaking it after a dot.
+
+    The name and its parentheses become one ``.module-name`` (see custom.css), which moves to a line of
+    its own; ``<wbr>`` after every dot lets a name that is still too long break there. Done on the
+    written pages, as a script in the browser would make the sidebar flash on every load.
+    """
+    if exception is not None or app.builder.format != "html":
+        return
+
+    def wrap(match):
+        name = match.group(2).replace(".", ".<wbr>")
+        return f'<span class="module-name">({match.group(1)}{name}{match.group(3)})</span>'
+
+    for path in Path(app.outdir).rglob("*.html"):
+        html = path.read_text(encoding="utf-8")
+        start = html.find('<div class="globaltoc"')
+        if start < 0:
+            continue
+        end = html.find("</aside>", start)
+        sidebar = _SIDEBAR_MODULE.sub(wrap, html[start:end])
+        path.write_text(html[:start] + sidebar + html[end:], encoding="utf-8")
+
+
 def setup(app):
+    app.connect("build-finished", _wrap_sidebar_module_names)
     app.connect("html-page-context", _hide_ai_links_on_api_pages)

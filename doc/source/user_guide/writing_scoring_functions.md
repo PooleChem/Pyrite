@@ -1,21 +1,38 @@
 # Writing a scoring function
 
 A scoring function turns a pose into a number: lower is better. Every scoring function in Pyrite is a
-{class}`~pyrite.scoring.ScoringFunction`, and a new one only needs a single method. Everything else
-is optional, and can be added later, when a scoring function turns out to be slow or is used often:
+{class}`~pyrite.scoring.ScoringFunction`.
 
-1. [The score of a pose](#the-score-of-a-pose): {meth}`~pyrite.scoring.ScoringFunction._score`, the only required method.
-2. [Using RDKit](#using-rdkit): subclass {class}`~pyrite.scoring._base._RDKitScoringFunction`.
+**A new scoring function needs only one method**:
+{meth}`~pyrite.scoring.ScoringFunction._score`, the score of one pose. With just that, it works
+everywhere: it can be combined with all others (`+`, `-`, `*`, `/`, `**`), scores a batch of poses,
+has a gradient, and can be used in a search.
+
+Everything else is an **optional addition**, for when a scoring function turns out to be slow or is
+used often. Each one replaces a default that already works:
+
+| Method | What it adds | The default without it |
+|---|---|---|
+| {meth}`~pyrite.scoring.ScoringFunction._score` | **required**: the score of one pose | — |
+| {meth}`~pyrite.scoring.ScoringFunction.get_dependencies` | share work with other terms | the term computes everything itself |
+| {meth}`~pyrite.scoring.ScoringFunction._batch_scores` | score a whole batch at once | `_score` for every pose |
+| {meth}`~pyrite.scoring.ScoringFunction._score_and_gradient` | an analytic gradient | finite differences, from scores |
+
+Two base classes do part of the work for common cases: {class}`~pyrite.scoring._base._RDKitScoringFunction`
+for a term that uses RDKit, and {class}`~pyrite.scoring.protein._KNNScoringFunction` for a term
+between ligand and receptor, which only needs a kernel.
+
+This page goes through them in order:
+
+1. [The score of a pose](#the-score-of-a-pose): `_score`, the only required method.
+2. [Using RDKit](#using-rdkit): subclass `_RDKitScoringFunction`.
 3. [A term between ligand and receptor](#a-term-between-ligand-and-receptor): subclass
-   {class}`~pyrite.scoring.protein._KNNScoringFunction` and write a kernel.
-4. [Sharing work](#sharing-work-with-dependencies): dependencies.
-5. [Scoring many poses at once](#scoring-many-poses-at-once): {meth}`~pyrite.scoring.ScoringFunction._batch_scores`.
-6. [Gradients](#gradients): {meth}`~pyrite.scoring.ScoringFunction._score_and_gradient`.
-7. [Testing](#testing): the conformance tests.
-
-Whatever level a scoring function is written at, it can be combined with all others
-(`+`, `-`, `*`, `/`, `**`), scored one pose or many poses at a time, and used in a search with a
-gradient.
+   `_KNNScoringFunction` and write a kernel.
+4. [Putting a term on a grid](#putting-a-term-on-a-grid): what a grid needs.
+5. [Sharing work](#sharing-work-with-dependencies): dependencies.
+6. [Scoring many poses at once](#scoring-many-poses-at-once): `_batch_scores` (optional).
+7. [Gradients](#gradients): `_score_and_gradient` (optional).
+8. [Testing](#testing): the conformance tests.
 
 ## The score of a pose
 
@@ -106,8 +123,58 @@ numpy operations on the whole array. In return, the term is batched, and can be 
 {class}`~pyrite.scoring.grid.GridScore`, without any further code.
 
 To score only some pairs, as {class}`~pyrite.scoring.Hydrophobic` scores only hydrophobic atoms,
-also implement {meth}`_mask(idx, mask) <pyrite.scoring.protein._KNNScoringFunction._mask>`, which returns which neighbors count. Keep the cutoff and `k` in
-mind: a term only sees the `k` nearest neighbors, so a term that reaches far needs a larger `k`.
+also implement {meth}`_mask(idx, mask, atom_type) <pyrite.scoring.protein._KNNScoringFunction._mask>`,
+which returns which neighbors count. It decides from the *atom type* of the ligand atom, not from
+the atom itself, so the same mask works for a pose, a batch and a grid:
+
+```python
+from pyrite import AtomType
+
+CARBON = [t for t in AtomType if t.name.startswith(("Aliphatic", "Aromatic"))]
+
+
+class CarbonContact(Contact):
+    """Counts the receptor atoms in contact with the carbon atoms of the ligand."""
+
+    def _mask(self, idx, mask, atom_type):
+        # atom_type is one type (on a grid) or one per ligand atom; the neighbors are the last axis
+        return np.isin(atom_type, CARBON)[..., None] & mask
+```
+
+Keep the cutoff and `k` in mind: a term only sees the `k` nearest neighbors, so a term that reaches
+far needs a larger `k`.
+
+## Putting a term on a grid
+
+A {class}`~pyrite.scoring.grid.GridScore` computes terms once on a grid over the binding site, and
+looks them up during a search (see {doc}`scoring`). A grid stores, for every atom type, the score of
+a ligand atom of that type at every grid point. So a term can only be put on a grid if the score of
+a ligand atom depends on nothing but its type and its position: not on the other ligand atoms, nor
+on anything else about the atom.
+
+A term on a grid implements
+{meth}`_score_field(r, idx, atom_type, mask=None) <pyrite.scoring.protein._KNNScoringFunction._score_field>`:
+the score of points of one atom type, from the distances `r` to, and indices `idx` of, their nearest
+receptor atoms. A term with a `_kernel`, as above, gets it for free, with its `_mask`, and works on a
+grid without further code. A term that does not use `_kernel` can implement `_score_field` itself;
+one that cannot sets `_score_field = None`, and `GridScore` then refuses it with a `TypeError`.
+
+Of the built-in terms, the Vina terms ({class}`~pyrite.scoring.Gaussian`,
+{class}`~pyrite.scoring.Repulsion`, {class}`~pyrite.scoring.Hydrophobic`,
+{class}`~pyrite.scoring.NonHydrophobic`, {class}`~pyrite.scoring.NonDirHBond`) can be put on a
+grid. The Lennard-Jones terms, the terms based on charges and the PLANTS potential cannot yet: they
+do not use `_kernel`, and the charge terms depend on the charge of every ligand atom, not only on its
+type.
+
+Terms of the ligand alone ({class}`~pyrite.scoring.InternalOverlap`,
+{class}`~pyrite.scoring.NumTors`, ...) or of the whole pose ({class}`~pyrite.scoring.RMSD`, the
+binding site terms) can never be put on a grid. They are combined with the grid instead, as
+{func}`~pyrite.scoring.vina_like_grid` does:
+
+```python
+grid = GridScore(receptor_terms, box)
+score = (grid + 0.5 * InternalOverlap(ligand)) / (1 + 0.05846 * NumTors(ligand))
+```
 
 ## Sharing work with dependencies
 
@@ -142,10 +209,11 @@ merged) and {meth}`~pyrite.scoring.dependencies.Dependency.merge_group`; see {cl
 
 ## Scoring many poses at once
 
-{meth}`~pyrite.scoring.ScoringFunction.batch_scores` scores many poses at once. By default it calls
-{meth}`~pyrite.scoring.ScoringFunction._score` for every pose, on dependencies computed once for the whole batch. A scoring function that
-can do better implements {meth}`_batch_scores(poses, computed_batch) <pyrite.scoring.ScoringFunction._batch_scores>`, where every dependency has a
-leading axis of the number of poses:
+This is optional. {meth}`~pyrite.scoring.ScoringFunction.batch_scores` scores many poses at once,
+and by default it calls {meth}`~pyrite.scoring.ScoringFunction._score` for every pose, on
+dependencies computed once for the whole batch. A scoring function that can do better implements
+{meth}`_batch_scores(poses, computed_batch) <pyrite.scoring.ScoringFunction._batch_scores>`, where
+every dependency has a leading axis of the number of poses:
 
 ```python
     def _batch_scores(self, poses, computed_batch):
@@ -154,10 +222,15 @@ leading axis of the number of poses:
         return np.sqrt((centered**2).sum(axis=2).mean(axis=1))
 ```
 
+It pays off when a call costs more than its work, as for a cheap term like this one: a batch saves
+the cost of a call for every pose. A term whose work is per atom pair, like those between ligand and
+receptor, is about as fast either way.
+
 ## Gradients
 
-A local optimizer, such as the L-BFGS-B in {class}`~pyrite.search.BasinHopping`, needs the
-gradient of the score with respect to the pose. By default it is computed by finite differences:
+This is optional too. A local optimizer, such as the L-BFGS-B in
+{class}`~pyrite.search.BasinHopping`, needs the gradient of the score with respect to the pose. By
+default it is computed by finite differences:
 two scores for every variable of the pose. A scoring function that knows how its score changes when
 an atom moves (`dS/dx`, the "force" on every atom) implements {meth}`~pyrite.scoring.ScoringFunction._score_and_gradient`, and lets
 {meth}`~pyrite.Mol.pose_gradient` turn the forces into the gradient with respect to the pose:

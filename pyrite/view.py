@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import html as _html
+import json
+import re
 from typing import TYPE_CHECKING
 
 import py3Dmol
-from IPython.display import display
-from ipywidgets import IntSlider, VBox, widgets
+from IPython.display import HTML
 from numpy.typing import NDArray
 from rdkit import Chem
 
@@ -60,21 +61,15 @@ class Viewer:
     def __init__(self, *args, width: int = 400, height: int = 400, options=None):
         self._width = width
         self._height = height
-        self._iframe = None
-        self._widget = None
-        self._slider = None
         self.view = py3Dmol.view(width=width, height=height, options={"doAssembly": True})
         self.max_m_id = -1
+        # The model with the poses of add_v, its number of poses, and its style (reapplied on every
+        # pose: a style is set on the atoms of the current frame only).
+        self._slider = None
+        # The models of every molecule added, to zoom to: (molecule, model ids).
+        self._models = []
+        self._zoom = None
         self.add(*args, options=options)
-
-        self._vs = []
-        self._v_draw_options = {}
-        self._v_m_id = -1
-        self._interactive = None
-        self.__interactive_first = None
-        self._ligand = None
-        self._out = None
-        self._view_state_key = f"pyrite_view_state_{id(self)}"
 
     def add(self, *args, options=None):
         """Add all positional arguments to the viewer.
@@ -123,32 +118,11 @@ class Viewer:
 
         for arg in args:
             new_m_id = arg._viewer_add_(self, self.max_m_id, options)  # noqa
+            if new_m_id != self.max_m_id:
+                self._models.append((arg, list(range(self.max_m_id + 1, new_m_id + 1))))
             self.max_m_id = new_m_id
 
         return self
-
-    def _set_ligand(self, v_id):
-        self.view.removeModel(self._v_m_id)
-        vn = self._vs[v_id]
-
-        conf_id = self._ligand.pose_to_conformer(vn, new_conf=True)
-        mblock_n = Chem.MolToMolBlock(self._ligand.rdkit, confId=conf_id)
-        self._ligand.remove_conformer(conf_id)
-        self.view.addModel(mblock_n, "mol")
-        self.view.setStyle(
-            {"model": self._v_m_id},
-            {
-                "stick": {
-                    "colorscheme": self._v_draw_options["colorscheme"],
-                    "hidden": False,
-                }
-            },
-        )
-        if "note" in self._v_draw_options:
-            self._set_hover(self._ligand, self.max_m_id, self._v_draw_options)
-        # Re-render the iframe so the new pose is visible across frontends
-        self._render_iframe()
-        # self.view.update()
 
     def add_v(self, mol: Mol, v: NDArray, slider: bool = True, options=None):
         """Add a molecule with poses, and an optional pose selection slider, to the viewer.
@@ -184,73 +158,70 @@ class Viewer:
         """
         if options is None:
             options = {}
+        draw_options = mol.draw_options.copy()
+        draw_options.update(options)
+        style = {"stick": {"colorscheme": draw_options["colorscheme"]}}
 
-        self._ligand = mol
-        self._vs = v
-        self._v_draw_options = mol.draw_options.copy()
-        self._v_draw_options.update(options)
-
+        blocks = [Chem.MolToMolBlock(mol.to_rdkit(pose)) for pose in v]
+        first = self.max_m_id + 1
         if slider:
-            # Update to first v
-            vn = self._vs[0]
-
-            conf_id = self._ligand.pose_to_conformer(vn, new_conf=True)
-            mblock = Chem.MolToMolBlock(self._ligand.rdkit, confId=conf_id)
-            self._ligand.remove_conformer(conf_id)
-
-            self.view.addModel(mblock, "mol")
-            self._v_m_id = self.max_m_id + 1
-            self.max_m_id = self._v_m_id
-
-            self.view.setStyle(
-                {"model": self._v_m_id},
-                {
-                    "stick": {
-                        "colorscheme": self._v_draw_options["colorscheme"],
-                        "hidden": False,
-                    }
-                },
-            )
-
-            # self.__interactive_first = True
-            # self._interactive = interactive(
-            #     self._set_ligand,
-            #     v_id=IntSlider(
-            #         min=0,
-            #         max=len(v) - 1,
-            #         step=1,
-            #         continuous_update=True,
-            #         description="Pose:",
-            #     ),
-            # )
-            self._slider = IntSlider(
-                min=0,
-                max=len(v) - 1,
-                step=1,
-                continuous_update=True,
-                description="Pose:",
-            )
-            self._slider.observe(lambda ch: self._set_ligand(ch["new"]), names="value")
-
+            # All poses in one model, as frames: the slider switches frames in the browser.
+            self.view.addModelsAsFrames("$$$$\n".join(blocks) + "$$$$\n", "sdf")
+            self.max_m_id += 1
+            self.view.setStyle({"model": self.max_m_id}, style)
+            self._slider = (self.max_m_id, len(blocks), style)
         else:
-            for var in self._vs:
-                conf_id = mol.pose_to_conformer(var, new_conf=True)
-                mblock = Chem.MolToMolBlock(mol.rdkit, confId=conf_id)
-                mol.remove_conformer(conf_id)
-                self.view.addModel(mblock, "mol")
+            for block in blocks:
+                self.view.addModel(block, "mol")
                 self.max_m_id += 1
-                self.view.setStyle(
-                    {"model": self.max_m_id},
-                    {
-                        "stick": {
-                            "colorscheme": self._v_draw_options["colorscheme"],
-                        }
-                    },
-                )
+                self.view.setStyle({"model": self.max_m_id}, style)
 
-        if "note" in self._v_draw_options:
-            self._set_hover(self._ligand, self.max_m_id, self._v_draw_options)
+        if "note" in draw_options:
+            self._set_hover(mol, self.max_m_id, draw_options)
 
+        # The poses are what a viewer with poses is about: zoom to them, unless told otherwise.
+        self._models.append((mol, list(range(first, self.max_m_id + 1))))
+        if self._zoom is None:
+            self._zoom = self._models[-1][1]
+        return self
+
+    def zoom_to(self, *objects):
+        """Zoom to some of the molecules in the viewer.
+
+        By default, a viewer shows everything in it, except when it has poses (see :meth:`add_v`):
+        then it zooms to the poses. ``zoom_to()`` without arguments shows everything again.
+
+        Parameters
+        ----------
+        *objects : Mol
+            The molecules to zoom to, as added with :meth:`add` or :meth:`add_v`. A molecule added
+            with both is zoomed to with all of its models.
+
+        Returns
+        -------
+        Viewer
+            This viewer, so calls can be chained.
+
+        Raises
+        ------
+        ValueError
+            If an object is not in the viewer as a molecule.
+
+        See Also
+        --------
+        add : Add objects.
+
+        Examples
+        --------
+        >>> Viewer(receptor, ligand).zoom_to(ligand)
+        """
+        ids = []
+        for obj in objects:
+            found = [m for o, models in self._models if o is obj for m in models]
+            if not found:
+                raise ValueError(f"{obj!r} is not a molecule in this viewer.")
+            ids += found
+        self._zoom = ids
         return self
 
     def _set_hover(self, obj, model_id, options=None):
@@ -283,35 +254,38 @@ class Viewer:
             )
 
     def show(self):
-        """Return a displayable widget (works in Jupyter, VSCode, and PyCharm).
+        """Return the viewer, to display in a notebook.
 
-        In a notebook, the viewer also shows itself when it is the last expression of a cell.
+        The viewer is plain HTML and JavaScript, the pose slider included: it works in Jupyter,
+        VS Code and PyCharm, and in a notebook exported to HTML or a documentation page, without a
+        running kernel. In a notebook, the viewer also shows itself when it is the last expression
+        of a cell.
 
         Returns
         -------
-        ipywidgets.Widget
-            The viewer, with the pose slider if there is one.
+        IPython.display.HTML
+            The viewer.
 
         See Also
         --------
-        as_widget : The widget, to place in a layout.
+        as_widget : The viewer as a widget, to place in a layout.
 
         Examples
         --------
         >>> Viewer(receptor, ligand).show()
         """
-        return self.as_widget()
+        return HTML(self._repr_html_())
 
     def as_widget(self):
         """Return the viewer as an ipywidgets widget, to place in a layout of your own.
 
-        The widget is built once and then reused, so the pose slider keeps updating the same
-        viewer.
+        The widget holds the same HTML as :meth:`show`, so the pose slider works without a kernel
+        too. Requires ipywidgets.
 
         Returns
         -------
-        ipywidgets.Widget
-            The viewer, with the pose slider if there is one.
+        ipywidgets.HTML
+            The viewer.
 
         See Also
         --------
@@ -322,89 +296,49 @@ class Viewer:
         >>> import ipywidgets
         >>> ipywidgets.HBox([Viewer(ligand).as_widget(), Viewer(receptor).as_widget()])
         """
-        # Build once, then reuse so slider callbacks update the same viewer instance
-        if self._widget is None:
-            self._render_iframe()
-            if self._slider is None:
-                self._widget = self._iframe
-            else:
-                self._widget = VBox([self._iframe, self._slider])
-        return self._widget
+        import ipywidgets
 
-    def _ipython_display_(self):
-        display(self.as_widget())
+        return ipywidgets.HTML(self._repr_html_())
 
-    def _render_iframe(self):
-        """Render the current py3Dmol view into an iframe and persist camera state across reloads."""
-        if self._iframe is None:
-            self._iframe = widgets.HTML()
-
-        # Generate base HTML
+    def _repr_html_(self):
         page = self.view.write_html(fullpage=True)
+        name = re.search(r"var (viewer_\w+) = null", page).group(1)
 
-        # Inject JS to persist/restore camera
-        key = self._view_state_key
-        persist_js = f"""
-    <script>
-    (function() {{
-      const KEY = {key!r};
+        height = self._height
+        controls = ""
+        zoom = json.dumps(self._zoom or [])
+        script = (
+            # Model indices, not models: 3Dmol copies a selection, and a model refers to the viewer.
+            f"const zoom = {zoom};"
+            f"{name}.zoomTo(zoom.length ? {{model: zoom}} : {{}}); {name}.render();"
+        )
+        if self._slider is not None:
+            model, n, style = self._slider
+            height += 32
+            controls = (
+                '<div style="display:flex;align-items:center;gap:8px;height:32px;'
+                'font:13px system-ui,sans-serif;color:#444">'
+                f'<input id="pose" type="range" min="0" max="{n - 1}" value="0" style="flex:1">'
+                f'<span id="label" style="padding-right:8px;white-space:nowrap">Pose 1 / {n}</span></div>'
+            )
+            script += f"""
+  const model = {name}.getModel({model}), style = {json.dumps(style)};
+  document.getElementById("pose").addEventListener("input", (event) => {{
+    const i = Number(event.target.value);
+    document.getElementById("label").textContent = `Pose ${{i + 1}} / {n}`;
+    Promise.resolve(model.setFrame(i)).then(() => {{
+      model.setStyle({{}}, style);
+      {name}.render();
+    }});
+  }});"""
 
-      function findViewer() {{
-        // py3Dmol often uses 'viewer', but we search just in case
-        if (window.viewer && typeof window.viewer.getView === "function") return window.viewer;
-        for (const k of Object.keys(window)) {{
-          const v = window[k];
-          if (v && typeof v.getView === "function" && typeof v.setView === "function" && typeof v.zoomTo === "function") {{
-            return v;
-          }}
-        }}
-        return null;
-      }}
-
-      function restoreOrZoom(viewer) {{
-        try {{
-          const saved = localStorage.getItem(KEY);
-          if (saved) {{
-            viewer.setView(JSON.parse(saved));
-            viewer.render();
-            return;
-          }}
-        }} catch (e) {{}}
-        // No saved view -> zoom to content once
-        viewer.zoomTo();
-        viewer.render();
-      }}
-
-      function startSaving(viewer) {{
-        // Save periodically
-        setInterval(() => {{
-          try {{
-            localStorage.setItem(KEY, JSON.stringify(viewer.getView()));
-          }} catch (e) {{}}
-        }}, 250);
-      }}
-
-      // Wait until py3Dmol has created the viewer
-      const t = setInterval(() => {{
-        const viewer = findViewer();
-        if (!viewer) return;
-        clearInterval(t);
-        restoreOrZoom(viewer);
-        startSaving(viewer);
-      }}, 50);
-    }})();
-    </script>
-    """
-
-        # Put our script right before </body> if possible
-        if "</body>" in page:
-            page = page.replace("</body>", persist_js + "\n</body>")
-        else:
-            page = page + persist_js
-
-        srcdoc = _html.escape(page, quote=True)
-        self._iframe.value = (
-            f'<iframe srcdoc="{srcdoc}" '
-            f'width="{self._width}" height="{self._height}" '
-            f'style="border:0;"></iframe>'
+        # Zoom once all models are in (py3Dmol zooms before adding them), then wire the slider.
+        page = (
+            '<!doctype html><html><body style="margin:0">'
+            f"{page}{controls}<script>$3Dmolpromise.then(() => {{ {script} }});</script>"
+            "</body></html>"
+        )
+        return (
+            f'<iframe srcdoc="{_html.escape(page, quote=True)}" width="{self._width}" '
+            f'height="{height}" style="border:0;max-width:100%"></iframe>'
         )

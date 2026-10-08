@@ -1,8 +1,8 @@
 """
 
-======================================================
-Dependency module (:mod:`pyrite.scoring.dependencies`)
-======================================================
+=================================================
+Dependencies (:mod:`pyrite.scoring.dependencies`)
+=================================================
 
 .. currentmodule:: pyrite.scoring.dependencies
 

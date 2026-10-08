@@ -16,7 +16,7 @@ class RMSD(_RDKitScoringFunction):
     only (the convention for docking poses): the hydrogens the molecule has, which depend on how it
     was loaded, do not change it. The poses are compared in place, without aligning them.
 
-    **Speed**: 🚲–🚄, depending on the size of the ligand.
+    **Speed**: 🚗, depending on the size and the symmetry of the ligand.
 
     Parameters
     ----------
@@ -78,7 +78,7 @@ class RMSD(_RDKitScoringFunction):
 
 class Crowding(_RDKitScoringFunction):
     r"""
-    🚲 — Used to determine the similarity of a pose to a set of poses.
+    🐢 — Used to determine the similarity of a pose to a set of poses.
 
     New poses can be registered using :meth:`register_pose`. When :meth:`get_score` is called,
     the RMSD of the :class:`~pyrite.Mol` pose to each registered pose will be calculated using
@@ -110,7 +110,7 @@ class Crowding(_RDKitScoringFunction):
        plt.xlabel("RMSD")
        plt.ylabel("Score")
 
-    **Speed**: 🐢–🚄, depending on the size of the mol and the number of registered poses.
+    **Speed**: 🐢 with one registered pose; the time grows with every registered pose.
 
     Parameters
     ----------
@@ -211,7 +211,7 @@ class Crowding(_RDKitScoringFunction):
 
 class NumProteinAtomsWithinA(ScoringFunction):
     """
-    🚲 — Returns the total number of protein atoms within ``A`` Angstroms of the ligand atoms.
+    🚗 — Returns the total number of protein atoms within ``A`` Angstroms of the ligand atoms.
 
     The search is executed using a :class:`~scipy.spatial.KDTree`, on each atom of the ligand.
     Therefore, the same protein atom can be counted multiple times.
@@ -219,7 +219,7 @@ class NumProteinAtomsWithinA(ScoringFunction):
     Only the atoms in the ``scoring_mask`` of the two molecules take part (by default the hydrogens
     are left out, so the count does not depend on whether the files contain them).
 
-    **Speed**: 🚶 -- 🚄, depending on ``A`` and the size of the ligand.
+    **Speed**: 🚗, depending on ``A`` and the size of the ligand.
 
     Parameters
     ----------

@@ -7,10 +7,10 @@ from typing import Literal
 
 import numpy as np
 import py3Dmol
-from IPython.display import SVG, Image, display
+from IPython.display import SVG, Image
 from numpy.typing import NDArray
 from rdkit import Chem, RDLogger
-from rdkit.Chem import Draw, SDWriter
+from rdkit.Chem import Draw, SDWriter, rdDepictor
 from scipy.spatial.transform import Rotation
 
 from ._util import (
@@ -84,8 +84,10 @@ class Mol:
         becomes a torsion: a variable of the poses of this molecule, which a search can turn.
         If ``False``, the molecule is rigid, and a pose only has a rotation and a translation.
     hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
-        Whether to keep hydrogens as is, add the missing hydrogens, remove all hydrogens, or keep
-        only the polar ones (on N, O, S, ...).
+        Whether to keep hydrogens as is, add the missing hydrogens, remove all hydrogens, or have
+        keep only the polar ones (on N, O, S, ...), which decide which atoms are hydrogen bond
+        donors. 'polar' adds none: a molecule without hydrogens (a SMILES string, or a file
+        without them) has no donors, unless loaded with 'add'.
     ignore_hydrogens : bool, default True
         Whether hydrogen atoms are left out of :attr:`scoring_mask`, the atoms scoring functions
         use. Polar hydrogens still decide which neighbours are donors.
@@ -229,8 +231,8 @@ class Mol:
         smiles : str
             The SMILES string representation of the molecule.
         hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
-            Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
-            keep only the polar ones.
+            Whether to keep hydrogens as is, add the missing hydrogens, remove all hydrogens, or
+            have only the polar ones, see :class:`Mol`.
         **kwargs
             Passed on to :class:`Mol`, for example ``flexible=True``.
 
@@ -270,8 +272,8 @@ class Mol:
         mol : rdkit.Chem.rdchem.Mol
             The input molecule as an RDKit :class:`rdkit.Chem.rdchem.Mol` object.
         hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
-            Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
-            keep only the polar ones.
+            Whether to keep hydrogens as is, add the missing hydrogens, remove all hydrogens, or
+            have only the polar ones, see :class:`Mol`.
         **kwargs
             Passed on to :class:`Mol`, for example ``flexible=True``.
 
@@ -318,8 +320,8 @@ class Mol:
         pdb_file : str
             Path to the PDB file containing the molecule.
         hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
-            Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
-            keep only the polar ones.
+            Whether to keep hydrogens as is, add the missing hydrogens, remove all hydrogens, or
+            have only the polar ones, see :class:`Mol`.
         template_smiles : str, optional
             SMILES string representing a reference molecule.
             To sanitize the molecule, either `template_smiles` or
@@ -426,8 +428,8 @@ class Mol:
         mol_file : str
             Path to the SDF file containing the molecule.
         hydrogens : {'keep', 'add', 'remove', 'polar'}, default 'polar'
-            Whether to keep hydrogens as is, add additional hydrogens, remove all hydrogens, or
-            keep only the polar ones.
+            Whether to keep hydrogens as is, add the missing hydrogens, remove all hydrogens, or
+            have only the polar ones, see :class:`Mol`.
         **kwargs
             Passed on to :class:`Mol`, for example ``flexible=True``.
 
@@ -1635,7 +1637,8 @@ class Mol:
             The options to apply, on top of the current ones. For a ligand: ``size`` (width and
             height in pixels), ``colorPalette``, ``colorscheme``, ``highlight`` and ``note``; for a
             protein also ``color``, ``style``, ``surfacetype``, ``surfacecolor``,
-            ``surfaceopacity``, ``stickresidues`` and ``hideprotein``.
+            ``surfaceopacity``, ``stickresidues`` (residue numbers, or names such as ``"HIS"``, to show
+            as sticks) and ``hideprotein``. A ``surfacetype`` of None leaves out the surface.
 
         See Also
         --------
@@ -1695,8 +1698,10 @@ class Mol:
         )
 
         for res in options["stickresidues"]:
+            # A residue number, or a residue name
+            key = "resn" if isinstance(res, str) else "resi"
             viewer.view.setStyle(
-                {"resn": res, "byres": "true"},
+                {"model": m_id, key: res, "byres": True},
                 {"stick": {"colorscheme": "whiteCarbon"}},
             )
 
@@ -1735,14 +1740,8 @@ class Mol:
     def _repr_svg_(self):
         return self.__repr_picture(Draw.MolDraw2DSVG(*self.draw_options["size"]))
 
-    def _ipython_display_(self):
-        display(
-            Viewer(  # noqa
-                self,
-                width=self.draw_options["size"][0],
-                height=self.draw_options["size"][1],
-            ).as_widget()
-        )
+    def _repr_html_(self):
+        return self.viewer._repr_html_()
 
     @property
     def png(self):
@@ -1823,29 +1822,23 @@ class Mol:
                 case "avalon":
                     dopts.useAvalonAtomPalette()
 
-        if "note" not in self.draw_options:
-            self.draw_options["note"] = ""
-        match self.draw_options["note"].lower():
+        # Draw a copy, laid out in 2D (a 3D conformer drawn flat is hard to read); the atom notes
+        # are properties on its atoms.
+        mol = Chem.Mol(self._rdkit)
+        rdDepictor.Compute2DCoords(mol)
+        match self.draw_options.get("note", "").lower():
             case "idx":
-                for a in self._rdkit.GetAtoms():
+                for a in mol.GetAtoms():
                     a.SetProp("atomNote", f"{a.GetIdx()}")
             case "type":
-                for a in self._rdkit.GetAtoms():
-                    ty = self._atom_types[a.GetIdx()]
-                    a.SetProp("atomNote", f"{str(ty)}")
-            case _:
-                for a in self._rdkit.GetAtoms():
-                    a.ClearProp("atomNote")
+                for a in mol.GetAtoms():
+                    a.SetProp("atomNote", f"{str(self._atom_types[a.GetIdx()])}")
 
-        highlight = []
-        if "highlight" in self.draw_options:
-            match self.draw_options["highlight"].lower():
-                case "center":
-                    highlight = [self._center_atom]
-                case list():
-                    highlight = self.draw_options["highlight"]
+        highlight = self.draw_options.get("highlight") or []
+        if isinstance(highlight, str):
+            highlight = [self._center_atom] if highlight.lower() == "center" else []
 
-        d2d.DrawMolecule(self._rdkit, highlightAtoms=highlight)
+        d2d.DrawMolecule(mol, highlightAtoms=[int(i) for i in highlight])
         d2d.FinishDrawing()
         return d2d.GetDrawingText()
 
