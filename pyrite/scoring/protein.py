@@ -212,7 +212,8 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         the mask here, from the atom type of the probe atom and the neighbors in the fixed
         molecule. By default, all neighbors that were found count. The same mask is used for one
         pose, for a batch, and on the points of a :class:`~pyrite.scoring.grid.GridScore`, so the
-        three always agree.
+        three always agree. Write it to broadcast: on a grid, `atom_type` is a column of all atom
+        types at once, and the result has an axis for them.
 
         :meta public:
 
@@ -223,13 +224,14 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         mask : numpy.ndarray
             Which neighbors were found (within the cutoff), same shape.
         atom_type : AtomType or numpy.ndarray
-            The atom type of the probe atom at every point: one for all points (on a grid), or
-            one per point (the atoms of the probe).
+            The atom type of the probe atom at every point: one per point (the atoms of the
+            probe), or, on a grid, a column of atom types, shape ``(n_types, 1)``, which
+            broadcasts against the points.
 
         Returns
         -------
         numpy.ndarray
-            Which neighbors count, of the same shape as `mask`.
+            Which neighbors count: the shape of `mask`, broadcast with `atom_type`.
 
         See Also
         --------
@@ -272,8 +274,9 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         atom_type : AtomType or numpy.ndarray
             One atom type for all points, or one per point.
         mask : numpy.ndarray, optional
-            Which neighbors are valid. By default, all neighbors that were found. Pass the mask of
-            a narrowed search: computing it from `idx` would undo the cutoff of this term.
+            Which neighbors are valid: the mask of a narrowed search. Without it (on a grid), `r`
+            and `idx` are taken as those of a merged search, and narrowed to this term's own `k`
+            and cutoff here.
 
         Returns
         -------
@@ -289,14 +292,15 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         >>> r, idx, mask = knn_dependency.compute(realization)
         >>> scores = term._score_field(r, idx, AtomType.AromaticCarbonHydrophobe, mask=mask)
         """
-        # mask defaults to None (recomputed from idx) for the grid-construction
-        # caller (GridScore builds r/idx directly from a raw KDTree query, with no
-        # pre-existing narrowed mask to inherit). _batch_scores (below) passes its
-        # own already-narrowed mask explicitly — recomputing from idx alone there
-        # would silently undo KNNDependency.narrow()'s per-term cutoff masking,
-        # since narrow() only clears the boolean mask, not idx/r themselves.
         if mask is None:
-            mask = idx != self.nn_dep.tree.n
+            # A grid: the neighbors of a search merged over all terms, at their largest k and
+            # cutoff. Keep this term's own k nearest within its own cutoff, as narrow() does for a
+            # ligand, so that the grid is the same function as the exact score. The neighbors are
+            # sorted nearest first: the columns beyond the furthest neighbor any point needs are
+            # dropped, which leaves a term with a short cutoff only a few columns to score.
+            r, idx, mask = self.nn_dep.narrow((r, idx, idx != self.nn_dep.tree.n))
+            n = int(mask.sum(axis=-1).max()) if mask.size else 0
+            r, idx, mask = r[..., :n], idx[..., :n], mask[..., :n]
 
         # [..., None] adds the trailing neighbor axis so this broadcasts correctly whether
         # atom_type is a scalar (single hypothetical type, e.g. a grid sweep) or an array
@@ -306,8 +310,9 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         dist = r - self._optimal_distance(idx, mask, radii, self.offset)
         s = self._kernel(dist)
 
-        s[~self._mask(idx, mask, atom_type)] = 0.0
-        return s.sum(axis=-1)
+        # np.where, not s[~mask] = 0: the mask may broadcast against the scores (one atom type
+        # per row of a grid, but the same neighbors for all)
+        return np.where(self._mask(idx, mask, atom_type), s, 0.0).sum(axis=-1)
 
     def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
         r, idx, mask = computed_batch[self.nn_dep]

@@ -156,7 +156,9 @@ A term on a grid implements
 {meth}`_score_field(r, idx, atom_type, mask=None) <pyrite.scoring.protein._KNNScoringFunction._score_field>`:
 the score of points of one atom type, from the distances `r` to, and indices `idx` of, their nearest
 receptor atoms. A term with a `_kernel`, as above, gets it for free, with its `_mask`, and works on a
-grid without further code. A term that does not use `_kernel` can implement `_score_field` itself;
+grid without further code, as long as `_kernel` and `_mask` broadcast: to build a grid, they are
+called with all atom types at once, as a column, like `np.isin(atom_type, CARBON)[..., None]` in the
+example above. A term that does not use `_kernel` can implement `_score_field` itself;
 one that cannot sets `_score_field = None`, and `GridScore` then refuses it with a `TypeError`.
 
 Of the built-in terms, the Vina terms ({class}`~pyrite.scoring.Gaussian`,

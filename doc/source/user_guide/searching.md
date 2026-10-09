@@ -29,7 +29,7 @@ from pyrite.io import fix_receptor_pdb
 
 receptor = Mol.from_pdb(fix_receptor_pdb("input/2boh.pdb"), hydrogens="add")
 ligand = Mol.from_sdf("input/2boh_ligand.sdf", flexible=True, hydrogens="add")
-rng = np.random.default_rng(12)
+rng = np.random.default_rng(0)
 ```
 
 ## The binding site
@@ -201,15 +201,40 @@ rmsd = RMSD(ligand)
 ```
 
 ```{code-cell} python
+:tags: [remove-cell]
+
+from IPython.display import Markdown
+from myst_nb import glue
+
+distances = [rmsd.get_score(poses[i]) for i in best]
+closest = int(np.argmin(distances))
+if closest == 0 and distances[0] < 2.0:
+    outcome = f"The top pose is {distances[0]:.1f} Angstrom from the crystal pose: the search found it."
+elif distances[closest] < 2.0:
+    outcome = (
+        f"The top pose is {distances[0]:.1f} Angstrom from the crystal pose; the pose closest to"
+        f" the crystal pose, at {distances[closest]:.1f} Angstrom, is number {closest + 1} of the"
+        " five: the search found it, but the scoring function prefers another pose."
+    )
+else:
+    outcome = (
+        f"None of the five poses is close to the crystal pose; the closest is"
+        f" {distances[closest]:.1f} Angstrom away: this search did not find it."
+    )
+glue("outcome", Markdown(outcome), display=False)
+```
+
+{glue:md}`outcome` A search is random: with these settings, about half of all searches rank a pose close to the
+crystal pose first. More starting poses and hops make that more likely, at the cost of time; see
+{doc}`making_it_fast`.
+
+```{code-cell} python
 crystal = ligand.copy()
 crystal.set_draw_options({"colorscheme": "greenCarbon"})
 viewer = Viewer(width=600, height=400)
 viewer.add(receptor, options={"surfaceopacity": 0.4})
 viewer.add(crystal).add_v(ligand, poses[best])
 ```
-
-The search is random: with another seed, or fewer starting poses or hops, it does not always find
-the best pose. More of both make that more likely, at the cost of time; see Making it fast.
 
 ## Other searches
 
@@ -245,5 +270,14 @@ pose = Pose(evolved.x, ligand.layout)
 round(float(evolved.fun), 2), round(rmsd.get_score(pose), 2)
 ```
 
-Here it is fast, but finds a worse pose than basin hopping did: which search works best depends on
-the problem.
+```{code-cell} python
+:tags: [remove-cell]
+
+glue("evolved_score", float(evolved.fun), display=False)
+glue("evolved_rmsd", float(rmsd.get_score(pose)), display=False)
+glue("hopping_score", float(scores[best[0]]), display=False)
+```
+
+Here it finds a pose scoring {glue:text}`evolved_score:.2f`, {glue:text}`evolved_rmsd:.1f` Angstrom
+from the crystal pose, against {glue:text}`hopping_score:.2f` for the best pose of basin hopping.
+Which search works best depends on the problem, and is for you to try.

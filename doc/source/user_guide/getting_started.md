@@ -138,9 +138,33 @@ for i in best:
     print(f"score {scores[i]:6.2f}   RMSD to the crystal pose {rmsd.get_score(poses[i]):5.2f} A")
 ```
 
-The best pose is within 1 Angstrom of the crystal pose. A search is random: with another seed, or
-fewer starting poses or iterations, it does not always find that pose, and more of both make it more
-likely.
+```{code-cell} python
+:tags: [remove-cell]
+
+from IPython.display import Markdown
+from myst_nb import glue
+
+distances = [rmsd.get_score(poses[i]) for i in best]
+closest = int(np.argmin(distances))
+if closest == 0 and distances[0] < 2.0:
+    outcome = f"The top pose is {distances[0]:.1f} Angstrom from the crystal pose: the search found it."
+elif distances[closest] < 2.0:
+    outcome = (
+        f"The top pose is {distances[0]:.1f} Angstrom from the crystal pose; the pose closest to"
+        f" the crystal pose, at {distances[closest]:.1f} Angstrom, is number {closest + 1} of the"
+        " five: the search found it, but the scoring function prefers another pose."
+    )
+else:
+    outcome = (
+        f"None of the five poses is close to the crystal pose; the closest is"
+        f" {distances[closest]:.1f} Angstrom away: this search did not find it."
+    )
+glue("outcome", Markdown(outcome), display=False)
+```
+
+{glue:md}`outcome` A search is random: with these settings, about half of all searches rank a pose close to the
+crystal pose first. More starting poses and hops make that more likely, at the cost of time; see
+{doc}`making_it_fast`.
 
 The poses in the binding site, with the crystal pose in green; the slider steps through them:
 

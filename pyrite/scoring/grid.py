@@ -7,6 +7,9 @@ from pyrite.scoring import Clamp, ScoringFunction
 from pyrite.scoring._base import _CombinedScoringFunction, _ScaledScoringFunction
 from pyrite.scoring.dependencies import Dependency, KNNDependency, PositionDependency
 
+# The number of grid vertices scored at once while building a grid.
+_GRID_CHUNK = 1024
+
 
 @njit
 def _trilinear_sum(positions, values, columns, origin, step):
@@ -415,30 +418,31 @@ class GridScore(ScoringFunction):
 
         axes, shape, grid_points = self._make_grid_points(binding_site, spacing, padding)
 
-        # same KNNDependency machinery every other scoring function already
-        # goes through — just point its query at grid vertices instead of
-        # the real ligand. Reuses the already-built/cached KDTree (same
-        # point_cloud -> same tree_hash -> KDTreeCache hit).
-        grid_dep = KNNDependency(
-            knn_dep.point_cloud,
-            lambda _: grid_points,
-            knn_dep.k,
-            knn_dep.distance_upper_bound,
-        )
-        r_grid, idx_grid, _ = grid_dep.compute(None)
-
         # One column per atom type present in the ligand; every atom reads the column of its type.
         probe_types = self._probe_mol.atom_types[self._probe_mask]
         atom_types = sorted(set(probe_types.tolist()))
-        self._values = np.ascontiguousarray(
-            np.stack(
-                [
-                    scoring_function._score_field(r_grid, idx_grid, atom_type).reshape(shape)
-                    for atom_type in atom_types
-                ],
-                axis=-1,
+
+        # The grid is scored a chunk of vertices at a time: the arrays of all neighbors of all
+        # vertices at once (atom types x vertices x k) do not fit in the CPU caches, and take
+        # gigabytes.
+        # The same KNNDependency as for a ligand, pointed at the vertices; it reuses the cached
+        # KD-tree of the receptor.
+        values = np.empty((len(grid_points), len(atom_types)))
+        for start in range(0, len(grid_points), _GRID_CHUNK):
+            chunk = grid_points[start : start + _GRID_CHUNK]
+            chunk_dep = KNNDependency(
+                knn_dep.point_cloud,
+                lambda _, chunk=chunk: chunk,
+                knn_dep.k,
+                knn_dep.distance_upper_bound,
             )
-        )
+            r, idx, _ = chunk_dep.compute(None)
+            # All atom types at once, as a column: the terms broadcast them against the
+            # (vertices, k) neighbors, so what depends on the receptor alone (the radii and
+            # properties of the neighbors) is looked up once per chunk, not once per type.
+            scores = scoring_function._score_field(r, idx, np.array(atom_types)[:, None])
+            values[start : start + len(chunk)] = scores.T
+        self._values = np.ascontiguousarray(values.reshape(*shape, len(atom_types)))
         self._columns = np.array([atom_types.index(t) for t in probe_types.tolist()])
         self._origin = np.array([axis[0] for axis in axes])
         self._step = np.array([axis[1] - axis[0] for axis in axes])

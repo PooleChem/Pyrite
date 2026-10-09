@@ -1,9 +1,59 @@
 import numpy as np
+from numba import njit
 from rdkit import Chem
 
 from .._common import Mol
 from ._base import ScoringFunction, _RDKitScoringFunction
 from .dependencies import Dependency, PositionDependency
+
+
+@njit(cache=True)
+def _overlap_sum(positions, first, second, sum_of_radii):
+    """The summed overlap of every pose: ``(n_poses, n_atoms, 3)`` positions -> ``(n_poses,)``."""
+    n_poses = positions.shape[0]
+    out = np.zeros(n_poses)
+    for i in range(n_poses):
+        total = 0.0
+        for p in range(first.shape[0]):
+            a, b = first[p], second[p]
+            dx = positions[i, a, 0] - positions[i, b, 0]
+            dy = positions[i, a, 1] - positions[i, b, 1]
+            dz = positions[i, a, 2] - positions[i, b, 2]
+            overlap = sum_of_radii[p] - np.sqrt(dx * dx + dy * dy + dz * dz)
+            if overlap > 0.0:
+                total += overlap
+        out[i] = total
+    return out
+
+
+@njit(cache=True)
+def _overlap_forces(positions, first, second, sum_of_radii):
+    """The summed overlap of one pose, ``(n_atoms, 3)`` positions, and its gradient per atom.
+
+    Every overlapping pair adds ``r_a + r_b - d``: moving its atoms apart along the line between
+    them lowers it by 1 per Angstrom. Atoms at the same position have no direction, and no force.
+    """
+    forces = np.zeros_like(positions)
+    total = 0.0
+    for p in range(first.shape[0]):
+        a, b = first[p], second[p]
+        dx = positions[a, 0] - positions[b, 0]
+        dy = positions[a, 1] - positions[b, 1]
+        dz = positions[a, 2] - positions[b, 2]
+        distance = np.sqrt(dx * dx + dy * dy + dz * dz)
+        overlap = sum_of_radii[p] - distance
+        if overlap <= 0.0:
+            continue
+        total += overlap
+        if distance > 0.0:
+            ux, uy, uz = dx / distance, dy / distance, dz / distance
+            forces[a, 0] -= ux
+            forces[a, 1] -= uy
+            forces[a, 2] -= uz
+            forces[b, 0] += ux
+            forces[b, 1] += uy
+            forces[b, 2] += uz
+    return total, forces
 
 
 class InternalOverlap(ScoringFunction):
@@ -15,8 +65,9 @@ class InternalOverlap(ScoringFunction):
     of atoms counts once, and only atoms in the molecule's ``scoring_mask`` take part (by default
     that leaves out the hydrogens, see :class:`~pyrite.Mol`).
 
-    The score is computed from the atom positions alone, in numpy, for one pose or a whole batch
-    at once. It does not depend on the rotation or translation, only on the torsions.
+    The score is computed from the atom positions alone, in one compiled loop over the pairs of
+    atoms, for one pose or a whole batch at once. It does not depend on the rotation or
+    translation, only on the torsions.
 
     .. note::
         This class can be used as a measure of internal ligand energy. However, it does not fully
@@ -58,37 +109,34 @@ class InternalOverlap(ScoringFunction):
         pairs &= counted[:, None] & counted[None, :]
 
         # the atoms of every counted pair, and the sum of their radii
-        self._first, self._second = np.nonzero(pairs)
-        self._sum_of_radii = radii[self._first] + radii[self._second]
+        self._first, self._second = (
+            np.ascontiguousarray(a, dtype=np.int64) for a in np.nonzero(pairs)
+        )
+        self._sum_of_radii = np.ascontiguousarray(radii[self._first] + radii[self._second])
 
     def get_dependencies(self) -> list[Dependency]:
         return [self._position_dep]
 
     def _overlap(self, positions: np.ndarray) -> np.ndarray:
-        """The summed overlap of ``(..., n_atoms, 3)`` positions: a number per pose."""
-        offsets = positions[..., self._first, :] - positions[..., self._second, :]
-        distances = np.sqrt(np.einsum("...pk,...pk->...p", offsets, offsets))
-        return np.maximum(self._sum_of_radii - distances, 0.0).sum(axis=-1)
+        """The summed overlap of ``(n_poses, n_atoms, 3)`` positions: a number per pose."""
+        positions = np.ascontiguousarray(positions, dtype=np.float64)
+        return _overlap_sum(positions, self._first, self._second, self._sum_of_radii)
 
     def _score(self, pose, computed) -> float:
-        return float(self._overlap(computed[self._position_dep]))
+        return float(self._overlap(computed[self._position_dep][None])[0])
 
     def _batch_scores(self, poses, computed_batch) -> np.ndarray:
         return self._overlap(computed_batch[self._position_dep])
 
     def _score_and_gradient(self, pose, computed):
-        # every overlapping pair adds (r_a + r_b - d): moving its atoms apart along their
-        # connecting line lowers it by 1 per Angstrom
         positions = computed[self._position_dep]
-        offsets = positions[self._first] - positions[self._second]
-        distances = np.sqrt(np.einsum("pk,pk->p", offsets, offsets))
-        overlapping = self._sum_of_radii > distances
-        directions = offsets[overlapping] / distances[overlapping, None]
-        forces = np.zeros_like(positions)
-        np.add.at(forces, self._first[overlapping], -directions)
-        np.add.at(forces, self._second[overlapping], directions)
-        score = float((self._sum_of_radii[overlapping] - distances[overlapping]).sum())
-        return score, self.mol.pose_gradient(pose, positions, forces)
+        score, forces = _overlap_forces(
+            np.ascontiguousarray(positions, dtype=np.float64),
+            self._first,
+            self._second,
+            self._sum_of_radii,
+        )
+        return float(score), self.mol.pose_gradient(pose, positions, forces)
 
 
 class InternalEnergy(_RDKitScoringFunction):
