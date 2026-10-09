@@ -23,7 +23,7 @@ from there.
 ## Checks
 
 Every push and pull request runs the same checks as below on GitHub; a pull request can only be
-merged into `main` when they pass.
+merged into `dev` or `main` when they pass.
 
 ```bash
 pytest                                            # the tests, about a minute
@@ -54,10 +54,20 @@ page of the user guide explains how: a new term needs one method, `_score`. Regi
 
 ## Branches and pull requests
 
-- Work on a branch of your own, and open the pull request against `dev`.
-- `dev` collects the work in progress; `main` is what is released and documented online, and changes
-  through pull requests from `dev`.
-- Keep a pull request to one change, and describe what it changes and why.
+- `dev` collects the work in progress; `main` is what is released, on PyPI and in the documentation
+  online. Both only change through pull requests whose checks pass.
+- Work on a branch of your own (or a fork), and open the pull request against `dev`.
+- Keep a pull request to one change, and describe what it changes and why. A maintainer is asked for
+  a review automatically, and merges it.
+
+## Releases
+
+1. Branch `release/x.y.z` off `dev`, and set the version in `pyrite/__init__.py`. Only fixes go into
+   the release branch.
+2. Open a pull request from `release/x.y.z` into `main`; merge it when the checks pass.
+3. Tag the merge `vx.y.z` and create a GitHub release from the tag: this publishes the package on
+   PyPI, and the documentation of `main` is published on every push.
+4. Merge `main` back into `dev`, so that the fixes of the release are not lost.
 
 ## License
 

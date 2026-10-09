@@ -24,9 +24,11 @@ scoring/protein.py (via static / standalone calls):
 """
 
 import math
+import warnings
 
 import numpy as np
 import pytest
+from conftest import EXAMPLES
 
 from pyrite._common import Mol
 from pyrite._util import (
@@ -48,14 +50,14 @@ from pyrite.scoring.protein import (
 # Fixtures — one shared protein/ligand pair for all integration-level tests
 # ---------------------------------------------------------------------------
 
-PROT = "1mmv"
-BASE = "/Users/martvanderlugt/Dev/bp/input/astex"
-
 
 @pytest.fixture(scope="module")
 def mol_pair():
-    receptor = Mol.from_pdb(f"{BASE}/{PROT}/{PROT}_protein-processed.pdb")
-    ligand = Mol.from_sdf(f"{BASE}/{PROT}/{PROT}_ligand.sdf", flexible=True)
+    # The complex in the repository (the tests only check generic properties of the scores)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        receptor = Mol.from_pdb(str(EXAMPLES / "factor_x.pdb"))
+    ligand = Mol.from_sdf(str(EXAMPLES / "factor_x_ligand.sdf"), flexible=True)
     return ligand, receptor
 
 
