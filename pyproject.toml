@@ -1,3 +1,72 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyrite-chem"
+dynamic = ["version"]  # from pyrite/__init__.py
+description = "A Python toolkit for molecular docking: molecules, poses, scoring functions and searches"
+readme = "README.md"
+# The LICENSE is a custom non-commercial license, not an OSI license: no license classifier.
+license = "LicenseRef-Pyrite-Non-Commercial"
+license-files = ["LICENSE"]
+authors = [
+  { name = "Mart Johanan van der Lugt" },
+  { name = "David Alonzo Poole III" },
+]
+requires-python = ">=3.10"
+keywords = ["molecular docking", "scoring functions", "cheminformatics", "drug discovery"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Chemistry",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "numpy>=1.25",
+  "scipy>=1.10",
+  "numba>=0.59",
+  "rdkit>=2023.9",
+  "py3Dmol>=2.0",
+  "ipython>=8.0",
+  "ipywidgets>=8.0",
+]
+
+[project.optional-dependencies]
+# Only for pyrite.io.fix_receptor_pdb
+pdbfixer = ["openmm>=8.0", "pdbfixer>=1.9"]
+dev = ["pytest", "ruff>=0.16,<0.17"]
+docs = [
+  "sphinx>=8.1",
+  "numpydoc>=1.8",
+  "myst-nb>=1.2",
+  "matplotlib",
+  "shibuya>=2026.7.12",
+  "sphinx-copybutton",
+  "sphinx-design",
+  "sphinx-togglebutton",
+  "sphinxcontrib-mermaid",
+  "sphinx-iconify",
+  "sphinx-sitemap",
+  "sphinx-docsearch",
+]
+
+[project.urls]
+Documentation = "https://poolechem.github.io/Pyrite/"
+Source = "https://github.com/PooleChem/Pyrite"
+Issues = "https://github.com/PooleChem/Pyrite/issues"
+
+[tool.hatch.version]
+path = "pyrite/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pyrite"]
+
+[tool.hatch.build.targets.sdist]
+include = ["pyrite", "tests", "examples/input_files", "README.md", "LICENSE", "CITATION.cff"]
+
 [tool.ruff]
 line-length = 100
 target-version = "py310"
@@ -29,7 +98,6 @@ convention = "numpy"
 quote-style = "double"
 
 [tool.pytest.ini_options]
-# Pyrite is not installed as a package: put the repository root on the path, so that a bare
-# `pytest` finds `pyrite` the same way `python -m pytest` does.
+# The repository root on the path: the tests run on the source, installed or not.
 pythonpath = ["."]
 testpaths = ["tests"]

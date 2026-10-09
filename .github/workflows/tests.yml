@@ -1,0 +1,57 @@
+# Checks every push and pull request: the code style (ruff) and the test suite (pytest).
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch cancels the checks of an older one.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install ruff
+        run: pip install "ruff>=0.16,<0.17"
+
+      - name: Check the code
+        run: ruff check pyrite tests benchmarks
+
+      - name: Check the formatting
+        run: ruff format --check pyrite tests benchmarks
+
+  tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    env:
+      OMP_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same conda-forge environment as the documentation: Pyrite's dependencies.
+      - name: Set up the environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: doc/environment.yml
+          cache-environment: true
+
+      - name: Install pytest
+        run: pip install pytest
+
+      - name: Run the tests
+        run: pytest
