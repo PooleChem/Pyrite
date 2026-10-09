@@ -19,11 +19,11 @@ structure tells us where the ligand really binds, so we can check the result.
 
 ## Installing
 
-Pyrite is not a package on PyPI yet. Clone the repository, and put its folder on the Python path:
+Pyrite is on PyPI as `pyrite-chem`; the `pdbfixer` extra adds what `fix_receptor_pdb`, below,
+needs:
 
 ```bash
-git clone https://github.com/PooleChem/Pyrite.git
-export PYTHONPATH="$PWD/Pyrite:$PYTHONPATH"
+pip install "pyrite-chem[pdbfixer]"
 ```
 
 ## Loading the molecules

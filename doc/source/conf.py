@@ -7,6 +7,7 @@ from pathlib import Path
 
 _ROOT = os.path.abspath("../..")
 sys.path.insert(0, _ROOT)
+import pyrite  # noqa: E402
 # The user guide's notebooks run in their own kernel, which inherits the environment.
 os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [_ROOT, os.environ.get("PYTHONPATH")]))
 
@@ -22,7 +23,7 @@ os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, [_ROOT, os.environ.get("
 project = "Pyrite"
 copyright = "2025-2026, M.J. van der Lugt"
 author = "M.J. van der Lugt"
-release = "1.0"
+release = pyrite.__version__
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration
