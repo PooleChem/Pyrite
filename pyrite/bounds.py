@@ -1,8 +1,8 @@
 """
 
-====================================================
-Bounds module (:mod:`pyrite.bounds`)
-====================================================
+====================================
+Binding sites (:mod:`pyrite.bounds`)
+====================================
 
 .. currentmodule:: pyrite.bounds
 
@@ -49,11 +49,12 @@ from abc import ABC, abstractmethod
 from collections import deque
 
 import numpy as np
-from numpy.typing import NDArray, ArrayLike
+from numpy.typing import ArrayLike, NDArray
 from rdkit.Geometry import Point3D
 from scipy.spatial import KDTree
 
-from pyrite._common import _rotation_matrix, Ligand, Receptor
+from pyrite._common import Mol, PoseLayout
+from pyrite._util import _rotation_matrix_from_euler
 
 
 class Bounds(ABC):
@@ -81,7 +82,18 @@ class Bounds(ABC):
         The rotation of the bounding box in Euler angles or a 3x3 rotation matrix. Defaults to
         no rotation.
 
+    See Also
+    --------
+    RectangularBounds : A box.
+    Pocket : A binding pocket of alpha spheres.
+    pyrite.search.place_in : Place a molecule in bounds.
 
+    Examples
+    --------
+    >>> from pyrite.bounds import RectangularBounds
+    >>> box = RectangularBounds(10.0, at=(5.0, 8.0, 23.0))
+    >>> box.is_within((5.0, 8.0, 23.0))
+    True
     """
 
     # Bounding box centered at the origin. Smallest box that contains the whole bounds.
@@ -114,7 +126,7 @@ class Bounds(ABC):
         rotation = np.array(rotation)
         if rotation.shape == (3,):
             # Euler angles
-            self._rotation_matrix = np.array(_rotation_matrix(*rotation)[:3, :3])
+            self._rotation_matrix = np.array(_rotation_matrix_from_euler(*rotation)[:3, :3])
         elif rotation.shape == (3, 3):
             # Rotation matrix
             self._rotation_matrix = np.array(rotation)
@@ -172,7 +184,7 @@ class Bounds(ABC):
         )
 
     def get_translation_bounds(self) -> list[tuple[float, float]]:
-        """Returns the translation bounds of the ``Bounds`` object.
+        """Return the translation bounds of the ``Bounds`` object.
 
         This method determines the minimum and maximum coordinates for the translation
         bounds within the bounding box, considering its current alignment and rotation.
@@ -184,6 +196,14 @@ class Bounds(ABC):
             A list of tuples where each tuple represents the minimum and
             maximum bounds along a coordinate axis.
 
+        See Also
+        --------
+        get_bounds : The bounds of every pose variable.
+        pyrite.search.random_hop : Keeps hops inside these.
+
+        Examples
+        --------
+        >>> (x_min, x_max), (y_min, y_max), (z_min, z_max) = box.get_translation_bounds()
         """
         self.__compute_rotated_boundingbox()
         return list(
@@ -194,8 +214,10 @@ class Bounds(ABC):
         )
 
     def is_within(self, p: tuple[float, float, float]) -> bool:
-        """Checks if a given point lies within the bounding box of the object.
+        """Check if a given point lies within the bounds.
 
+        Points on the surface are within. The position of a pose is the position of its center atom,
+        so a ligand whose center atom is within can still reach outside.
 
         Parameters
         ----------
@@ -205,9 +227,17 @@ class Bounds(ABC):
         Returns
         -------
         bool
+            Whether `p` lies within the bounds.
 
+        See Also
+        --------
+        distance : How far outside a point is.
+
+        Examples
+        --------
+        >>> box.is_within(ligand.position)
+        True
         """
-
         p = self._world_to_bounds(p)
 
         return (
@@ -232,7 +262,16 @@ class Bounds(ABC):
         Returns
         -------
         float
+            The squared distance from `p` to the surface of the bounds, 0 inside them.
 
+        See Also
+        --------
+        distance : The distance.
+
+        Examples
+        --------
+        >>> RectangularBounds(10.0).squared_distance((7.0, 0.0, 0.0))
+        4.0
         """
 
     def distance(self, p: tuple[float, float, float]) -> float:
@@ -249,13 +288,24 @@ class Bounds(ABC):
         Returns
         -------
         float
+            The distance from `p` to the surface of the bounds, 0 inside them.
 
+        See Also
+        --------
+        squared_distance : The squared distance.
+        is_within : Whether a point is inside.
+
+        Examples
+        --------
+        >>> box = RectangularBounds(10.0)  # from -5 to 5 on every axis
+        >>> box.distance((7.0, 0.0, 0.0))
+        2.0
         """
         return np.sqrt(self.squared_distance(p))
 
     @abstractmethod
     def transform_sample_to_bounds(self, v: NDArray) -> NDArray:
-        """Transforms a sample point to the specified bounds.
+        """Transform a sample point to the specified bounds.
 
         This method maps a sample point `v`, with shape ``(3,)`` or a list of sample points `v`,
         with shape ``(3,n)`` onto the target bounds, ensuring that the transformation adheres to
@@ -272,102 +322,89 @@ class Bounds(ABC):
         -------
         numpy.ndarray
             An array with a shape equal to `v` representing the transformed sample points.
+
+        See Also
+        --------
+        place_random_uniform : Uses this.
+
+        Examples
+        --------
+        >>> points = box.transform_sample_to_bounds(rng.uniform(size=(100, 3)))
         """
 
-    @staticmethod
-    def transform_sample_to_2pi(v: NDArray) -> NDArray:
-        """Transform the input array values to the range of [-π, π).
-
-        Parameters
-        ----------
-        v : numpy.ndarray
-            A vector of shape ``(3,)`` or ``(3,n)`` of values within [0,1) representing the sample
-            point(s) to transform.
-
-        Returns
-        -------
-        numpy.ndarray
-            An array with a shape equal to `v` representing the transformed sample points.
-
-        """
-        v_2d = np.atleast_2d(v)
-
-        v_2d[:, :] *= 2 * np.pi
-        v_2d[:, :] -= np.pi
-
-        if v.ndim < 2:
-            return v_2d[0, :]
-
-        return v_2d
-
+    # einsum instead of matmul: these are 3x3 rotations, for which a BLAS matrix product gains
+    # nothing, and some BLAS builds (Apple's Accelerate) raise spurious floating-point warnings.
     def _world_to_bounds(self, v: NDArray) -> NDArray:
-        return np.matmul(np.array(v) - self._at, self.__inv_rotation_matrix)
+        return np.einsum("...j,jk->...k", np.array(v) - self._at, self.__inv_rotation_matrix)
 
     def _bounds_to_world(self, v: NDArray) -> NDArray:
-        return np.matmul(np.array(v), self._rotation_matrix) + self._at
+        return np.einsum("...j,jk->...k", np.array(v), self._rotation_matrix) + self._at
 
-    def place_random_uniform(self, n: int = 1) -> NDArray:
-        """Generates an array of random samples within specified bounds.
+    def place_random_uniform(self, n: int = 1, rng: np.random.Generator | None = None) -> NDArray:
+        """Sample `n` positions uniformly at random within the bounds.
+
+        Uniform in the volume of the shape: for a sphere, more positions far from the center than
+        close to it.
 
         Parameters
         ----------
         n : int, default 1
-            Number of samples to generate.
-
+            Number of positions to generate.
+        rng : numpy.random.Generator, optional
+            The source of randomness. Defaults to a fresh generator.
 
         Returns
         -------
         numpy.ndarray
-            A NumPy array containing the generated random samples. The array has
-            a shape of ``(n, 6)``, where the first three columns represent rotation and the
-            last three columns represent translation.
+            An array of shape ``(n, 3)`` with the positions.
 
+        See Also
+        --------
+        place_grid : A regular grid.
+        pyrite.Poses.from_parts : Combine positions with rotations and torsions.
+
+        Examples
+        --------
+        >>> positions = box.place_random_uniform(100, rng=np.random.default_rng(0))
+        >>> positions.shape
+        (100, 3)
         """
-        s = np.random.rand(n, 3 + 3)
+        rng = np.random.default_rng() if rng is None else rng
+        return self.transform_sample_to_bounds(rng.random((n, 3)))
 
-        s[:, 0:3] = Bounds.transform_sample_to_2pi(s[:, 0:3])
-        s[:, 3:6] = self.transform_sample_to_bounds(s[:, 3:6])
+    def place_grid(self, n: int = 1) -> NDArray:
+        """Generate a regular grid of positions within the bounds.
 
-        return s
-
-    def place_grid(self, n: int = 1, rotation_grid: bool = False) -> NDArray:
-        """Generate a grid of `n` samples representing rotation and translation, and convert
-        them into the required bounds.
+        `n` is the number of points along every axis, so the result has ``n ** 3`` positions:
+        ``place_grid(10)`` gives 1000, ``place_grid(1000)`` a billion. For shapes other than a box,
+        the regular grid of the unit cube is mapped into the shape, so the positions are not evenly
+        spaced there.
 
         Parameters
         ----------
         n : int
             Number of points to discretize each axis in the grid.
-        rotation_grid : bool, default False
-            Whether to create a discretized rotation grid (True),
-            or use random rotation values (default, False).
 
         Returns
         -------
         numpy.ndarray
-            A numpy array representing the grid of sampled transformations, with
-            rotation angles in radians and translations in their corresponding adjusted
-            bounds.
+            An array of shape ``(n ** 3, 3)`` with the positions.
 
+        See Also
+        --------
+        place_random_uniform : Random positions.
+        pyrite.search.place_in : Place a molecule.
+
+        Examples
+        --------
+        >>> box.place_grid(10).shape
+        (1000, 3)
         """
+        axes = [np.linspace(0, 1, n)] * 3
+        x, y, z = np.meshgrid(*axes, indexing="ij")
+        samples = np.stack([x.ravel(), y.ravel(), z.ravel()], axis=1)
 
-        rotation_grid = [np.linspace(0, 1, n)] * 3 if rotation_grid else [0.0] * 3
-        translation_grid = [np.linspace(0, 1, n)] * 3
-
-        axes = rotation_grid + translation_grid
-
-        roll, yaw, pitch, x, y, z = np.meshgrid(*axes, indexing="ij")
-        s = np.vstack(
-            [roll.ravel(), yaw.ravel(), pitch.ravel(), x.ravel(), y.ravel(), z.ravel()]
-        ).T
-
-        if not rotation_grid:
-            s[:, 0:3] = np.random.rand(s.shape[0], 3)
-
-        s[:, 0:3] = Bounds.transform_sample_to_2pi(s[:, 0:3])
-        s[:, 3:6] = self.transform_sample_to_bounds(s[:, 3:6])
-
-        return s
+        return self.transform_sample_to_bounds(samples)
 
     def _viewer_add_(self, viewer, c_m_id, options: dict = None):
         if options is None:
@@ -393,40 +430,56 @@ class Bounds(ABC):
 
     def get_bounds(
         self,
-        ligand: Ligand,
-        angle_bounds: tuple[float, float] = (-2 * np.pi, 2 * np.pi),
-        dihedral_bounds: tuple[float, float] = (-2 * np.pi, 2 * np.pi),
-    ):
-        """Returns the translation bounds of the ``Bounds`` object.
+        layout: PoseLayout,
+        rotation_bounds: tuple[float, float] | None = None,
+        torsion_bounds: tuple[float, float] = (-2 * np.pi, 2 * np.pi),
+    ) -> list[tuple[float, float]]:
+        """Return the bounds of every variable of a pose, as used by scipy optimizers.
 
-        This method determines the minimum and maximum coordinates for the translation
-        bounds within the bounding box, considering its current alignment and rotation.
+        The translation bounds are those of the ``Bounds`` object, see
+        :meth:`get_translation_bounds`.
 
         Parameters
         ----------
-        ligand : Ligand
-            The ligand to use to retrieve the dihedral bounds.
-        angle_bounds : tuple[float, float], default (-2 * np.pi, 2 * np.pi)
-            The bounds to use for the rotation angles.
-        dihedral_bounds : tuple[float, float], default (-2 * np.pi, 2 * np.pi)
-            The bounds to use for the dihedral angles.
+        layout : PoseLayout
+            The layout of the poses, e.g. ``mol.layout``.
+        rotation_bounds : tuple[float, float], optional
+            The bounds to use for every rotation variable. By default ``(-2π, 2π)`` for Euler
+            angles and ``(-1, 1)`` for quaternions.
+        torsion_bounds : tuple[float, float], default (-2π, 2π)
+            The bounds to use for the torsion angles.
 
         Returns
         -------
         list[tuple[float, float]]
-            A list of tuples where each tuple represents the minimum and
-            maximum bounds along a coordinate axis.
+            One ``(min, max)`` tuple for each of the ``layout.n_dims`` variables, in the order of
+            the layout.
 
+        See Also
+        --------
+        get_translation_bounds : Only the translation.
+        pyrite.search.BasinHopping : Passes these to L-BFGS-B.
+
+        Examples
+        --------
+        >>> bounds = box.get_bounds(ligand.layout)
+        >>> minimize(score, x0, method="L-BFGS-B", bounds=bounds)
         """
-        bounds = [angle_bounds] * 6 + [dihedral_bounds] * len(ligand.dihedral_angles)
-        bounds[3:6] = self.get_translation_bounds()
+        if rotation_bounds is None:
+            rotation_bounds = (-1.0, 1.0) if layout.rot_type == "quat" else (-2 * np.pi, 2 * np.pi)
 
-        return bounds
+        return (
+            [rotation_bounds] * layout.rot_dim
+            + self.get_translation_bounds()
+            + [torsion_bounds] * layout.n_tors
+        )
 
 
 class RectangularBounds(Bounds):
     """Represents a rectangular bounding box in a 3D coordinate system.
 
+    The usual docking box. :meth:`autobox` makes one around a molecule, for example the crystal
+    ligand.
 
     Parameters
     ----------
@@ -439,7 +492,14 @@ class RectangularBounds(Bounds):
         The rotation of the rectangle in Euler angles or a 3x3 rotation matrix. Defaults to
         no rotation.
 
+    See Also
+    --------
+    autobox : A box around a molecule.
+    SphericalBounds : A sphere.
 
+    Examples
+    --------
+    >>> box = RectangularBounds((20.0, 20.0, 24.0), at=(5.2, 8.0, 23.2))
     """
 
     def __init__(
@@ -457,41 +517,41 @@ class RectangularBounds(Bounds):
 
         super().__init__((s[0] / 2, s[1] / 2, s[2] / 2), at, rotation)
 
-    # TODO: consider rotation.
+    # TODO: consider rotation. Ja?
     @classmethod
-    def from_ligand(cls, ligand: Ligand, padding: float = 0.0):
-        """Creates an instance of the class based on the given ligand and optional padding.
+    def autobox(cls, mol: Mol, padding: float = 0.0):
+        """Create an instance of the class based on the given molecule with optional padding.
 
         .. warning::
             The created bounding box is always aligned to the world axes.
 
         Parameters
         ----------
-        ligand : Ligand
-            The ``Ligand`` to autobox.
+        mol : Mol
+            The ``Mol`` to autobox.
         padding : float, optional
-            Optional padding around the ligand.
+            Optional padding around the molecule.
 
 
         Returns
         -------
         RectangularBounds
 
+        See Also
+        --------
+        Pocket.intersect : Restrict a pocket to the box.
 
+        Examples
+        --------
+        >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+        >>> box = RectangularBounds.autobox(ligand, padding=4.0)
         """
-        conf = ligand.GetConformer()
-        points = np.empty((ligand.GetNumAtoms(), 3))
-        for i, atom in enumerate(ligand.GetAtoms()):
-            ai = atom.GetIdx()
-            points[i] = conf.GetAtomPosition(ai)
-
-        dimensions = np.max(points, axis=0) - np.min(points, axis=0) + 2 * padding
-        center = np.mean([np.min(points, axis=0), np.max(points, axis=0)], axis=0)
-        return cls(dimensions, center)
-
-    @classmethod
-    def from_receptor(cls, receptor: Receptor, padding: float = 0.0):
-        points = receptor.positions
+        # conf = mol.GetConformer()
+        # points = np.empty((mol.GetNumAtoms(), 3))
+        # for i, atom in enumerate(mol.GetAtoms()):
+        #     ai = atom.GetIdx()
+        #     points[i] = conf.GetAtomPosition(ai)
+        points = mol.positions
 
         dimensions = np.max(points, axis=0) - np.min(points, axis=0) + 2 * padding
         center = np.mean([np.min(points, axis=0), np.max(points, axis=0)], axis=0)
@@ -517,6 +577,7 @@ class RectangularBounds(Bounds):
 class SphericalBounds(Bounds):
     """Represents a spherical bounding 'box' in a 3D coordinate system.
 
+    The `rotation` does not change the sphere, but it is kept, as for the other shapes.
 
     Parameters
     ----------
@@ -528,20 +589,26 @@ class SphericalBounds(Bounds):
         The rotation of the rectangle in Euler angles or a 3x3 rotation matrix. Defaults to
         no rotation.
 
+    See Also
+    --------
+    RectangularBounds : A box.
+    CylindricalBounds : A cylinder.
+
+    Examples
+    --------
+    >>> sphere = SphericalBounds(8.0, at=ligand.position)
     """
 
     r = 0
     __r2 = 0
 
-    def __init__(
-        self, r, at: tuple[float, float, float] = None, rotation: NDArray = None
-    ):
+    def __init__(self, r, at: tuple[float, float, float] = None, rotation: NDArray = None):
         if at is None:
             at = [0, 0, 0]
         if rotation is None:
             rotation = [0, 0, 0]
 
-        super().__init__([r / 2, r / 2, r / 2], at, rotation)
+        super().__init__([r, r, r], at, rotation)
         self.r = r
         self.__r2 = r * r
 
@@ -549,7 +616,9 @@ class SphericalBounds(Bounds):
         return super().is_within(p) and self.squared_distance(p) <= 0.0
 
     def squared_distance(self, p):
-        return max(0.0, np.sum(np.square(self._world_to_bounds(p))) - self.__r2)
+        # the squared distance to the surface, as for the other bounds (not |p|^2 - r^2)
+        outside = max(0.0, np.linalg.norm(self._world_to_bounds(p)) - self.r)
+        return outside**2
 
     # Spherical coordinates
     def transform_sample_to_bounds(self, v: NDArray):
@@ -578,6 +647,7 @@ class SphericalBounds(Bounds):
 class CylindricalBounds(Bounds):
     """Represents a cylindrical bounding 'box' in a 3D coordinate system.
 
+    The axis of the cylinder is the y axis of the bounds, turned by `rotation`.
 
     Parameters
     ----------
@@ -591,20 +661,26 @@ class CylindricalBounds(Bounds):
         The rotation of the rectangle in Euler angles or a 3x3 rotation matrix. Defaults to
         no rotation.
 
+    See Also
+    --------
+    RectangularBounds : A box.
+    SphericalBounds : A sphere.
+
+    Examples
+    --------
+    >>> channel = CylindricalBounds(h=20.0, r=4.0, at=(0.0, 0.0, 0.0), rotation=[0.0, 0.0, np.pi / 2])
     """
 
     r = 0
     __r2 = 0
 
-    def __init__(
-        self, h, r, at: tuple[float, float, float] = None, rotation: NDArray = None
-    ):
+    def __init__(self, h, r, at: tuple[float, float, float] = None, rotation: NDArray = None):
         if at is None:
             at = [0, 0, 0]
         if rotation is None:
             rotation = [0, 0, 0]
 
-        super().__init__([r / 2, h / 2, r / 2], at, rotation)
+        super().__init__([r, h / 2, r], at, rotation)
         self.r = r
         self.__r2 = r * r
 
@@ -615,12 +691,12 @@ class CylindricalBounds(Bounds):
         return np.sum(np.square(self._world_to_bounds(p)[[0, 2]]))
 
     def squared_distance(self, p):
-        p = np.subtract(p, self._at)
+        local = self._world_to_bounds(p)
 
-        dh = max(0.0, abs(p[1]) - self._bounding_box_at_origin[1])
-        dr = max(0.0, self._squared_distance_to_axis(p) - self.__r2)
+        dh = max(0.0, abs(local[1]) - self._bounding_box_at_origin[1])
+        dr = max(0.0, np.sqrt(local[0] ** 2 + local[2] ** 2) - self.r)
 
-        return max(0.0, dh**2 + dr**2)
+        return dh**2 + dr**2
 
     def transform_sample_to_bounds(self, v: NDArray):
         v_2d = np.atleast_2d(v)
@@ -632,10 +708,10 @@ class CylindricalBounds(Bounds):
         r_ = self.r * np.sqrt(u)
 
         v_2d[:, 0] = r_ * np.cos(phi)
-        v_2d[:, 1] = (
-            h * self._bounding_box_at_origin[1] - self._bounding_box_at_origin[1] / 2
-        )
+        v_2d[:, 1] = (2 * h - 1) * self._bounding_box_at_origin[1]
         v_2d[:, 2] = r_ * -np.sin(phi)
+
+        v_2d = self._bounds_to_world(v_2d)
 
         if v.ndim < 2:
             return v_2d[0, :]
@@ -660,9 +736,17 @@ class Pocket(Bounds):
         The radii of the alpha spheres.
     charges : array_like, default None
         The charges of the alpha spheres. This can be used to assign weights to specific alpha
-        spheres in a :class:`ScoringFunction`. Defaults to zeros.
+        spheres in a :class:`~pyrite.scoring.ScoringFunction`. Defaults to zeros.
 
+    See Also
+    --------
+    Pocket.from_mol : Detect a pocket on a receptor.
+    pyrite.scoring.DistanceToPocket : Keep a ligand in a pocket.
 
+    Examples
+    --------
+    >>> pocket = Pocket.from_mol(receptor).intersect(box, padding=2.0)
+    >>> pocket.to_pqr("pocket.pqr")
     """
 
     __default_draw_options = {
@@ -692,10 +776,12 @@ class Pocket(Bounds):
         super().__init__(bbv, at=at, rotation=[0, 0, 0])
         self.draw_options = self.__default_draw_options.copy()
 
+    # TODO: split pocket into seperate module.
+    #       Turn this into easier to use factory method.
     @classmethod
-    def from_receptor(
+    def from_mol(
         cls,
-        receptor: Receptor,
+        mol: Mol,
         grid_size: float = 0.8,
         sphere_radius: float = 1.4,
         neighbors: int = 18,
@@ -708,7 +794,7 @@ class Pocket(Bounds):
         weight_cap: int = 12,
         solvent_accessible: bool = True,
     ):
-        """Creates a ``Pocket`` from a :class:`~pyrite.Receptor`.
+        """Create a ``Pocket`` from a :class:`~pyrite.Mol`.
 
         This method creates a grid, and fills the space with alpha spheres. These spheres are
         optionally assigned a weight based on their distance to certain residues. The closer to the
@@ -794,8 +880,8 @@ class Pocket(Bounds):
 
         Parameters
         ----------
-        receptor : Receptor
-            The receptor to use.
+        mol : Mol
+            The mol to use.
         grid_size : float, default 0.8
             The grid size to use.
         sphere_radius : float, default 1.4
@@ -809,8 +895,8 @@ class Pocket(Bounds):
             If `weigh_center` is ``True``, spheres that are further away from the protein (read:
             closer to the pocket center), will get a higher weight.
         weigh_depth : bool, default True
-            If `weight_depth` is ``True``, spheres that are further away from the outside shell
-            (read: deeper inside the pocket), will get a higher weight. TODO: multiplier
+            If `weigh_depth` is ``True``, spheres that are further away from the outside shell
+            (read: deeper inside the pocket), will get a higher weight.
         leq_distance_to_protein : int, default 4
             A filter for the distance to the protein. Spheres that are further away will be removed.
         gt_distance_to_outside : int, default 8
@@ -830,16 +916,26 @@ class Pocket(Bounds):
         Returns
         -------
         Pocket
+
+        See Also
+        --------
+        intersect : Keep the part near the binding site.
+        from_pqr : Load a pocket from a file.
+
+        Examples
+        --------
+        >>> receptor = Mol.from_pdb("receptor.pdb")
+        >>> pocket = Pocket.from_mol(receptor, gt_distance_to_outside=10, solvent_accessible=False)
         """
-        tree = KDTree(receptor.positions)
+        tree = KDTree(mol.positions)
 
         padding = 10 * grid_size
-        x_min = np.min(receptor.positions[:, 0]) - padding
-        x_max = np.max(receptor.positions[:, 0]) + padding
-        y_min = np.min(receptor.positions[:, 1]) - padding
-        y_max = np.max(receptor.positions[:, 1]) + padding
-        z_min = np.min(receptor.positions[:, 2]) - padding
-        z_max = np.max(receptor.positions[:, 2]) + padding
+        x_min = np.min(mol.positions[:, 0]) - padding
+        x_max = np.max(mol.positions[:, 0]) + padding
+        y_min = np.min(mol.positions[:, 1]) - padding
+        y_max = np.max(mol.positions[:, 1]) + padding
+        z_min = np.min(mol.positions[:, 2]) - padding
+        z_max = np.max(mol.positions[:, 2]) + padding
 
         x_grid = np.arange(x_min, x_max, grid_size)
         y_grid = np.arange(y_min, y_max, grid_size)
@@ -879,9 +975,7 @@ class Pocket(Bounds):
                 ):
                     yield xx, yy, zz
 
-        result_close = tree.query_ball_point(
-            grid, 2 * sphere_radius, return_length=True
-        )
+        result_close = tree.query_ball_point(grid, 2 * sphere_radius, return_length=True)
 
         occupied = result_close >= 1
 
@@ -919,7 +1013,7 @@ class Pocket(Bounds):
             for idx in np.ndindex(occupied.shape):
                 if occupied[idx]:
                     pt_idx = tree.query(grid[idx], k=1)[1]
-                    residue = receptor.residues[pt_idx]
+                    residue = mol.residues[pt_idx]  # TODO: add this to mol
                     if residue in weight_residues:
                         for nbr in grid_neighbors(*idx):
                             if not occupied[nbr]:
@@ -943,9 +1037,7 @@ class Pocket(Bounds):
                             distance_to_residue[nbr] = 1
                             q.append(nbr)
                         elif distance_to_residue_occ[nbr] < 0:
-                            distance_to_residue_occ[nbr] = (
-                                distance_to_residue_occ[idx] + 1
-                            )
+                            distance_to_residue_occ[nbr] = distance_to_residue_occ[idx] + 1
                             q_occ.append(nbr)
 
             # BFS distance_to_residue
@@ -1015,7 +1107,7 @@ class Pocket(Bounds):
 
     @classmethod
     def from_pqr(cls, pqr_file: str):
-        """Loads a ``Pocket`` from a PQR file.
+        """Load a ``Pocket`` from a PQR file.
 
         The centers of the spheres, their radii and charges are read from the PQR file.
 
@@ -1027,6 +1119,14 @@ class Pocket(Bounds):
         Returns
         -------
         Pocket
+
+        See Also
+        --------
+        to_pqr : Write a pocket.
+
+        Examples
+        --------
+        >>> pocket = Pocket.from_pqr("pocket.pqr")
         """
         centers, radii, charges = cls.__parse_pqr(pqr_file)
         return cls(centers, radii, charges)
@@ -1037,11 +1137,21 @@ class Pocket(Bounds):
     ):
         """Write the ``Pocket`` to a PQR file.
 
+        A PQR file can be read back with :meth:`from_pqr`, and shown in molecular viewers such as
+        PyMOL: the weights are written as charges.
+
         Parameters
         ----------
         pqr_file : str
             The path of the PQR file to write to.
 
+        See Also
+        --------
+        from_pqr : Read a pocket.
+
+        Examples
+        --------
+        >>> pocket.to_pqr("pocket.pqr")
         """
         atom_name = "SPH"
         res_name = "SPH"
@@ -1072,13 +1182,11 @@ class Pocket(Bounds):
         radii = []
         charges = []
 
-        with open(pqr_file, "r", encoding="utf-8") as f:
+        with open(pqr_file, encoding="utf-8") as f:
             for line in f:
                 if line.startswith("ATOM"):
                     line = line.split()
-                    centers.append(
-                        np.array([float(line[5]), float(line[6]), float(line[7])])
-                    )
+                    centers.append(np.array([float(line[5]), float(line[6]), float(line[7])]))
                     charges.append(float(line[8]))
                     radii.append(float(line[9]))
 
@@ -1102,14 +1210,8 @@ class Pocket(Bounds):
         # at = np.array([(x_min + x_max) / 2, (y_min + y_max) / 2, (z_min + z_max) / 2])
         # bbv = np.array([x_max, y_max, z_max]) - at
 
-        dimensions = (
-            np.max(self.centers, axis=0)
-            - np.min(self.centers, axis=0)
-            + 2 * self.radii[0]
-        )
-        center = np.mean(
-            [np.min(self.centers, axis=0), np.max(self.centers, axis=0)], axis=0
-        )
+        dimensions = np.max(self.centers, axis=0) - np.min(self.centers, axis=0) + 2 * self.radii[0]
+        center = np.mean([np.min(self.centers, axis=0), np.max(self.centers, axis=0)], axis=0)
 
         return tuple((dimensions, center))
 
@@ -1144,9 +1246,7 @@ class Pocket(Bounds):
     def _sum_of_distances_kdtree(self, p: NDArray):
         warnings.deprecated()
         nearest_neighbor_distances = self.tree.query(p, k=1)[0]
-        return float(
-            np.sum(np.maximum(nearest_neighbor_distances - self.radii[0], 0.0))
-        )
+        return float(np.sum(np.maximum(nearest_neighbor_distances - self.radii[0], 0.0)))
 
     def transform_sample_to_bounds(self, v: NDArray) -> NDArray:
         raise NotImplementedError
@@ -1167,6 +1267,16 @@ class Pocket(Bounds):
         Returns
         -------
         Pocket
+            A new pocket with only the alpha spheres within `bounds` (plus `padding`).
+
+        See Also
+        --------
+        RectangularBounds.autobox : A box around a molecule.
+
+        Examples
+        --------
+        >>> site = RectangularBounds.autobox(ligand, padding=1.0)
+        >>> pocket = Pocket.from_mol(receptor).intersect(site, padding=2.0)
         """
         i_to_remove = []
         for i, c in enumerate(self.centers):
@@ -1184,7 +1294,32 @@ class Pocket(Bounds):
 
         return self
 
-    def place_random_uniform(self, n: int = 1) -> NDArray:
+    def place_random_uniform(self, n: int = 1, rng: np.random.Generator | None = None) -> NDArray:
+        """Sample `n` positions uniformly at random within the pocket.
+
+        Uniform in the volume of the alpha spheres.
+
+        Parameters
+        ----------
+        n : int, default 1
+            Number of positions to generate.
+        rng : numpy.random.Generator, optional
+            The source of randomness. Defaults to a fresh generator.
+
+        Returns
+        -------
+        numpy.ndarray
+            An array of shape ``(n, 3)`` with the positions.
+
+        See Also
+        --------
+        pyrite.search.place_in : Place a molecule in a pocket.
+
+        Examples
+        --------
+        >>> positions = pocket.place_random_uniform(1000, rng=np.random.default_rng(0))
+        """
+        rng = np.random.default_rng() if rng is None else rng
         bounding_box = RectangularBounds(self._bounding_box_at_origin, self._at)
 
         tree = KDTree(self.centers)
@@ -1193,17 +1328,17 @@ class Pocket(Bounds):
 
         while len(results) < n:
             # Generate 4 * (n - len) samples
-            s = np.random.rand(max(40, 4 * (n - len(results))), 3 + 3)
-            s[:, 0:3] = Bounds.transform_sample_to_2pi(s[:, 0:3])
-            s[:, 3:6] = bounding_box.transform_sample_to_bounds(s[:, 3:6])
+            samples = bounding_box.transform_sample_to_bounds(
+                rng.random((max(40, 4 * (n - len(results))), 3))
+            )
 
             # Check if the points are inside the pocket
-            nearest_neighbor_distances = tree.query(s[:, 3:], k=1)[0]
+            nearest_neighbor_distances = tree.query(samples, k=1)[0]
             valid = (nearest_neighbor_distances - self.radii[0]) <= 0.0
 
-            results.extend(s[valid])
+            results.extend(samples[valid])
 
-        return np.array(results[:n])
+        return np.array(results[:n]).reshape(-1, 3)
 
     def _viewer_add_(self, viewer, c_m_id, options: dict = None):
         if options is None:

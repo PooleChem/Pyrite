@@ -1,0 +1,35 @@
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["doc", "*.ipynb"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "D"]
+# D1xx are the "missing docstring" rules; requiring docstrings everywhere is a separate policy.
+# D401 (imperative summary) is left to numpydoc's own validation in doc/source/conf.py (SS05),
+# which applies numpy's rule exactly: functions start with an infinitive verb, while classes and
+# properties may be described ("Represents ...", "The layout of ...").
+ignore = ["D1", "D401"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+# These module docstrings are reST pages (a title block, then sections), rendered as the API pages
+# of the docs: their first line is a title, not a summary sentence.
+"pyrite/bounds.py" = ["D205", "D400"]
+"pyrite/scoring/__init__.py" = ["D205", "D400"]
+"pyrite/scoring/dependencies.py" = ["D205", "D400"]
+"pyrite/search/__init__.py" = ["D205", "D400"]
+"pyrite/cluster.py" = ["D205", "D400"]
+"pyrite/io.py" = ["D205", "D400"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+# Pyrite is not installed as a package: put the repository root on the path, so that a bare
+# `pytest` finds `pyrite` the same way `python -m pytest` does.
+pythonpath = ["."]
+testpaths = ["tests"]

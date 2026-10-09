@@ -3,11 +3,88 @@ from enum import IntEnum
 from typing import Any
 
 import numpy as np
+from numba import njit
+from numpy._typing import NDArray
 
-from .._common import Ligand, Receptor
+from .._common import Mol
 from ..atom_consts import AtomType, vina_atom_consts
 from ._base import ScoringFunction
-from .dependencies import Dependency, KNNDependency
+from .dependencies import Dependency, KNNDependency, PositionQuery
+
+
+@njit
+def _gaussian_kernel(x, w):
+    return np.exp(-((x / w) ** 2))
+
+
+@njit
+def _slope_step_kernel(dist, good, bad):
+    # Numba does not support 2D boolean fancy indexing, so we flatten and loop.
+    flat = dist.ravel()
+    n = flat.shape[0]
+    out = np.empty(n)
+    slope = good - bad
+    for k in range(n):
+        d = flat[k]
+        if d >= bad:
+            out[k] = 0.0
+        elif d <= good:
+            out[k] = 1.0
+        else:
+            out[k] = (d - bad) / slope
+    return out.reshape(dist.shape)
+
+
+@njit
+def _lj_kernel(r, optimal_distance, i_exp, j_exp, smoothing, cap, depth, mask):
+    # c_i / c_j are 2D element-wise ops — supported by Numba.
+    c_i = (optimal_distance**i_exp) * depth * j_exp / (i_exp - j_exp)
+    c_j = (optimal_distance**j_exp) * depth * i_exp / (j_exp - i_exp)
+
+    # Accumulate in a loop to avoid 2D boolean fancy indexing.
+    total = 0.0
+    for row in range(r.shape[0]):
+        for col in range(r.shape[1]):
+            if not mask[row, col]:
+                continue
+            opt = optimal_distance[row, col]
+            rval = r[row, col]
+            if rval > opt + smoothing:
+                r2 = rval - smoothing
+            elif rval < opt - smoothing:
+                r2 = rval + smoothing
+            else:
+                r2 = opt
+            total += min(cap, c_i[row, col] / r2**i_exp + c_j[row, col] / r2**j_exp)
+    return total
+
+
+@njit
+def _four_piece_kernel(r, a, b, c, d, e, f):
+    res = np.zeros(len(r))
+    for k in range(len(r)):
+        ri = r[k]
+        if ri < a:
+            res[k] = f * (a - ri) / a
+        elif ri < b:
+            res[k] = e * (ri - a) / (b - a)
+        elif ri < c:
+            res[k] = e
+        elif ri < d:
+            res[k] = e * (d - ri) / (d - c)
+    return res
+
+
+@njit
+def _two_piece_kernel(r, a, b, c, d):
+    res = np.zeros(len(r))
+    for k in range(len(r)):
+        ri = r[k]
+        if ri < a:
+            res[k] = ri * (c - d) / a + d
+        elif ri <= b:
+            res[k] = -c * (ri - a) / (b - a) + c
+    return res
 
 
 class _KNNScoringFunction(ScoringFunction, ABC):
@@ -15,7 +92,7 @@ class _KNNScoringFunction(ScoringFunction, ABC):
     ⚙️ — K-Nearest neighbor distance scoring function.
 
     This abstract scoring function can be used to implement scoring functions that make use of the
-    distance of ligand atoms to the closest `k` protein atoms.
+    distance of `probe_mol` atoms to the closest `k` protein atoms.
 
     .. note::
         This is an abstract base class and should thus be subclassed. Please refer to TODO
@@ -26,65 +103,55 @@ class _KNNScoringFunction(ScoringFunction, ABC):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+        The maximum distance between two atoms (center to center) to take into account.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
     _ChargeScoringFunction
         Abstract charge-dependent scoring function.
 
+    Examples
+    --------
+    >>> import numpy as np
+    >>> from pyrite.scoring.protein import _KNNScoringFunction
+    >>> class Flat(_KNNScoringFunction):
+    ...     def _kernel(self, dist):
+    ...         return np.where(dist < 0.0, 1.0, 0.0)  # 1 for every overlapping neighbor
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         cutoff: float = 8.0,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
-        self.ligand = ligand
-        self.receptor = receptor
+        self.probe_mol = probe_mol
+        self.fixed_mol = fixed_mol
 
-        self.lig_mask = ~(
-            ignore_non_polar_hydrogens
-            & (
-                (self.ligand.atom_types == AtomType.Hydrogen)
-                | (self.ligand.atom_types == AtomType.PolarHydrogen)
-            )
-        )
-
-        self.rec_mask = ~(
-            ignore_non_polar_hydrogens
-            & (
-                (self.receptor._atom_types == AtomType.Hydrogen)
-                | (self.receptor._atom_types == AtomType.PolarHydrogen)
-            )
-        )
+        self.probe_mask = probe_mol.scoring_mask
+        self.fixed_mask = fixed_mol.scoring_mask
 
         self.cutoff = cutoff
         self.k = k
+        self.offset = 0.0
 
         self.__init_radii()
 
         self.nn_dep = KNNDependency(
-            self.receptor.positions[self.rec_mask],
-            self.ligand.get_positions,
+            self.fixed_mol.positions[self.fixed_mask],
+            PositionQuery(self.probe_mol),
             self.k,
             self.cutoff,
         )
-        self._tree_n = len(self.receptor.positions)
+        self._tree_n = len(self.fixed_mol.positions)
 
     def __init_radii(self):
         max_type = max(e.value for e in AtomType)
@@ -92,34 +159,172 @@ class _KNNScoringFunction(ScoringFunction, ABC):
         for _, t in vina_atom_consts.items():
             self.xs_radii[t.type.value] = t.xs_radius
 
-        self.ligand_radii = self.xs_radii[self.ligand.atom_types[self.lig_mask]]
+        self.probe_radii = self.xs_radii[self.probe_mol.atom_types[self.probe_mask]]
+        # Precomputed once: fixed_mask/fixed_mol.atom_types never change after construction,
+        # so re-filtering them on every _optimal_distance call (once per KNN term, per
+        # pose) was pure waste.
+        self._fixed_radii_masked = self.xs_radii[self.fixed_mol.atom_types[self.fixed_mask]]
 
-    def get_dependencies(self) -> set[Dependency]:
-        return {self.nn_dep}
+    def get_dependencies(self) -> list[Dependency]:
+        return [self.nn_dep]
 
-    def _get_optimal_distance(self, idx, mask):
+    def _optimal_distance(self, idx, mask, radii, offset: float = 0.0):
         safe_idx = np.where(mask, idx, 0)
-        # print(
-        #     mask.shape,
-        #     idx.shape,
-        #     safe_idx.shape,
-        #     self.rec_mask.shape,
-        #     np.sum(self.rec_mask),
-        #     self.receptor.atom_types.shape,
-        #     self.receptor.atom_types[self.rec_mask].shape,
-        #     np.max(safe_idx),
-        #     self.xs_radii.shape,
-        # )
-        receptor_radii = self.xs_radii[
-            self.receptor.atom_types[self.rec_mask][safe_idx]
-        ]
+        fixed_radii = self._fixed_radii_masked[safe_idx]
 
-        return self.ligand_radii[:, None] + receptor_radii[:, :]
+        return radii + fixed_radii + offset
+
+    def _kernel(self, dist: NDArray) -> NDArray:
+        """Score every neighbor, from its distance beyond the optimal distance.
+
+        The only thing a concrete ``_KNNScoringFunction`` needs to implement. Write it with numpy
+        operations on the whole array: it is called with the distances of all atoms and neighbors
+        at once, and of many poses in ``batch_scores``.
+
+        :meta public:
+
+        Parameters
+        ----------
+        dist : numpy.ndarray
+            ``distance - (optimal_distance + offset)`` for every neighbor, of any shape.
+
+        Returns
+        -------
+        numpy.ndarray
+            The score of every neighbor, of the same shape as `dist`.
+
+        See Also
+        --------
+        pyrite.scoring.protein._KNNScoringFunction._score_field : Uses the kernel for many points at
+            once.
+
+        Examples
+        --------
+        >>> def _kernel(self, dist):
+        ...     return np.exp(-((dist / self.width) ** 2))
+        """
+        raise NotImplementedError
+
+    def _mask(self, idx, mask, atom_type):
+        """Return which neighbors count, on top of the neighbors that were found.
+
+        Optional: a term that only scores certain pairs (hydrophobic, hydrogen bonding) restricts
+        the mask here, from the atom type of the probe atom and the neighbors in the fixed
+        molecule. By default, all neighbors that were found count. The same mask is used for one
+        pose, for a batch, and on the points of a :class:`~pyrite.scoring.grid.GridScore`, so the
+        three always agree.
+
+        :meta public:
+
+        Parameters
+        ----------
+        idx : numpy.ndarray
+            The indices of the neighbors in the fixed molecule, shape ``(..., n_points, k)``.
+        mask : numpy.ndarray
+            Which neighbors were found (within the cutoff), same shape.
+        atom_type : AtomType or numpy.ndarray
+            The atom type of the probe atom at every point: one for all points (on a grid), or
+            one per point (the atoms of the probe).
+
+        Returns
+        -------
+        numpy.ndarray
+            Which neighbors count, of the same shape as `mask`.
+
+        See Also
+        --------
+        pyrite.scoring.Hydrophobic : Scores hydrophobic pairs only, with this.
+        _score_field : Uses the mask.
+
+        Examples
+        --------
+        >>> def _mask(self, idx, mask, atom_type):
+        ...     probe_polar = np.asarray(self.is_polar[atom_type])[..., None]
+        ...     return probe_polar & self.fixed_is_polar[np.where(mask, idx, 0)] & mask
+        """
+        return mask
+
+    def _score(self, pose, computed) -> float:
+        # The same path as a batch and a grid: _score_field with the probe's own atom types.
+        r, idx, mask = computed[self.nn_dep]
+        atom_types = self.probe_mol.atom_types[self.probe_mask]
+        field = self._score_field(
+            r[self.probe_mask], idx[self.probe_mask], atom_types, mask=mask[self.probe_mask]
+        )
+        return float(field.sum())
+
+    def _score_field(self, r, idx, atom_type: AtomType, mask=None) -> NDArray[np.float64]:
+        """Score points of a given atom type, from their nearest neighbors in the fixed molecule.
+
+        The score of every point is summed over its neighbors, as ``_score`` does for the atoms of
+        the probe. This is what :class:`~pyrite.scoring.grid.GridScore` evaluates on its vertices
+        (one atom type at a time), and what ``_batch_scores`` uses for many poses at once (an atom
+        type per atom).
+
+        :meta public:
+
+        Parameters
+        ----------
+        r, idx : numpy.ndarray
+            The distances to, and indices of, the nearest neighbors of every point, as
+            :class:`~pyrite.scoring.dependencies.KNNDependency` returns them: shape
+            ``(..., n_points, k)``.
+        atom_type : AtomType or numpy.ndarray
+            One atom type for all points, or one per point.
+        mask : numpy.ndarray, optional
+            Which neighbors are valid. By default, all neighbors that were found. Pass the mask of
+            a narrowed search: computing it from `idx` would undo the cutoff of this term.
+
+        Returns
+        -------
+        numpy.ndarray
+            The score of every point, of shape ``(..., n_points)``.
+
+        See Also
+        --------
+        pyrite.scoring.grid.GridScore : Evaluates this on the vertices of a grid.
+
+        Examples
+        --------
+        >>> r, idx, mask = knn_dependency.compute(realization)
+        >>> scores = term._score_field(r, idx, AtomType.AromaticCarbonHydrophobe, mask=mask)
+        """
+        # mask defaults to None (recomputed from idx) for the grid-construction
+        # caller (GridScore builds r/idx directly from a raw KDTree query, with no
+        # pre-existing narrowed mask to inherit). _batch_scores (below) passes its
+        # own already-narrowed mask explicitly — recomputing from idx alone there
+        # would silently undo KNNDependency.narrow()'s per-term cutoff masking,
+        # since narrow() only clears the boolean mask, not idx/r themselves.
+        if mask is None:
+            mask = idx != self.nn_dep.tree.n
+
+        # [..., None] adds the trailing neighbor axis so this broadcasts correctly whether
+        # atom_type is a scalar (single hypothetical type, e.g. a grid sweep) or an array
+        # matching the atoms axis (a real ligand's per-atom types, e.g. a batch of poses) —
+        # a no-op for the scalar case, required for the array case.
+        radii = np.asarray(self.xs_radii[atom_type])[..., None]
+        dist = r - self._optimal_distance(idx, mask, radii, self.offset)
+        s = self._kernel(dist)
+
+        s[~self._mask(idx, mask, atom_type)] = 0.0
+        return s.sum(axis=-1)
+
+    def _batch_scores(self, poses, computed_batch) -> NDArray[np.float64]:
+        r, idx, mask = computed_batch[self.nn_dep]
+        r = r[:, self.probe_mask]
+        idx = idx[:, self.probe_mask]
+        mask = mask[:, self.probe_mask]
+
+        # the real ligand's own per-atom types — _score_field already handles an
+        # array atom_type (verified), summing here over the remaining atoms axis
+        # (it already summed over neighbors) gives one score per conformer.
+        atom_types = self.probe_mol.atom_types[self.probe_mask]
+        return self._score_field(r, idx, atom_types, mask=mask).sum(axis=-1)
 
 
 class Gaussian(_KNNScoringFunction):
     r"""
-    🚶 — A Gaussian function of the distance.
+    🚗 — A Gaussian function of the distance.
 
     .. math::
         score = \exp(-\frac{distance - (optimal\_distance + offset)}{width}^2)
@@ -149,76 +354,71 @@ class Gaussian(_KNNScoringFunction):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**: 🐢–🚗, depending on `cutoff` and `k`.
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     offset : float, default 0.0
         The offset from `optimal_distance` that is considered as ideal.
     width : float, default 0.5
         The width of the Gaussian.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + offset + e * width``, where the Gaussian has fallen to almost zero.
+        Only the `k` nearest neighbors are seen, whatever the cutoff: with ``width=2.0`` and
+        ``offset=3.0`` the default is 12.4 A, and a protein has more atoms than the default `k`
+        within that distance of most points, so increase `k` to reach it.
+    k : int, default 100
         The number of neighbors to consider. It is necessary to increase this number if a wider or
         higher offset Gaussian is used.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
 
+    See Also
+    --------
+    Repulsion : The repulsion of overlapping atoms.
+    pyrite.scoring.grid.GridScore : Precompute KNN-based terms on a grid.
 
+    Examples
+    --------
+    >>> from pyrite import Mol
+    >>> ligand = Mol.from_sdf("ligand.sdf", flexible=True)
+    >>> receptor = Mol.from_pdb("receptor.pdb")
+    >>> from pyrite.scoring import Gaussian
+    >>> steric = Gaussian(ligand, receptor, offset=0.0, width=0.5)
+    >>> wide = Gaussian(ligand, receptor, offset=3.0, width=2.0, k=500)  # see `cutoff`
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         offset: float = 0.0,
         width: float = 0.5,
         cutoff: float = None,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff or 4 + offset + np.e * width,
             k,
-            ignore_non_polar_hydrogens,
         )
         self.offset = offset
         self.width = width
 
-    @staticmethod
-    def __gaussian(x, w):
-        return np.exp(-((x / w) ** 2))
-
-    def _score(self, conf_id, computed) -> float:
-        r, idx, mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        mask = mask[self.lig_mask]
-
-        optimal = self._get_optimal_distance(idx, mask) + self.offset
-        s = self.__gaussian(r - optimal, self.width)
-
-        mask &= r < self.cutoff
-
-        s[~mask] = 0.0
-
-        return np.sum(s)
+    def _kernel(self, dist):
+        return _gaussian_kernel(dist, self.width)
 
 
 class Repulsion(_KNNScoringFunction):
     r"""
-    🚲 — Decreases exponentially with the distance.
+    🚗 — Decreases exponentially with the distance.
 
     .. math::
         score = min(distance - (optimal\_distance + offset), 0.0)^2
@@ -247,55 +447,49 @@ class Repulsion(_KNNScoringFunction):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**:🚲
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     offset : float, default 0.0
         The offset that is added to `optimal_distance`.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + offset``, beyond which the repulsion is zero for any common atom pair.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
 
+    See Also
+    --------
+    Gaussian : The attraction at the optimal distance.
+
+    Examples
+    --------
+    >>> from pyrite.scoring import Repulsion
+    >>> repulsion = 0.840245 * Repulsion(ligand, receptor)
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         offset: float = 0.0,
         cutoff: float = None,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
-        super().__init__(
-            ligand, receptor, cutoff or 4 + offset, k, ignore_non_polar_hydrogens
-        )
+        super().__init__(probe_mol, fixed_mol, cutoff or 4 + offset, k)
         self.offset = offset
 
-    def _score(self, conf_id, computed) -> float:
-        r, idx, mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        mask = mask[self.lig_mask]
-
-        optimal = self._get_optimal_distance(idx, mask) + self.offset
-        d = r - optimal
-
-        d[~mask | (d > 0.0)] = 0.0
-
-        return np.sum(d * d)
+    def _kernel(self, dist):
+        d = np.minimum(dist, 0.0)
+        return d * d
 
 
 class _SlopeStep(_KNNScoringFunction):
@@ -337,75 +531,58 @@ class _SlopeStep(_KNNScoringFunction):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     good : float, default 0.5
         The `good` distance. Distance values lower than this value are scored :math:`1`.
     bad : float, default 1.5
         The `bad` distance. Distance values higher than this value are scored :math:`0`.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + bad``, beyond which the term is zero for any common atom pair.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
     _ChargeScoringFunction
         Abstract charge-dependent scoring function.
 
+    Examples
+    --------
+    >>> import numpy as np
+    >>> class HalogenContacts(_SlopeStep):
+    ...     def _mask(self, idx, mask, atom_type):
+    ...         halogen = np.isin(atom_type, HALOGEN_TYPES)  # only these probe atoms count
+    ...         return halogen[..., None] & mask
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         good: float = 0.5,
         bad: float = 1.5,
         cutoff: float = None,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
         assert good < bad, "Bad distance <= good distance not implemented."
-        super().__init__(ligand, receptor, cutoff or bad, k, ignore_non_polar_hydrogens)
+        # `bad` is an offset from optimal_distance (~4 Å for a typical atom pair),
+        # not an absolute search radius — cutoff needs that base distance added,
+        # same pattern as Gaussian's `4 + offset + ...`/Repulsion's `4 + offset`.
+        super().__init__(probe_mol, fixed_mol, cutoff or (4 + bad), k)
         self.good = good
         self.bad = bad
 
-    @staticmethod
-    def _slope_step(dist, good, bad):
-        slope_step = (dist - bad) / (good - bad)
-        slope_step[dist >= bad] = 0.0
-        slope_step[dist <= good] = 1.0
-        return slope_step
-
-    def _mask(self, receptor_val, neighbor_mask):
-        return np.full(receptor_val.shape, True) & neighbor_mask
-
-    def _score(self, conf_id, computed) -> float:
-        r, idx, neighbor_mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        neighbor_mask = neighbor_mask[self.lig_mask]
-
-        optimal_distance = self._get_optimal_distance(idx, neighbor_mask)
-        dist = r - optimal_distance
-
-        slope_step = self._slope_step(dist, self.good, self.bad)
-
-        mask = self._mask(idx, neighbor_mask)
-        slope_step[~mask] = 0.0
-
-        return np.sum(slope_step)
+    def _kernel(self, dist):
+        return _slope_step_kernel(dist, self.good, self.bad)
 
 
 class Hydrophobic(_SlopeStep):
     r"""
-    🚲 — Slope-step between hydrophobic atoms.
+    🚗 — Slope-step between hydrophobic atoms.
 
     .. math::
         delta = distance - optimal\_distance
@@ -450,51 +627,49 @@ class Hydrophobic(_SlopeStep):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every hydrophobic ligand atom to all its hydrophobic neighbors
+    This score is calculated for every hydrophobic `probe_mol` atom to all its hydrophobic neighbors
     (as defined by `cutoff` and `k`), and then summed. The hydrophobic neighbors are determined
     after the nearest neighbor search.
 
-    **Speed**:🚲
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     good : float, default 0.5
         The start of the `slope-step`.
     bad : float, default 1.5
         The end of the `slope-step`.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + bad``, beyond which the term is zero for any common atom pair.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
     NonHydrophobic
         For hydrophilic interactions.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import Hydrophobic
+    >>> hydrophobic = -0.035069 * Hydrophobic(ligand, receptor, good=0.5, bad=1.5)
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         good: float = 0.5,
         bad: float = 1.5,
         cutoff: float = None,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
-        super().__init__(
-            ligand, receptor, good, bad, cutoff or bad, k, ignore_non_polar_hydrogens
-        )
+        super().__init__(probe_mol, fixed_mol, good, bad, cutoff, k)
 
         self.__init_hydrophobic()
 
@@ -504,25 +679,20 @@ class Hydrophobic(_SlopeStep):
         for _, t in vina_atom_consts.items():
             self.xs_hydrophobic[t.type.value] = t.xs_hydrophobe
 
-        self.ligand_hydrophobic = self.xs_hydrophobic[
-            self.ligand.atom_types[self.lig_mask]
+        # Precomputed once — see _KNNScoringFunction.__init_radii for why.
+        self._fixed_hydrophobic_masked = self.xs_hydrophobic[
+            self.fixed_mol._atom_types[self.fixed_mask]
         ]
 
-    def _mask(self, idx, neighbor_mask):
-        safe_idx = np.where(neighbor_mask, idx, 0)
-        receptor_hydrophobic = self.xs_hydrophobic[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
-        ]
-        return (
-            self.ligand_hydrophobic[:, None]
-            & receptor_hydrophobic[:, :]
-            & neighbor_mask
-        )
+    def _mask(self, idx, mask, atom_type):
+        fixed_hydrophobic = self._fixed_hydrophobic_masked[np.where(mask, idx, 0)]
+        hydrophobic = np.asarray(self.xs_hydrophobic[atom_type])[..., None]
+        return hydrophobic & fixed_hydrophobic[:, :] & mask
 
 
 class NonHydrophobic(Hydrophobic):
     r"""
-    🚲 — Slope-step between non-hydrophobic bonds.
+    🚗 — Slope-step between non-hydrophobic bonds.
 
     .. math::
         delta = distance - optimal\_distance
@@ -567,49 +737,48 @@ class NonHydrophobic(Hydrophobic):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every nonhydrophobic ligand atom to all its
+    This score is calculated for every nonhydrophobic `probe_mol` atom to all its
     nonhydrophobic neighbors (as defined by `cutoff` and `k`), and then summed.
     The nonhydrophobic neighbors are determined after the nearest neighbor search.
 
-    **Speed**:🚲
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     good : float, default 0.5
         The start of the `slope-step`.
     bad : float, default 1.5
         The end of the `slope-step`.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + bad``, beyond which the term is zero for any common atom pair.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
     Hydrophobic
         For hydrophobic interactions.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import NonHydrophobic
+    >>> non_hydrophobic = NonHydrophobic(ligand, receptor)
     """
 
-    def _mask(self, idx, neighbor_mask):
-        safe_idx = np.where(neighbor_mask, idx, 0)
-        receptor_hydrophobic = self.xs_hydrophobic[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
-        ]
-        return ~self.ligand_hydrophobic[:, None] & ~receptor_hydrophobic & neighbor_mask
+    def _mask(self, idx, mask, atom_type):
+        fixed_hydrophobic = self._fixed_hydrophobic_masked[np.where(mask, idx, 0)]
+        hydrophobic = np.asarray(self.xs_hydrophobic[atom_type])[..., None]
+        return ~hydrophobic & ~fixed_hydrophobic[:, :] & mask
 
 
 class NonDirHBond(_SlopeStep):
     r"""
-    🚲 — Slope-step within hydrogen bonds.
+    🚗 — Slope-step within hydrogen bonds.
 
     .. math::
         delta = distance - optimal\_distance
@@ -654,51 +823,50 @@ class NonDirHBond(_SlopeStep):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every hbond-acceptor ligand atom to all its hbond-donor neighbors
-    and from every hbond-donor ligand atom to all its hbond-acceptor neighbors
+    This score is calculated for every hbond-acceptor `probe_mol` atom to all its hbond-donor neighbors
+    and from every hbond-donor `probe_mol` atom to all its hbond-acceptor neighbors
     (as defined by `cutoff` and `k`), and then summed. The hbond neighbors are determined
     after the nearest neighbor search.
 
-    **Speed**:🚲
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     good : float, default -0.7
         The start of the `slope-step`.
     bad : float, default 0
         The end of the `slope-step`.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``4 + bad``, beyond which the term is zero for any common atom pair.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
 
     See Also
     --------
     NonDirHBondLJ
         For a hydrogen bond implementation using a Lennard-Jones potential.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import NonDirHBond
+    >>> hbond = -0.587439 * NonDirHBond(ligand, receptor, good=-0.7, bad=0.0)
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         good: float = -0.7,
         bad: float = 0,
         cutoff: float = None,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
-        super().__init__(
-            ligand, receptor, good, bad, cutoff, k, ignore_non_polar_hydrogens
-        )
+        super().__init__(probe_mol, fixed_mol, good, bad, cutoff, k)
 
         self.__init_hbond_possible()
 
@@ -710,26 +878,22 @@ class NonDirHBond(_SlopeStep):
             self.xs_acceptor[t.type.value] = t.xs_acceptor
             self.xs_donor[t.type.value] = t.xs_donor
 
-        self.ligand_acceptor = self.xs_acceptor[self.ligand.atom_types[self.lig_mask]]
-        self.ligand_donor = self.xs_donor[self.ligand.atom_types[self.lig_mask]]
+        # Precomputed once — see _KNNScoringFunction.__init_radii for why.
+        self._fixed_acceptor_masked = self.xs_acceptor[self.fixed_mol._atom_types[self.fixed_mask]]
+        self._fixed_donor_masked = self.xs_donor[self.fixed_mol._atom_types[self.fixed_mask]]
 
-    def _mask(self, idx, neighbor_mask):
-        safe_idx = np.where(neighbor_mask, idx, 0)
-
-        receptor_acceptor = self.xs_acceptor[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
-        ]
-        receptor_donor = self.xs_donor[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
-        ]
-        return (self.ligand_donor[:, None] & receptor_acceptor) | (
-            self.ligand_acceptor[:, None] & receptor_donor
-        ) & neighbor_mask
+    def _mask(self, idx, mask, atom_type):
+        safe_idx = np.where(mask, idx, 0)
+        fixed_acceptor = self._fixed_acceptor_masked[safe_idx]
+        fixed_donor = self._fixed_donor_masked[safe_idx]
+        donor = np.asarray(self.xs_donor[atom_type])[..., None]
+        acceptor = np.asarray(self.xs_acceptor[atom_type])[..., None]
+        return ((donor & fixed_acceptor) | (acceptor & fixed_donor)) & mask
 
 
 class LJ(_KNNScoringFunction):
     r"""
-    🐢 — Lennard-Jones potential.
+    🚲 — Lennard-Jones potential.
 
     Scores distance based on a Lennard-Jones potential.
 
@@ -790,17 +954,17 @@ class LJ(_KNNScoringFunction):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**: 🐢–🚶, depending on `cutoff` and `k`.
+    **Speed**: 🚲, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     i : int, default 10
         The first exponent of the Lennard-Jones potential.
     j : int, default 12
@@ -814,21 +978,27 @@ class LJ(_KNNScoringFunction):
         The maximum score for a single atom-atom interaction.
     depth : float, default 1.0
         The depth of the LJ-potential minimum.
-    cutoff : float, default 8.0
-        Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``8 + offset``.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
 
+    See Also
+    --------
+    VDW : A 4-8 Lennard-Jones potential.
+    NonDirHBondLJ : A 10-12 potential for hydrogen bonds.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import LJ
+    >>> lennard_jones = LJ(ligand, receptor, i=6, j=12)
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         i: int = 10,
         j: int = 12,
         smoothing: float = 0,
@@ -836,15 +1006,13 @@ class LJ(_KNNScoringFunction):
         cap: float = 100.0,
         depth: float = 1.0,
         cutoff: float = None,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff or 8 + offset,
             k,
-            ignore_non_polar_hydrogens,
         )
 
         self._i = i
@@ -854,40 +1022,42 @@ class LJ(_KNNScoringFunction):
         self._cap = cap
         self._depth = depth
 
-    def _mask(self, receptor_val, neighbor_mask):
-        return np.full(receptor_val.shape, True) & neighbor_mask
-
-    def _score(self, conf_id, computed) -> float:
+    def _score(self, pose, computed) -> float:
         r, idx, neighbor_mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        neighbor_mask = neighbor_mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        neighbor_mask = neighbor_mask[self.probe_mask]
 
-        optimal_distance = self._get_optimal_distance(idx, neighbor_mask) + self._offset
+        optimal_distance = self._optimal_distance(
+            idx, neighbor_mask, self.probe_radii[:, None], self._offset
+        )
+        mask = self._mask(idx, neighbor_mask, self.probe_mol.atom_types[self.probe_mask])
 
-        c_i = (optimal_distance**self._i) * self._depth * self._j / (self._i - self._j)
-        c_j = (optimal_distance**self._j) * self._depth * self._i / (self._j - self._i)
+        return _lj_kernel(
+            r,
+            optimal_distance,
+            self._i,
+            self._j,
+            self._smoothing,
+            self._cap,
+            self._depth,
+            mask,
+        )
 
-        r2 = np.full(r.shape, optimal_distance)
-        mask_upper = r > (optimal_distance + self._smoothing)
-        mask_lower = r < (optimal_distance - self._smoothing)
-        r2[mask_upper] = r[mask_upper] - self._smoothing
-        r2[mask_lower] = r[mask_lower] + self._smoothing
-
-        r_i = r2**self._i
-        r_j = r2**self._j
-
-        res = np.minimum(self._cap, c_i / r_i + c_j / r_j)
-
-        mask = self._mask(idx, neighbor_mask)
-        res[~mask] = 0.0
-
-        return np.sum(res)
+    # LJ's kernel needs r and optimal_distance separately (not just their difference) and
+    # masks+accumulates inside the numba loop — it doesn't fit _KNNScoringFunction's
+    # _kernel(dist) shape, so it never implements _kernel. Without this, LJ would silently
+    # *inherit* _KNNScoringFunction's _kernel-based _score_field/_batch_scores and crash with
+    # NotImplementedError only when actually called. _score_field = None makes GridScore's
+    # support check correctly reject it; _batch_scores falls back to ScoringFunction's
+    # always-correct generic default instead of the broken kernel-based one.
+    _score_field = None
+    _batch_scores = ScoringFunction._batch_scores
 
 
 class VDW(LJ):
     r"""
-    🐢 — Van Der Waals force based on Lennard-Jones potential.
+    🚲 — Van Der Waals force based on Lennard-Jones potential.
 
     Scores distance based on a Lennard-Jones potential with a depth of 1.
 
@@ -952,17 +1122,17 @@ class VDW(LJ):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**: 🐢–🚶
+    **Speed**: 🚲, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     i : int, default 4
         The first exponent of the Lennard-Jones potential.
     j : int, default 8
@@ -972,36 +1142,37 @@ class VDW(LJ):
         optimal will be set to the optimal distance.
     cap : float, default 100.0
         The maximum score for a single atom-atom interaction.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to 8.0.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
 
     See Also
     --------
     LJ
         For the Lennard-Jones potential.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import VDW
+    >>> vdw = VDW(ligand, receptor)
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         i: int = 4,
         j: int = 8,
         smoothing: float = 0,
         cap: float = 100.0,
         cutoff: float = None,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             i=i,
             j=j,
             smoothing=smoothing,
@@ -1009,13 +1180,12 @@ class VDW(LJ):
             cap=cap,
             cutoff=cutoff,
             k=k,
-            ignore_non_polar_hydrogens=ignore_non_polar_hydrogens,
         )
 
 
 class NonDirHBondLJ(LJ):
     r"""
-    🐢 — Hydrogen bonding force based on Lennard-Jones potential.
+    🚗 — Hydrogen bonding force based on Lennard-Jones potential.
 
     Scores distance between hydrogen acceptors and donors based on a Lennard-Jones 10-12 potential
     with a depth of 5.
@@ -1067,51 +1237,52 @@ class NonDirHBondLJ(LJ):
        plt.xlabel("Distance")
        plt.ylabel("Score")
 
-    This score is calculated for every hbond-acceptor ligand atom to all its hbond-donor neighbors
-    and from every hbond-donor ligand atom to all its hbond-acceptor neighbors
+    This score is calculated for every hbond-acceptor `probe_mol` atom to all its hbond-donor neighbors
+    and from every hbond-donor `probe_mol` atom to all its hbond-acceptor neighbors
     (as defined by `cutoff` and `k`), and then summed. The hbond neighbors are determined
     after the nearest neighbor search.
 
-    **Speed**: 🐢–🚶
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     offset : float, default -0.7
         The offset from the optimal distance.
     cap : float, default 100.0
         The maximum score for a single atom-atom interaction.
-    cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+    cutoff : float, optional
+        The maximum distance between two atoms (center to center) to take into account.
+        Defaults to ``8 + offset``.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
 
     See Also
     --------
     NonDirHBond
         For a hydrogen bond implementation using a slope-step.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import NonDirHBondLJ
+    >>> hbond = NonDirHBondLJ(ligand, receptor)
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         offset: float = -0.7,
         cap: float = 100.0,
         cutoff: float = None,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             i=10,
             j=12,
             smoothing=0,
@@ -1120,7 +1291,6 @@ class NonDirHBondLJ(LJ):
             depth=5.0,
             cutoff=cutoff,
             k=k,
-            ignore_non_polar_hydrogens=ignore_non_polar_hydrogens,
         )
         self.__init_hbond_possible()
 
@@ -1132,32 +1302,28 @@ class NonDirHBondLJ(LJ):
             self.xs_acceptor[t.type.value] = t.xs_acceptor
             self.xs_donor[t.type.value] = t.xs_donor
 
-        self.ligand_acceptor = self.xs_acceptor[self.ligand.atom_types[self.lig_mask]]
-        self.ligand_donor = self.xs_donor[self.ligand.atom_types[self.lig_mask]]
+        # Precomputed once — see _KNNScoringFunction.__init_radii for why.
+        self._fixed_acceptor_masked = self.xs_acceptor[self.fixed_mol._atom_types[self.fixed_mask]]
+        self._fixed_donor_masked = self.xs_donor[self.fixed_mol._atom_types[self.fixed_mask]]
 
-    def _mask(self, idx, neighbor_mask):
-        safe_idx = np.where(neighbor_mask, idx, 0)
-
-        receptor_acceptor = self.xs_acceptor[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
-        ]
-        receptor_donor = self.xs_donor[
-            self.receptor._atom_types[self.rec_mask][safe_idx]
-        ]
-        return (self.ligand_donor[:, None] & receptor_acceptor) | (
-            self.ligand_acceptor[:, None] & receptor_donor
-        ) & neighbor_mask
+    def _mask(self, idx, mask, atom_type):
+        safe_idx = np.where(mask, idx, 0)
+        fixed_acceptor = self._fixed_acceptor_masked[safe_idx]
+        fixed_donor = self._fixed_donor_masked[safe_idx]
+        donor = np.asarray(self.xs_donor[atom_type])[..., None]
+        acceptor = np.asarray(self.xs_acceptor[atom_type])[..., None]
+        return ((donor & fixed_acceptor) | (acceptor & fixed_donor)) & mask
 
 
 class _ChargeScoringFunction(_KNNScoringFunction, ABC):
     r"""
-    ⚙️ — Gasteiger-charge based scoring
+    ⚙️ — Gasteiger-charge based scoring.
 
     This abstract scoring function can be used to implement scoring functions that make use of the
-    distance of ligand atoms to the closest `k` protein atoms, and the charge of these atoms.
+    distance of `probe_mol` atoms to the closest `k` protein atoms, and the charge of these atoms.
 
     These charges are calculated using the Gasteiger [1]_ method, using
-    :func:`~rdkit.Chem.rdPartialCharges.ComputeGasteigerCharges`.
+    `ComputeGasteigerCharges <https://www.rdkit.org/docs/source/rdkit.Chem.rdPartialCharges.html>`_.
 
     .. note::
         This is an abstract base class and should thus be subclassed. Please refer to TODO
@@ -1168,18 +1334,14 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+        The maximum distance between two atoms (center to center) to take into account.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
@@ -1194,46 +1356,53 @@ class _ChargeScoringFunction(_KNNScoringFunction, ABC):
        Rapid Access to Atomic Charges.” Tetrahedron 36, no. 22 (January 1, 1980): 3219–28.
        https://doi.org/10.1016/0040-4020(80)80168-2.
 
-
+    Examples
+    --------
+    >>> import numpy as np
+    >>> class ChargeProduct(_ChargeScoringFunction):
+    ...     def _score(self, pose, computed):
+    ...         r, idx, mask = computed[self.nn_dep]
+    ...         safe_idx = np.where(mask, idx, 0)
+    ...         q = self._probe_mol_charges[:, None] * self._fixed_mol_charges[safe_idx]
+    ...         return float(np.sum(np.where(mask, q / r, 0.0)))
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         cutoff: float = 8.0,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff,
             k,
-            ignore_non_polar_hydrogens,
         )
         self.__init_charges()
 
     def __init_charges(self):
-        _ligand_charges = np.array(
-            [a.GetDoubleProp("_GasteigerCharge") for a in self.ligand.GetAtoms()]
+        _probe_mol_charges = np.array(
+            [a.GetDoubleProp("_GasteigerCharge") for a in self.probe_mol.atoms]
         )
-        _receptor_charges = np.array(
-            [
-                a.GetDoubleProp("_GasteigerCharge")
-                for a in self.receptor._rdkit.GetAtoms()
-            ]
+        _fixed_mol_charges = np.array(
+            [a.GetDoubleProp("_GasteigerCharge") for a in self.fixed_mol.atoms]
         )
-        _ligand_charges[np.isnan(_ligand_charges)] = 0.0
-        _receptor_charges[np.isnan(_receptor_charges)] = 0.0
+        _probe_mol_charges[np.isnan(_probe_mol_charges)] = 0.0
+        _fixed_mol_charges[np.isnan(_fixed_mol_charges)] = 0.0
 
-        self._ligand_charges = _ligand_charges[self.lig_mask]
-        self._receptor_charges = _receptor_charges[self.rec_mask]
+        self._probe_mol_charges = _probe_mol_charges[self.probe_mask]
+        self._fixed_mol_charges = _fixed_mol_charges[self.fixed_mask]
+
+    # Charge-based, not radii-based — no _kernel(dist), same reasoning as LJ above.
+    _score_field = None
+    _batch_scores = ScoringFunction._batch_scores
 
 
 class ElectroStatic(_ChargeScoringFunction):
     r"""
-    🚶 — Electrostatic force based on Gasteiger charges.
+    🚗 — Electrostatic force based on Gasteiger charges.
 
     Scores interactions based on a power of the distance and multiplication by atom charges.
 
@@ -1248,7 +1417,7 @@ class ElectroStatic(_ChargeScoringFunction):
     result in negative scores.
 
     These charges are calculated using the Gasteiger [1]_ method, using
-    :func:`~rdkit.Chem.rdPartialCharges.ComputeGasteigerCharges`.
+    `ComputeGasteigerCharges <https://www.rdkit.org/docs/source/rdkit.Chem.rdPartialCharges.html>`_.
 
     This results in the following function, where in this example the `power` is 1
     and `cap` is 10.0. The blue line shows two atoms with differently signed charges, and the red
@@ -1282,28 +1451,29 @@ class ElectroStatic(_ChargeScoringFunction):
        plt.legend(loc='upper right')
 
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**:🚶–🚲
+    **Speed**: 🚗, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     power : int, default 1
         A power to be applied to the distance.
     cap : float, default 100.0
         The maximum score for a single atom-atom interaction.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+        The maximum distance between two atoms (center to center) to take into account.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
+
+    See Also
+    --------
+    AD4Solvation : Solvation, also from Gasteiger charges.
 
     References
     ----------
@@ -1312,42 +1482,43 @@ class ElectroStatic(_ChargeScoringFunction):
        Rapid Access to Atomic Charges.” Tetrahedron 36, no. 22 (January 1, 1980): 3219–28.
        https://doi.org/10.1016/0040-4020(80)80168-2.
 
-
+    Examples
+    --------
+    >>> from pyrite.scoring import ElectroStatic
+    >>> electrostatics = ElectroStatic(ligand, receptor, power=2)
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         power: int = 1,
         cap: float = 100.0,
         cutoff: float = 8.0,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff,
             k,
-            ignore_non_polar_hydrogens,
         )
 
         self._power = power
         self._cap = cap
 
-    def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
+    def _score(self, pose, computed: dict[Dependency, Any] | None) -> float:
         r, idx, mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        mask = mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        mask = mask[self.probe_mask]
         safe_idx = np.where(mask, idx, 0)
 
         tmp = np.minimum(self._cap, 1 / (r**self._power))
 
         # Charge multiplier
-        # ab = (self._ligand_charges * self._receptor_charges[safe_idx].T).T
-        ab = self._ligand_charges[:, None] * self._receptor_charges[safe_idx]
+        # ab = (self._probe_mol_charges * self._fixed_mol_charges[safe_idx].T).T
+        ab = self._probe_mol_charges[:, None] * self._fixed_mol_charges[safe_idx]
 
         s = tmp * ab
 
@@ -1360,7 +1531,7 @@ class ElectroStatic(_ChargeScoringFunction):
 
 class AD4Solvation(_ChargeScoringFunction):
     r"""
-    🚶 — Solvation force based on the AutoDesk 4 function and Gasteiger charges.
+    🚲 — Solvation force based on the AutoDesk 4 function and Gasteiger charges.
 
     Scores interactions based on a solvation calculation and multiplication by atom charges.
 
@@ -1387,7 +1558,7 @@ class AD4Solvation(_ChargeScoringFunction):
         u(r) + a(r) + b(r)
 
     Here :math:`c_a` and :math:`c_b` are the gasteiger charges [1]_ of the two atoms, calculated
-    using :func:`~rdkit.Chem.rdPartialCharges.ComputeGasteigerCharges`. :math:`q` determines
+    using `ComputeGasteigerCharges <https://www.rdkit.org/docs/source/rdkit.Chem.rdPartialCharges.html>`_. :math:`q` determines
     how charge-dependent the value is, and :math:`\sigma` describes the the width of the gaussian
     used.
 
@@ -1429,28 +1600,29 @@ class AD4Solvation(_ChargeScoringFunction):
        plt.ylabel("Score")
 
 
-    This score is calculated for every ligand atom to all its neighbors
+    This score is calculated for every `probe_mol` atom to all its neighbors
     (as defined by `cutoff` and `k`), and then summed.
 
-    **Speed**: 🐢–🚲
+    **Speed**: 🚲, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     d_sigma : float, default 3.6
         The width of the gaussian used.
     s_q : float, default 0.01097
         Describes how charge-dependent the score is.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+        The maximum distance between two atoms (center to center) to take into account.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
+
+    See Also
+    --------
+    ElectroStatic : Electrostatics from Gasteiger charges.
 
     References
     ----------
@@ -1459,24 +1631,26 @@ class AD4Solvation(_ChargeScoringFunction):
        Rapid Access to Atomic Charges.” Tetrahedron 36, no. 22 (January 1, 1980): 3219–28.
        https://doi.org/10.1016/0040-4020(80)80168-2.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import AD4Solvation
+    >>> solvation = AD4Solvation(ligand, receptor)
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         d_sigma: float = 3.6,
         s_q: float = 0.01097,
         cutoff: float = 8.0,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff,
             k,
-            ignore_non_polar_hydrogens,
         )
 
         self._d_sigma = d_sigma
@@ -1487,48 +1661,48 @@ class AD4Solvation(_ChargeScoringFunction):
 
     def __init_solvation(self):
         max_type = max(e.value for e in AtomType)  # noqa
-        self.ad_solvation = np.empty(max_type + 1, dtype=bool)
+        self.ad_solvation = np.empty(max_type + 1, dtype=float)
         for _, t in vina_atom_consts.items():
             self.ad_solvation[t.type.value] = t.ad_solvation
 
-        self.ligand_solvation = self.ad_solvation[self.ligand.atom_types[self.lig_mask]]
+        self.probe_mol_solvation = self.ad_solvation[self.probe_mol.atom_types[self.probe_mask]]
 
     def __init_volume(self):
         max_type = max(e.value for e in AtomType)  # noqa
-        self.ad_volume = np.empty(max_type + 1, dtype=bool)
+        self.ad_volume = np.empty(max_type + 1, dtype=float)
         for _, t in vina_atom_consts.items():
             self.ad_volume[t.type.value] = t.ad_volume
 
-        self.ligand_volume = self.ad_volume[self.ligand.atom_types[self.lig_mask]]
+        self.probe_mol_volume = self.ad_volume[self.probe_mol.atom_types[self.probe_mask]]
 
-    def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
+    def _score(self, pose, computed: dict[Dependency, Any] | None) -> float:
         r, idx, mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        mask = mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        mask = mask[self.probe_mask]
         safe_idx = np.where(mask, idx, 0)
 
         dist_factor = np.exp(-np.square(r / (2 * self._d_sigma)))
 
-        receptor_solvation = self.ad_solvation[
-            self.receptor._atom_types[self.rec_mask][safe_idx]  # noqa
+        fixed_mol_solvation = self.ad_solvation[
+            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]  # noqa
         ]
-        receptor_volume = self.ad_volume[
-            self.receptor._atom_types[self.rec_mask][safe_idx]  # noqa
+        fixed_mol_volume = self.ad_volume[
+            self.fixed_mol._atom_types[self.fixed_mask][safe_idx]  # noqa
         ]
 
         non_charge_dep = (
-            self.ligand_solvation[:, None] * receptor_volume * dist_factor
-            + self.ligand_volume[:, None] * receptor_solvation * dist_factor
+            self.probe_mol_solvation[:, None] * fixed_mol_volume * dist_factor
+            + self.probe_mol_volume[:, None] * fixed_mol_solvation * dist_factor
         )
 
-        abs_a_dep = self._s_q * receptor_volume * dist_factor
-        abs_b_dep = self._s_q * self.ligand_volume[:, None] * dist_factor
+        abs_a_dep = self._s_q * fixed_mol_volume * dist_factor
+        abs_b_dep = self._s_q * self.probe_mol_volume[:, None] * dist_factor
 
         s = (
             non_charge_dep
-            + (np.abs(self._ligand_charges)[:, None] * abs_a_dep)
-            + (np.abs(self._receptor_charges[safe_idx]) * abs_b_dep)
+            + (np.abs(self._probe_mol_charges)[:, None] * abs_a_dep)
+            + (np.abs(self._fixed_mol_charges[safe_idx]) * abs_b_dep)
         )
 
         mask &= r < self.cutoff
@@ -1593,45 +1767,49 @@ class _PLP(_KNNScoringFunction, ABC):
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+        The maximum distance between two atoms (center to center) to take into account.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
-
 
     See Also
     --------
     PlantsPLP
         For a piecewise linear potential implementation like in the PLANTS docking suite.
 
+    Examples
+    --------
+    >>> import numpy as np
+    >>> r = np.linspace(0.0, 7.0, 8)
+    >>> _PLP.potential_two_piece(r, (2.0, 6.0, 1.0, 5.0))  # a, b, c, d
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         cutoff: float = 8.0,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff,
             k,
-            ignore_non_polar_hydrogens,
         )
+
+    # Per-pair interaction-type lookup, not a radii-relative kernel — no _kernel(dist),
+    # same reasoning as LJ above.
+    _score_field = None
+    _batch_scores = ScoringFunction._batch_scores
 
     @staticmethod
     def potential_four_piece(r, values):
-        r"""Calculates a four-piece linear potential based on `values`.
+        r"""Calculate a four-piece linear potential based on `values`.
 
         The potential is calculated as follows:
 
@@ -1688,23 +1866,23 @@ class _PLP(_KNNScoringFunction, ABC):
         Returns
         -------
         numpy.ndarray
+            The potential of every value, of the same shape as `values`.
 
+        See Also
+        --------
+        potential_two_piece : The two-piece potential.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> _PLP.potential_four_piece(np.array([1.0, 3.5, 5.0]), (3.4, 3.6, 4.5, 5.5, -0.4, 20.0))
         """
-
         a, b, c, d, e, f = values
-
-        res = np.zeros_like(r)
-
-        res[r < a] = (f * (a - r[r < a])) / a
-        res[(a <= r) & (r < b)] = (e * (r[(a <= r) & (r < b)] - a)) / (b - a)
-        res[(b <= r) & (r < c)] = e
-        res[(c <= r) & (r < d)] = (e * (d - r[(c <= r) & (r < d)])) / (d - c)
-
-        return res
+        return _four_piece_kernel(r, a, b, c, d, e, f)
 
     @staticmethod
     def potential_two_piece(r, values):
-        r"""Calculates a two-piece linear potential based on `values`.
+        r"""Calculate a two-piece linear potential based on `values`.
 
         The potential is calculated as follows:
 
@@ -1755,20 +1933,24 @@ class _PLP(_KNNScoringFunction, ABC):
         Returns
         -------
         numpy.ndarray
+            The potential of every value, of the same shape as `values`.
 
+        See Also
+        --------
+        potential_four_piece : The four-piece potential.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> _PLP.potential_two_piece(np.array([1.0, 3.0, 7.0]), (2.0, 6.0, 1.0, 5.0))
         """
         a, b, c, d = values
-
-        res = np.zeros_like(r)
-        res[r < a] = r[r < a] * (c - d) / a + d
-        res[(a <= r) & (r <= b)] = -c * (r[(a <= r) & (r <= b)] - a) / (b - a) + c
-
-        return res
+        return _two_piece_kernel(r, a, b, c, d)
 
 
 class PlantsPLP(_PLP):
     r"""
-    🐢 — PLANTS piecewise linear potential.
+    🚲 — PLANTS piecewise linear potential.
 
     Piecewise linear potential as implemented in the PLANTS [1]_ docking software.
 
@@ -1835,24 +2017,24 @@ class PlantsPLP(_PLP):
        plt.legend(loc='upper right')
 
 
-    **Speed**: 🐜–🚶
+    **Speed**: 🚲, slower with a larger `cutoff` or `k`.
 
     Parameters
     ----------
-    ligand : Ligand
-        The ligand to be used for the calculation.
-    receptor : Receptor
-        The receptor to be used for the calculation.
+    probe_mol : Mol
+        The probe molecule to be used for the calculation.
+    fixed_mol : Mol
+        The fixed molecule to be used for the calculation.
     weights : array_like, default (-4.0, -7.0, -0.05, -0.40, 0.50)
         A tuple or list containing the weights for each interaction type.
     cutoff : float, default 8.0
-        NOT WORKING. Maximum distance to consider in the nearest neighbor search.
-    k : int, default 400
+        The maximum distance between two atoms (center to center) to take into account.
+    k : int, default 100
         The number of neighbors to consider.
-    ignore_non_polar_hydrogens : bool, default True
-        If `ignore_non_polar_hydrogens` is ``True``, non-polar hydrogen atoms are masked out. The
-        masking happens at initialization, so `k` is not impacted.
 
+    See Also
+    --------
+    Gaussian : The Vina-like terms, an alternative to PLP.
 
     References
     ----------
@@ -1861,34 +2043,38 @@ class PlantsPLP(_PLP):
         Journal of Chemical Information and Modeling 49, no. 1 (January 26, 2009): 84–96.
         https://doi.org/10.1021/ci800298z.
 
+    Examples
+    --------
+    >>> from pyrite.scoring import PlantsPLP
+    >>> plp = PlantsPLP(ligand, receptor)
     """
 
     def __init__(
         self,
-        ligand: Ligand,
-        receptor: Receptor,
+        probe_mol: Mol,
+        fixed_mol: Mol,
         weights: tuple[float, float, float, float, float] | None = None,
         cutoff: float = 8.0,
-        k: int = 400,
-        ignore_non_polar_hydrogens: bool = True,
+        k: int = 100,
     ):
         super().__init__(
-            ligand,
-            receptor,
+            probe_mol,
+            fixed_mol,
             cutoff,
             k,
-            ignore_non_polar_hydrogens,
         )
         if weights is None:
-            self.weights = (-4.0, -7.0, -0.05, -0.40, 0.50)
+            weights = (-4.0, -7.0, -0.05, -0.40, 0.50)
+        self.weights = weights
+        w0, w1, w2, w3, w4 = weights
 
         self.__init_plants_interaction_types()
         self.parameters = {
-            PlantsPLP._InteractionType.HBOND: (2.3, 2.6, 3.1, 3.4, -4.0, 20.0),
-            PlantsPLP._InteractionType.METAL: (1.4, 2.2, 2.6, 2.8, -7.0, 20.0),
-            PlantsPLP._InteractionType.BURIED: (3.4, 3.6, 4.5, 5.5, -0.05, 20.0),
-            PlantsPLP._InteractionType.NONPOLAR: (3.4, 3.6, 4.5, 5.5, -0.40, 20.0),
-            PlantsPLP._InteractionType.REPULSIVE: (3.2, 5.0, 0.05, 10.0),
+            PlantsPLP._InteractionType.HBOND: (2.3, 2.6, 3.1, 3.4, w0, 20.0),
+            PlantsPLP._InteractionType.METAL: (1.4, 2.2, 2.6, 2.8, w1, 20.0),
+            PlantsPLP._InteractionType.BURIED: (3.4, 3.6, 4.5, 5.5, w2, 20.0),
+            PlantsPLP._InteractionType.NONPOLAR: (3.4, 3.6, 4.5, 5.5, w3, 20.0),
+            PlantsPLP._InteractionType.REPULSIVE: (3.2, 5.0, w4 * 0.1, w4 * 20.0),
         }
 
     class _InteractionType(IntEnum):
@@ -1900,7 +2086,7 @@ class PlantsPLP(_PLP):
         METAL = 5
 
     def __init_plants_interaction_types(self):
-        # construct lut for (ligand_atom, receptor_atom)
+        # construct lut for (probe_mol_atom, fixed_mol_atom)
 
         is_donor = lambda x: (  # noqa
             (x == AtomType.NitrogenDonor) | (x == AtomType.OxygenDonor)
@@ -1928,8 +2114,8 @@ class PlantsPLP(_PLP):
             & (~is_metal(x))
         )
 
-        lig_types = self.ligand.atom_types[self.lig_mask]
-        rec_types = self.receptor.atom_types[self.rec_mask]
+        lig_types = self.probe_mol.atom_types[self.probe_mask]
+        rec_types = self.fixed_mol.atom_types[self.fixed_mask]
 
         lut = np.zeros(
             (lig_types.shape[0], rec_types.shape[0]),
@@ -1939,7 +2125,7 @@ class PlantsPLP(_PLP):
         self.mask_rep = (
             (is_donor(lig_types)[:, None] & is_donor(rec_types)[None, :])
             | (is_acceptor(lig_types)[:, None] & is_acceptor(rec_types)[None, :])
-            | (is_donacc(lig_types)[:, None] & is_metal(rec_types)[None, :])
+            | (is_donor(lig_types)[:, None] & is_metal(rec_types)[None, :])
         )
 
         self.mask_hb = (
@@ -1953,21 +2139,17 @@ class PlantsPLP(_PLP):
             )
             | (
                 is_donacc(lig_types)[:, None]
-                & (is_donor(rec_types) | is_acceptor(rec_types) | is_donacc(rec_types))[
-                    None, :
-                ]
+                & (is_donor(rec_types) | is_acceptor(rec_types) | is_donacc(rec_types))[None, :]
             )
         )
 
         self.mask_buried = (
-            (is_donor(lig_types) | is_acceptor(lig_types) | is_donacc(lig_types))[
-                :, None
-            ]
+            (is_donor(lig_types) | is_acceptor(lig_types) | is_donacc(lig_types))[:, None]
             & is_nonpolar(rec_types)[None, :]
         ) | (
             is_nonpolar(lig_types)[:, None]
             & (
-                is_donacc(rec_types)
+                is_donor(rec_types)
                 | is_acceptor(rec_types)
                 | is_donacc(rec_types)
                 | is_metal(rec_types)
@@ -1976,9 +2158,9 @@ class PlantsPLP(_PLP):
 
         self.mask_np = is_nonpolar(lig_types)[:, None] & is_nonpolar(rec_types)[None, :]
 
-        self.mask_metal = (is_acceptor(lig_types) | is_donacc(lig_types))[
-            :, None
-        ] & is_metal(rec_types)[None, :]
+        self.mask_metal = (is_acceptor(lig_types) | is_donacc(lig_types))[:, None] & is_metal(
+            rec_types
+        )[None, :]
 
         lut[self.mask_rep] = PlantsPLP._InteractionType.REPULSIVE
         lut[self.mask_hb] = PlantsPLP._InteractionType.HBOND
@@ -1988,16 +2170,14 @@ class PlantsPLP(_PLP):
 
         self.interaction_types = lut
 
-    def _score(self, conf_id: int, computed: dict[Dependency, Any] | None) -> float:
+    def _score(self, pose, computed: dict[Dependency, Any] | None) -> float:
         r, idx, mask = computed[self.nn_dep]
-        r = r[self.lig_mask]
-        idx = idx[self.lig_mask]
-        mask = mask[self.lig_mask]
+        r = r[self.probe_mask]
+        idx = idx[self.probe_mask]
+        mask = mask[self.probe_mask]
         safe_idx = np.where(mask, idx, 0)
 
-        interact_types = np.take_along_axis(
-            self.interaction_types, safe_idx, axis=1
-        )  # M <3 J
+        interact_types = np.take_along_axis(self.interaction_types, safe_idx, axis=1)  # M <3 J
 
         s = np.zeros_like(r)
 
@@ -2010,11 +2190,9 @@ class PlantsPLP(_PLP):
             s[interact_types == i_type] = self.potential_four_piece(
                 r[interact_types == i_type], self.parameters[i_type]
             )
-        s[interact_types == PlantsPLP._InteractionType.REPULSIVE] = (
-            self.potential_two_piece(
-                r[interact_types == PlantsPLP._InteractionType.REPULSIVE],
-                self.parameters[PlantsPLP._InteractionType.REPULSIVE],
-            )
+        s[interact_types == PlantsPLP._InteractionType.REPULSIVE] = self.potential_two_piece(
+            r[interact_types == PlantsPLP._InteractionType.REPULSIVE],
+            self.parameters[PlantsPLP._InteractionType.REPULSIVE],
         )
 
         return np.sum(s)

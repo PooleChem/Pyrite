@@ -1,7 +1,24 @@
-from rdkit import Chem
-from rdkit.Chem import AllChem
-# from openff.toolkit.topology import Topology
+# Registers Chem.AllChem, Chem.rdMolTransforms, Chem.rdMolAlign, ... as attributes of rdkit.Chem;
+# `_common` and the scoring modules use them as `Chem.AllChem.X`, which fails without this import.
+from rdkit.Chem import AllChem  # noqa: F401
 
-from pyrite._common import Ligand, Receptor, Viewer
+# from openff.toolkit.topology import Topology
+# from pyrite._common import Ligand, Receptor, Viewer
+from pyrite import bounds, cluster, io, scoring, search
+from pyrite._common import Mol, Pose, PoseLayout, Poses, Viewer
 from pyrite.atom_consts import AtomType, vina_atom_consts
-from pyrite import bounds, scoring
+
+__all__ = [
+    "AtomType",
+    "Mol",
+    "Pose",
+    "PoseLayout",
+    "Poses",
+    "Viewer",
+    "bounds",
+    "cluster",
+    "io",
+    "scoring",
+    "search",
+    "vina_atom_consts",
+]

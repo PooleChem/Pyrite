@@ -1,0 +1,33 @@
+/* No right-hand sidebar where "On this page" has a single entry (the page of one class or method,
+   whose methods are in the left-hand sidebar already) or nothing: hide its column and the button
+   that opens it. A single entry: its link is the last thing in it, so no list of subsections follows
+   (:has() cannot be nested). */
+body:has(.localtoc > ul > li:only-child > a:last-child) :is(.sy-rside, .rside-overlay),
+body:has(.localtoc > ul > li:only-child > a:last-child) .sy-breadcrumbs button[aria-controls="rside"],
+body:has(.sy-rside-inner:empty) :is(.sy-rside, .rside-overlay),
+body:has(.sy-rside-inner:empty) .sy-breadcrumbs button[aria-controls="rside"] {
+  display: none !important;
+}
+
+/* Show the project name next to the logo (Shibuya hides it when there is a logo). */
+.sy-head-brand img + strong {
+  display: inline;
+  margin-left: 0.5rem;
+}
+
+/* Notebook cells (myst-nb) in the colors of the theme, in light and dark mode. */
+:root {
+  --mystnb-source-bg-color: transparent;
+  --mystnb-source-border-color: var(--sy-c-border);
+  --mystnb-source-margin-color: var(--accent-9);
+  --mystnb-stdout-bg-color: transparent;
+  --mystnb-stdout-border-color: var(--sy-c-border);
+  --mystnb-traceback-bg-color: transparent;
+}
+
+/* Long module names in the left sidebar, such as "(pyrite.scoring.dependencies)": conf.py wraps a
+   name and its parentheses in .module-name, which moves to a line of its own, and breaks only after a
+   dot (<wbr>) when it is still too long. */
+.globaltoc .module-name {
+  display: inline-block;
+}
