@@ -29,7 +29,7 @@ from pyrite.io import fix_receptor_pdb
 
 receptor = Mol.from_pdb(fix_receptor_pdb("input/2boh.pdb"), hydrogens="add")
 ligand = Mol.from_sdf("input/2boh_ligand.sdf", flexible=True, hydrogens="add")
-rng = np.random.default_rng(9)
+rng = np.random.default_rng(12)
 ```
 
 ## The binding site

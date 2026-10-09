@@ -94,7 +94,7 @@ from pyrite.bounds import Pocket
 from pyrite.scoring import DistanceToPocket, InternalOverlap
 from pyrite.search import boltzmann_diversity_filter, place_in
 
-rng = np.random.default_rng(15)
+rng = np.random.default_rng(5)
 pocket = Pocket.from_mol(receptor).intersect(box, padding=2.0)
 placements = place_in(ligand, pocket, n_positions=2000, n_conformations=20, rng=rng)
 fit = DistanceToPocket(ligand, pocket) + InternalOverlap(ligand)

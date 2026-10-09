@@ -173,6 +173,10 @@ plot_html_show_formats = False
 # A page of the user guide that fails to run fails the build (instead of a warning and a page
 # without its outputs).
 nb_execution_raise_on_error = True
+# Show the error of a failing cell in the build log, and give a cell up to 10 minutes: the default 30
+# seconds is too short for building a grid on a small machine, such as that of the docs workflow.
+nb_execution_show_tb = True
+nb_execution_timeout = 600
 nb_mime_priority_overrides = [("html", "application/3dmoljs_load.v0", None)]
 # myst-nb still warns that it skips the 3Dmol type, although the HTML version is shown.
 suppress_warnings = ["mystnb.unknown_mime_type"]
