@@ -170,6 +170,9 @@ plot_html_show_formats = False
 
 # py3Dmol outputs "application/3dmoljs_load.v0" next to "text/html": skip the first, so the HTML
 # version (an interactive 3D view) is shown in the pages.
+# A page of the user guide that fails to run fails the build (instead of a warning and a page
+# without its outputs).
+nb_execution_raise_on_error = True
 nb_mime_priority_overrides = [("html", "application/3dmoljs_load.v0", None)]
 # myst-nb still warns that it skips the 3Dmol type, although the HTML version is shown.
 suppress_warnings = ["mystnb.unknown_mime_type"]
