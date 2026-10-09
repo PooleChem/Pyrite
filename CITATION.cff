@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use Pyrite in your research, please cite it as below."
+type: software
+title: "Pyrite: a Python toolkit for molecular docking"
+authors:
+  - family-names: "van der Lugt"
+    given-names: "Mart Johanan"
+  - family-names: "Poole"
+    given-names: "David Alonzo"
+    name-suffix: "III"
+repository-code: "https://github.com/PooleChem/Pyrite"
+url: "https://poolechem.github.io/Pyrite/"
+license-url: "https://github.com/PooleChem/Pyrite/blob/main/LICENSE"
+keywords:
+  - molecular docking
+  - scoring functions
+  - cheminformatics
+  - drug discovery
