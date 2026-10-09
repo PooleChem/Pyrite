@@ -1,11 +1,14 @@
-# Builds the documentation, running the pages of the user guide, on every push and pull request: a
-# page that fails to build or run fails the check. The built site is kept as an artifact of the run
-# (download it, and open index.html). Only main (a push, or a run by hand) publishes it on GitHub Pages:
-# https://poolechem.github.io/Pyrite/
+# Builds the documentation, running the pages of the user guide, for the shared branches and pull
+# requests: a page that fails to build or run fails the check. The built site is kept as an artifact
+# of the run (download it, and open index.html). Only main (a push, or a run by hand) publishes it on
+# GitHub Pages: https://poolechem.github.io/Pyrite/
 name: Documentation
 
 on:
+  # Pushes to the shared branches, and every pull request: a feature branch is checked through its
+  # pull request (not twice, for its pushes as well).
   push:
+    branches: [main, dev, "release/**"]
   pull_request:
   workflow_dispatch:
 

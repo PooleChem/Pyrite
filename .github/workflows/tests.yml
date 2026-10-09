@@ -1,8 +1,11 @@
-# Checks every push and pull request: the code style (ruff) and the test suite (pytest).
+# Checks the code style (ruff) and the test suite (pytest), for the shared branches and pull requests.
 name: Tests
 
 on:
+  # Pushes to the shared branches, and every pull request: a feature branch is checked through its
+  # pull request (not twice, for its pushes as well).
   push:
+    branches: [main, dev, "release/**"]
   pull_request:
   workflow_dispatch:
 
