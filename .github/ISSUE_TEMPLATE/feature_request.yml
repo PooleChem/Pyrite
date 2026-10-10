@@ -1,0 +1,16 @@
+name: Idea or feature request
+description: Something Pyrite could do, or do better.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like Pyrite to do?
+      description: And what would you use it for?
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How could it work?
+      description: An idea of the API, or how other tools do it, if you have one.
