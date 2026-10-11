@@ -70,8 +70,11 @@ fixed = fix_receptor_pdb("input/2boh.pdb")
 donors(Mol.from_pdb(fixed)), donors(Mol.from_pdb(fixed, hydrogens="add"))
 ```
 
-So a file without hydrogens is loaded with `hydrogens="add"`. RDKit adds them to neutral groups:
-it cannot know a protonation state that the file does not give.
+:::{warning}
+Load a file without hydrogens with `hydrogens="add"`. With the default, `"polar"`, it has no
+hydrogen bond donors, and the hydrogen bond terms score it without them, with no error. RDKit adds
+the hydrogens to neutral groups: it cannot know a protonation state that the file does not give.
+:::
 
 Hydrogens are left out of scoring by default (`ignore_hydrogens=True`): scoring functions use the
 atoms in {attr}`~pyrite.Mol.scoring_mask`, the heavy atoms.
@@ -134,8 +137,13 @@ viewer.add(ligand).zoom_to(ligand)
 
 ## RDKit
 
-{attr}`~pyrite.Mol.rdkit` is the RDKit molecule, for any RDKit function that reads a molecule. It is
-read-only: changing it would leave the atom types and torsions of the `Mol` behind.
+{attr}`~pyrite.Mol.rdkit` is the RDKit molecule, for any RDKit function that reads a molecule.
+
+:::{warning}
+{attr}`~pyrite.Mol.rdkit` is read-only: changing it would leave the atom types and torsions of the
+`Mol` behind.
+:::
+
 {meth}`~pyrite.Mol.to_rdkit` gives a copy to change, and a new `Mol` is built from it:
 
 ```{code-cell} python

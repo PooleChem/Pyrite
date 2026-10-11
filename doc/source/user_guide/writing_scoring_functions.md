@@ -67,9 +67,13 @@ scores = compact.batch_scores(poses)
 score, gradient = compact.get_score_and_gradient(pose)
 ```
 
+:::{important}
 A scoring function must not change the molecule: {meth}`~pyrite.Mol.pose_to_positions` computes
 the positions without touching it, so poses of one molecule can be scored from several threads at
-once. `computed` holds the results of the dependencies of the scoring function (see
+once.
+:::
+
+`computed` holds the results of the dependencies of the scoring function (see
 [Sharing work](#sharing-work-with-dependencies)); the simplest scoring functions do not use it.
 
 ## Using RDKit

@@ -522,7 +522,7 @@ class RectangularBounds(Bounds):
     def autobox(cls, mol: Mol, padding: float = 0.0):
         """Create an instance of the class based on the given molecule with optional padding.
 
-        .. warning::
+        .. note::
             The created bounding box is always aligned to the world axes.
 
         Parameters
@@ -722,7 +722,7 @@ class CylindricalBounds(Bounds):
 class Pocket(Bounds):
     """Represents a binding pocket formed of alpha spheres.
 
-    .. warning::
+    .. tip::
         When creating a ``Pocket`` based scoring function, try not to use the :meth:`distance`
         method. This method is non-vectorized and therefore slow.
 

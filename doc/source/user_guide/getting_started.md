@@ -10,9 +10,11 @@ This page docks a ligand into its receptor, start to finish: load the molecules,
 function, search for the best poses, and look at the result. Every step is explained in more detail
 on the pages that follow.
 
+:::{note}
 This is one example workflow, not the only one: Pyrite is a set of pieces (molecules, poses,
 scoring functions, bounds, searches) that can be combined in other ways, or with code of your own.
 See [Searching](searching.md) for some of the alternatives.
+:::
 
 The example is 2BOH, the blood-clotting enzyme factor Xa with an inhibitor bound. The crystal
 structure tells us where the ligand really binds, so we can check the result.

@@ -321,7 +321,7 @@ class GridScore(ScoringFunction):
         of any ligand atom to its center atom (so every rotation fits), plus `padding`. An atom
         outside the grid scores 0, with a gradient of 0.
 
-    .. warning::
+    .. tip::
         Building the grid is the expensive part: the scoring function is evaluated on every
         vertex, and it all has to fit in memory. The number of vertices grows with the cube of
         ``1 / spacing``: halving the spacing makes the grid 8 times as expensive to build, and a

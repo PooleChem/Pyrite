@@ -27,13 +27,17 @@ pose = ligand.input_pose
 
 ## Measuring
 
-Measure before changing anything. Two things make a timing wrong:
+Measure before changing anything.
+
+:::{tip}
+Two things make a timing wrong:
 
 - **The first call** of many scoring functions compiles code (with numba) or builds caches: time
   only after a first call.
 - **Scoring the same pose over and over** is faster than scoring different poses, as the
   computer's caches keep what the last call used: time on different poses, as a search scores
   them.
+:::
 
 A small helper that does both, on poses spread around the crystal pose:
 
@@ -172,9 +176,13 @@ local search scores one pose at a time.
 ## Running in parallel
 
 The searches from different starting poses, and the docking runs of different ligands, are
-independent: they can run at the same time, one per core, with {mod}`concurrent.futures`. This
-runs in a script, not a notebook: the worker processes import the function they run, so it must be
-defined at the top level of a file, and the pool started under `if __name__ == "__main__":`.
+independent: they can run at the same time, one per core, with {mod}`concurrent.futures`.
+
+:::{important}
+This runs in a script, not a notebook: the worker processes import the function they run, so it
+must be defined at the top level of a file, and the pool started under
+`if __name__ == "__main__":`.
+:::
 
 ```python
 # dock.py

@@ -173,7 +173,7 @@ class OutOfBoundsPenalty(ScoringFunction):
     """
     🚗 — Calculates the distance between all atoms of the ligand and the bounds.
 
-    .. warning::
+    .. tip::
         With a :class:`~pyrite.bounds.Pocket` this class is very slow: the distance to the
         pocket is not vectorized, nor uses a :class:`~scipy.spatial.KDTree`. For a pocket,
         :class:`DistanceToPocket` is much faster.
