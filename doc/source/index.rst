@@ -41,12 +41,26 @@ in a docking run, and just as well on their own or with code of your own:
 Installing
 ----------
 
-Pyrite is not a package on PyPI yet. Clone the repository, and put its folder on the Python path:
+Pyrite is on PyPI as ``pyrite-chem``, and needs Python 3.10 or newer:
+
+.. code-block:: bash
+
+   pip install pyrite-chem
+   pip install "pyrite-chem[pdbfixer]"  # also OpenMM and PDBFixer, to prepare receptor PDB files
+
+The import name is ``pyrite``. Its dependencies (numpy, scipy, numba, RDKit, py3Dmol) come with it.
+With conda, they can come from conda-forge instead:
 
 .. code-block:: bash
 
    git clone https://github.com/PooleChem/Pyrite.git
-   export PYTHONPATH="$PWD/Pyrite:$PYTHONPATH"
+   cd Pyrite
+   conda env create -f doc/environment.yml
+   conda activate pyrite-docs
+   pip install -e .
+
+On the newest macOS with Python 3.10, SciPy's pip wheels fail to load; use Python 3.11 or newer, or
+SciPy from conda-forge.
 
 .. toctree::
    :maxdepth: 1
