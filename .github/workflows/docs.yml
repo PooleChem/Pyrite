@@ -1,0 +1,62 @@
+# Builds the documentation, running the pages of the user guide, for the shared branches and pull
+# requests: a page that fails to build or run fails the check. The built site is kept as an artifact
+# of the run (download it, and open index.html). Only main (a push, or a run by hand) publishes it on
+# GitHub Pages: https://poolechem.github.io/Pyrite/
+name: Documentation
+
+on:
+  # Pushes to the shared branches, and every pull request: a feature branch is checked through its
+  # pull request (not twice, for its pushes as well).
+  push:
+    branches: [main, dev, "release/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One run per branch at a time: a newer push cancels an older build, but never a deployment of main.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash -el {0}
+    env:
+      # One thread per library: the build runs on a small machine.
+      OMP_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up the environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: doc/environment.yml
+          cache-environment: true
+
+      - name: Install the Sphinx packages
+        run: pip install -r doc/requirements.txt
+
+      - name: Build the documentation
+        run: make -C doc html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: doc/build/html
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

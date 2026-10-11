@@ -1,0 +1,25 @@
+# The environment the documentation is built in (the docs workflow, .github/workflows/docs.yml):
+# Pyrite's dependencies, which the pages of the user guide run. The Sphinx packages are in
+# requirements.txt:
+#
+#   conda env create -f doc/environment.yml
+#   conda activate pyrite-docs
+#   pip install -r doc/requirements.txt
+#   make -C doc html
+name: pyrite-docs
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - scipy
+  - numba
+  - rdkit
+  - matplotlib
+  - openmm
+  - pdbfixer
+  - py3dmol
+  - ipywidgets
+  - ipython
+  - ipykernel
+  - pip

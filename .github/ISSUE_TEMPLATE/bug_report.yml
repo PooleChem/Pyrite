@@ -1,0 +1,30 @@
+name: Bug report
+description: Something in Pyrite does not work as it should.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce it
+      description: The smallest code (and input files, if they can be shared) that shows the problem.
+      render: python
+  - type: textarea
+    id: error
+    attributes:
+      label: Error message
+      description: The full traceback, if there is one.
+      render: text
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: The Pyrite commit or branch, and the versions of Python, RDKit and numba (`python -c "import rdkit, numba; print(rdkit.__version__, numba.__version__)"`), and your operating system.
+    validations:
+      required: true

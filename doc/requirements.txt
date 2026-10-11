@@ -1,0 +1,13 @@
+# Building the documentation: pip install -r doc/requirements.txt (next to Pyrite itself)
+sphinx>=8.1
+numpydoc>=1.8
+myst-nb>=1.2
+matplotlib
+shibuya>=2026.7.12
+sphinx-copybutton
+sphinx-design
+sphinx-togglebutton
+sphinxcontrib-mermaid
+sphinx-iconify
+sphinx-sitemap
+sphinx-docsearch
